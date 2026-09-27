@@ -3,33 +3,22 @@ Overview
 ==========
 .. mdinclude:: ../README.md
 
-.. toctree:: 
+.. toctree::
    :hidden:
-   :caption: �
+   :caption: API
 
    cpp/index
-   c/index
-   python/index
-   rust/index
-   javascript/index
-   java/index
-   swift/index
-   objc/index
-   csharp/index
-   golang/index
-   wolfram/index
 
-.. toctree:: 
+.. toctree::
    :hidden:
-   :caption: �
+   :caption: Project
 
    contributing
    benchmarks
    format
-   sqlite/index
 
 .. toctree::
    :hidden:
-   :caption: �
+   :caption: Index
 
    genindex

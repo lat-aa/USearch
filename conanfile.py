@@ -23,4 +23,10 @@ class USearchConan(ConanFile):
     no_copy_source = True
 
     def package(self):
-        self.copy("*.h")
+        self.copy("*.hpp", src="include", dst="include", keep_path=True)
+        self.copy("LICENSE*", dst="licenses", keep_path=False)
+
+    def package_info(self):
+        self.cpp_info.bindirs = []
+        self.cpp_info.libdirs = []
+        self.cpp_info.includedirs = ["include"]
