@@ -38,11 +38,11 @@ jobs:
             README.md:version = {(\d+\.\d+\.\d+)}
             CMakeLists.txt:VERSION (\d+\.\d+\.\d+)
           update-major-version-in: |
-            include/usearch/index.hpp:^#define USEARCH_VERSION_MAJOR (\d+)
+            include/usearch/setup.hpp:^#define USEARCH_VERSION_MAJOR (\d+)
           update-minor-version-in: |
-            include/usearch/index.hpp:^#define USEARCH_VERSION_MINOR (\d+)
+            include/usearch/setup.hpp:^#define USEARCH_VERSION_MINOR (\d+)
           update-patch-version-in: |
-            include/usearch/index.hpp:^#define USEARCH_VERSION_PATCH (\d+)
+            include/usearch/setup.hpp:^#define USEARCH_VERSION_PATCH (\d+)
           dry-run: "false"
           push: "true"
           create-release: "true"

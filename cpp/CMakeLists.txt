@@ -1,3 +1,5 @@
+# 核心附属目标：基准与 fuzz（网关见 tools/apex）。
+
 if (USEARCH_BUILD_BENCH_CPP)
     include(clipp)
     add_executable(bench_cpp bench.cpp)
@@ -17,35 +19,5 @@ if (USEARCH_BUILD_FUZZ)
     if (USEARCH_BUILD_TEST_CPP)
         add_test(NAME fuzz_index_smoke COMMAND fuzz_index -max_total_time=20 -timeout=5)
         set_tests_properties(fuzz_index_smoke PROPERTIES LABELS "fuzz;memory" TIMEOUT 120)
-    endif ()
-endif ()
-
-if (USEARCH_BUILD_API)
-    include(httplib)
-    include(sqlite)
-    include(llama)
-    include(toml)
-    enable_language(C)
-    add_executable(api
-        api.cpp
-        dense.cpp
-        sq8.cpp
-        sql.cpp
-        text.cpp
-        http.cpp
-        mcp.cpp
-        decide.cpp
-        gate.cpp
-    )
-    setup_target(api)
-    target_compile_features(api PRIVATE cxx_std_17)
-    target_include_directories(api PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(api PRIVATE httplib::httplib nlohmann_json::nlohmann_json tomlplusplus::tomlplusplus sqlite3 llama)
-    if (WIN32)
-        target_link_libraries(api PRIVATE ws2_32)
-        target_compile_definitions(api PRIVATE _WIN32_WINNT=0x0A00)
-    endif ()
-    if (UNIX AND NOT APPLE)
-        target_link_libraries(api PRIVATE pthread dl)
     endif ()
 endif ()

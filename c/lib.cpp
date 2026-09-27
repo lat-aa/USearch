@@ -1,6 +1,6 @@
 #include <cassert>
 
-#include <usearch/index_dense.hpp>
+#include <dense/dense.hpp>
 
 extern "C" {
 #include "usearch.h"

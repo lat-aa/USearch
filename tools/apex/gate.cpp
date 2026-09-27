@@ -4,6 +4,7 @@
  */
 
 #include "api.hpp"
+#include "verdict.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -15,14 +16,6 @@
 
 namespace api {
 namespace {
-
-float clamp01(float x) {
-    if (x < 0.0f)
-        return 0.0f;
-    if (x > 1.0f)
-        return 1.0f;
-    return x;
-}
 
 /**
  * kind 判定：无 kind 时按 memory/experience 缺省；禁止 value<string> 抛 type_error。
@@ -71,45 +64,6 @@ json parseGateModel(std::string const& raw) {
     }
 }
 
-/**
- * 单遍扫描正文，用首字节过滤 + memcmp 确认，把 4 次独立 find 收成一次 O(n)。
- * 词表放函数内 static const，避免类作用域 constexpr 数组在 MSVC 上 ODR 取址踩空。
- */
-unsigned scanRed(std::string_view text) noexcept {
-    // 字面量是禁用词本身，不是本仓库标识符
-    static char const* const tokens[] = {"model_ready", "model-ready", "save_observation",
-                                         "observation_queue"};
-    static std::size_t const lengths[] = {11, 11, 16, 17};
-    static unsigned const bits[] = {1u, 2u, 4u, 8u};
-    constexpr unsigned kAll = 0xFu;
-
-    char const* data = text.data();
-    std::size_t const n = text.size();
-    unsigned mask = 0;
-    for (std::size_t i = 0; i < n; ++i) {
-        unsigned char const c = static_cast<unsigned char>(data[i]);
-        if (c == 'm') {
-            if (!(mask & bits[0]) && i + lengths[0] <= n &&
-                std::memcmp(data + i, tokens[0], lengths[0]) == 0)
-                mask |= bits[0];
-            if (!(mask & bits[1]) && i + lengths[1] <= n &&
-                std::memcmp(data + i, tokens[1], lengths[1]) == 0)
-                mask |= bits[1];
-        } else if (c == 's') {
-            if (!(mask & bits[2]) && i + lengths[2] <= n &&
-                std::memcmp(data + i, tokens[2], lengths[2]) == 0)
-                mask |= bits[2];
-        } else if (c == 'o') {
-            if (!(mask & bits[3]) && i + lengths[3] <= n &&
-                std::memcmp(data + i, tokens[3], lengths[3]) == 0)
-                mask |= bits[3];
-        }
-        if (mask == kAll)
-            break;
-    }
-    return mask;
-}
-
 /** meta.conflict 只认 bool；用 get_ptr 避免 value/get 抛 type_error（未捕获即 abort）。 */
 bool metaConflicted(json const& meta) noexcept {
     if (!meta.is_object())
@@ -129,29 +83,20 @@ bool metaConflicted(json const& meta) noexcept {
 json detectConflicts(std::vector<std::string const*> const& hard,
                      std::vector<std::string const*> const& ban, std::string_view taskText,
                      std::vector<std::pair<Doc, float>> const& hits) {
-    static char const* const whyRed[] = {
-        "banned token model_ready",
-        "banned token model-ready",
-        "banned token save_observation",
-        "banned token observation_queue",
-    };
-    constexpr std::size_t kRed = 4;
+    // why 不写具体蛇形旧名，避免源码再传播违规标识；规则名来自 ban（通常含 names）。
+    constexpr char const* kWhyNames = "names: identifier must not use underscore or hyphen";
     if (hard.empty())
         return json::array();
 
     json conflicts = json::array();
-    auto emitRed = [&](unsigned mask) {
-        if (mask == 0 || ban.empty())
+    auto emitRed = [&](bool red) {
+        if (!red || ban.empty())
             return;
-        for (std::size_t i = 0; i < kRed; ++i) {
-            if ((mask & (1u << static_cast<unsigned>(i))) == 0)
-                continue;
-            for (std::string const* name : ban)
-                conflicts.push_back({{"rule", *name}, {"why", whyRed[i]}});
-        }
+        for (std::string const* name : ban)
+            conflicts.push_back({{"rule", *name}, {"why", kWhyNames}});
     };
 
-    // 任务原文也要过红线（Glob 未触发时仍能挡住禁用标识）
+    // 任务原文也要过红线（Glob 未触发时仍能挡住违规标识）
     emitRed(scanRed(taskText));
     for (auto const& hit : hits) {
         Doc const& doc = hit.first;
@@ -162,16 +107,6 @@ json detectConflicts(std::vector<std::string const*> const& hard,
         emitRed(scanRed(doc.text));
     }
     return conflicts;
-}
-
-/** Store::search 对外多为 cosine 距离（越小越近）；转为相似度。 */
-float asSim(float distanceOrSim) {
-    if (distanceOrSim < 0.0f)
-        return 0.0f;
-    // 已是相似度（粗排路径偶发 1-score）时夹紧；否则按距离转相似度。
-    if (distanceOrSim <= 1.0f)
-        return clamp01(1.0f - distanceOrSim);
-    return 0.0f;
 }
 
 float evidenceOf(std::vector<std::pair<Doc, float>> const& hits, std::vector<Resolvedrule> const& rules) {
@@ -241,7 +176,7 @@ json finalizeStatus(json model, float evidence, Gateconfig const& g, std::size_t
     float self = 0.0f;
     if (auto it = model.find("self"); it != model.end() && it->is_number())
         self = clamp01(it->get<float>());
-    float conf = clamp01(g.wevid * evidence + g.wself * self);
+    float conf = mixConfidence(evidence, self, g.wevid, g.wself);
 
     json conflicts = json::array();
     if (auto it = model.find("conflicts"); it != model.end() && it->is_array())
@@ -257,16 +192,10 @@ json finalizeStatus(json model, float evidence, Gateconfig const& g, std::size_t
     if (auto it = model.find("reply"); it != model.end() && it->is_string())
         reply = it->get_ref<std::string const&>();
 
-    if (!conflicts.empty())
-        status = (status == "refuse") ? "refuse" : "pack";
-    else if (!missing.empty())
-        status = "pack";
-    else if (conf < g.threshold)
-        status = "pack";
-    else if (status == "answered" && reply.size() < minlen)
-        status = "pack";
-    else if (status != "answered" && status != "refuse")
-        status = "pack";
+    // modelStatus 单独拷贝，避免 verdictOf 返回指向 status 内部的指针后再赋值触发自引用。
+    std::string const modelStatus = status;
+    status = verdictOf(!conflicts.empty(), !missing.empty(), conf, g.threshold, modelStatus.c_str(),
+                       reply.size(), minlen);
 
     model["status"] = std::move(status);
     model["answerConfidence"] = conf;

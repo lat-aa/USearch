@@ -51,7 +51,7 @@ ctest --test-dir build_release --output-on-failure -L unit
 | TSan | `-DUSEARCH_ENABLE_TSAN=ON -DUSEARCH_SANITIZE_DEBUG=OFF` | `ctest -L unit` |
 | Coverage | `-DUSEARCH_ENABLE_COVERAGE=ON -DUSEARCH_SANITIZE_DEBUG=OFF` | `ctest` + `lcov` |
 | Fuzz | Clang + `-DUSEARCH_BUILD_FUZZ=ON` | `./fuzz_index -max_total_time=60` |
-| API smoke | `-DUSEARCH_BUILD_API=ON`（可选加 ASan） | `API_BIN=./build/api ./scripts/smoke_api.sh` |
+| API smoke | `-DUSEARCH_BUILD_API=ON`（源码在 `tools/apex/` + `tools/sqlite/`，可选加 ASan） | `API_BIN=./build/api ./scripts/smoke_api.sh` |
 
 在未显式设置 sanitizer 标志时，Debug 构建默认仍启用 ASan+UBSan（`USEARCH_SANITIZE_DEBUG=ON`）。ASan 与 TSan 互斥，不可同时开启。
 
@@ -105,7 +105,7 @@ ctest --test-dir build_nk --output-on-failure -L "unit|numkong" --timeout 900
 
 - `USEARCH_BUILD_TEST_CPP` — C++ 单元测试（`test_cpp`）
 - `USEARCH_BUILD_BENCH_CPP` — C++ 基准测试（`bench_cpp`）
-- `USEARCH_BUILD_API` — HTTP/MCP `api` 二进制
+- `USEARCH_BUILD_API` — HTTP/MCP `api` 二进制（目录 `tools/apex/`，非 `cpp/`）
 - `USEARCH_BUILD_FUZZ` — libFuzzer `fuzz_index`
 - `USEARCH_ENABLE_ASAN` / `USEARCH_ENABLE_UBSAN` / `USEARCH_ENABLE_TSAN`
 - `USEARCH_ENABLE_COVERAGE` — gcov / llvm 覆盖率
@@ -117,16 +117,19 @@ ctest --test-dir build_nk --output-on-failure -L "unit|numkong" --timeout 900
 
 ### 静态检查
 
+头文件分层（单单词文件名）：`usearch/{setup,util,sync,heap,config,stub,io,member,hnsw}.hpp`、`plugins/{kinds…exact}.hpp`、`dense/{config,meta,index,join}.hpp`；对外仍用聚合入口。CMake INTERFACE：`usearch`（完整）、`usearch_setup`（仅宏）、`plugins`、`dense`。改 `hnsw.hpp` 不必重编只链 `usearch_setup` 的目标。吞吐门禁：`test_perf` + `cpp/baseline.json`（见 `.github/workflows/performance.yml`）。
+
 ```sh
 cppcheck --enable=warning,performance,portability --error-exitcode=1 --inline-suppr \
     --suppress=missingIncludeSystem --suppress=unusedFunction \
     -I include \
+    include/usearch/setup.hpp \
     include/usearch/index.hpp \
-    include/usearch/index_dense.hpp \
-    include/usearch/index_plugins.hpp
+    include/dense/dense.hpp \
+    include/plugins/plugins.hpp
 
 cmake -B build_tidy -D CMAKE_EXPORT_COMPILE_COMMANDS=ON -D USEARCH_BUILD_TEST_CPP=ON
-clang-tidy -p build_tidy tests/unit.cpp --header-filter='include/usearch/.*'
+clang-tidy -p build_tidy tests/unit.cpp --header-filter='include/(usearch|dense|plugins)/.*'
 ```
 
 调试 sanitizer 构建时可用的 GDB 断点：

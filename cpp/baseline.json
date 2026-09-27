@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "note": "固定种子门禁下限（test_perf）；CI 机器偏慢时仍应高于此值。收紧请本机 Release 实测后改。",
+  "seed": 42,
+  "dim": 32,
+  "vectors": 2000,
+  "queries": 100,
+  "wanted": 10,
+  "metrics": {
+    "add_qps_min": 500,
+    "search_qps_min": 200,
+    "batch_qps_min": 400
+  },
+  "tolerance": 0.15
+}

@@ -56,8 +56,8 @@
 #include <stringzilla/stringzilla.hpp> // Levenshtein distance implementation
 
 #include <usearch/index.hpp>
-#include <usearch/index_dense.hpp>
-#include <usearch/index_plugins.hpp>
+#include <dense/dense.hpp>
+#include <plugins/plugins.hpp>
 
 using namespace unum::usearch;
 using namespace unum;

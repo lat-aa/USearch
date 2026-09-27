@@ -12,7 +12,7 @@
 #include <string>
 #include <vector>
 
-#include <usearch/index_dense.hpp>
+#include <dense/dense.hpp>
 
 namespace fs = std::filesystem;
 using namespace unum::usearch;

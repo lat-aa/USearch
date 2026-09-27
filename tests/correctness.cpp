@@ -13,7 +13,7 @@
 #include <random>
 #include <vector>
 
-#include <usearch/index_dense.hpp>
+#include <dense/dense.hpp>
 
 using namespace unum::usearch;
 using dense_t = index_dense_gt<>;

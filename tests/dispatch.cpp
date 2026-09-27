@@ -16,7 +16,7 @@
 #endif
 
 #include <numkong/numkong.h>
-#include <usearch/index_plugins.hpp>
+#include <plugins/plugins.hpp>
 
 using namespace unum::usearch;
 

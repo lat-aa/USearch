@@ -47,7 +47,7 @@
 #include <omp.h>
 #endif
 
-#include <usearch/index_dense.hpp>
+#include <dense/dense.hpp>
 
 using namespace unum::usearch;
 using namespace unum;

@@ -91,7 +91,7 @@ assert arr and 'name' in arr[0]
 " && smoke_pass "V6 GET v1/rules" || smoke_bad "V6 GET rules" "empty"
 
 prules=$(curl -fsS --max-time 60 "${AUTH[@]}" "${JSON[@]}" \
-  -d '{"task":"deploy smoke","files":["cpp/mcp.cpp"],"manual":[]}' \
+  -d '{"task":"deploy smoke","files":["tools/apex/mcp.cpp"],"manual":[]}' \
   "$SMOKE_BASE/v1/rules")
 echo "$prules" | python3 -c "
 import sys,json
@@ -206,10 +206,10 @@ assert d['output'][0]['content'][0]['type']=='output_text'
 
   # V13：conflict → refuse/pack 后 chat 不应 id=gate answered
   curl -fsS --max-time 60 "${AUTH[@]}" "${JSON[@]}" \
-    -d '{"docs":[{"id":"conflict-v1","text":"use model_ready please"}]}' \
+    -d '{"docs":[{"id":"conflict-v1","text":"use foo_bar please"}]}' \
     "$SMOKE_BASE/v1/upsert" >/dev/null || true
   gconf=$(curl -fsS --max-time 120 "${AUTH[@]}" "${JSON[@]}" \
-    -d '{"task":"add model_ready flag to encoder"}' "$SMOKE_BASE/v1/gate")
+    -d '{"task":"add foo_bar flag to encoder"}' "$SMOKE_BASE/v1/gate")
   echo "$gconf" | python3 -c "
 import sys,json
 d=json.load(sys.stdin)
@@ -217,7 +217,7 @@ assert d.get('status') in ('refuse','pack'), d
 assert d.get('status')!='answered'
 " && smoke_pass "V13 gate conflict" || smoke_bad "V13 conflict" "$(echo "$gconf"|head -c200)"
   cpack=$(curl -fsS --max-time 90 "${AUTH[@]}" "${JSON[@]}" \
-    -d '{"messages":[{"role":"user","content":"add model_ready flag to encoder"}],"max_tokens":16}' \
+    -d '{"messages":[{"role":"user","content":"add foo_bar flag to encoder"}],"max_tokens":16}' \
     "$SMOKE_BASE/v1/chat/completions")
   echo "$cpack" | python3 -c "
 import sys,json

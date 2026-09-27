@@ -29,7 +29,7 @@ alwaysApply: true
 <!-- 工具名与 JSON 键保持英文，降低漏调；中文只钉死语义与禁忌。 -->
 
 - **`gate`** `{ task, files? }` → `status`/`answerConfidence`/`reply`/`pack`（≠ `decide.confidence`）
-- **`observe`** / **`save`**：仅入队 `queue`；设计别称 save_observation
+- **`observe`** / **`save`**：仅入队 `queue`（表名 `queue`，无其它别名）
 - **`rules`** `{ files, task, manual }`
   - 必读：`totalRules`、`matched`、`naiveTokens`、`optimizedTokens`、`selectedTokens`、`entries[].id`
 - **`decide`** `{ task, files }`

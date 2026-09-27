@@ -20,10 +20,10 @@ TASK='how to name a C++ flag without underscore for nightly'
 
 # --- conflict refuse/pack ---
 curl -fsS --max-time 60 "${AUTH[@]}" "${JSON[@]}" \
-  -d '{"docs":[{"id":"conflict-nightly","text":"use model_ready please"}]}' \
+  -d '{"docs":[{"id":"conflict-nightly","text":"use foo_bar please"}]}' \
   "$SMOKE_BASE/v1/upsert" >/dev/null || true
 gconf=$(curl -fsS --max-time 120 "${AUTH[@]}" "${JSON[@]}" \
-  -d '{"task":"add model_ready flag to encoder"}' "$SMOKE_BASE/v1/gate")
+  -d '{"task":"add foo_bar flag to encoder"}' "$SMOKE_BASE/v1/gate")
 echo "$gconf" | python3 -c "
 import sys,json
 d=json.load(sys.stdin)

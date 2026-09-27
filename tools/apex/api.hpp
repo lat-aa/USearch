@@ -37,7 +37,7 @@
 
 #include <httplib.h>
 #include <nlohmann/json.hpp>
-#include <usearch/index_dense.hpp>
+#include <dense/dense.hpp>
 
 struct llama_model;
 struct llama_context;

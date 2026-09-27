@@ -212,7 +212,7 @@ json toolDefs() {
         tool("recall", "嵌入后检索（search 的一站式别名）"),
         tool("decide", "路由：模型档/深度/检索/压缩/温度；回答前调用（确定性 Features→Decision）"),
         tool("gate", "前置门控：L1/L2+政策∥记忆+RRF+Nanbeige 混合置信→answered|pack|refuse"),
-        tool("observe", "沉淀仅入队（设计别称 save_observation）；Worker 后台蒸馏写 memory"),
+        tool("observe", "沉淀仅入队 queue；Worker 后台蒸馏写 memory"),
         tool("cost",
              "按规则 token + decide 档位估算费用（CNY）；返回 stack（实测）与 turn（gate/saved/"
              "corpus 全文）；actual_model 由 hook 或 X-Apex-Actual-Model 注入"),

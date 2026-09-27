@@ -121,7 +121,7 @@ endif ()
 # Core compilation settings affecting "index.hpp"
 target_compile_definitions(${USEARCH_TARGET_NAME} INTERFACE "USEARCH_USE_OPENMP=$<BOOL:${USEARCH_USE_OPENMP}>")
 
-# Supplementary compilation settings affecting "index_plugins.hpp"
+# Supplementary compilation settings affecting "plugins/plugins.hpp"
 target_compile_definitions(${USEARCH_TARGET_NAME} INTERFACE "USEARCH_USE_NUMKONG=$<BOOL:${USEARCH_USE_NUMKONG}>")
 
 # Define which types can be compiled
@@ -148,6 +148,23 @@ if (USEARCH_USE_NUMKONG)
         INTERFACE $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/numkong/include> $<INSTALL_INTERFACE:numkong/include>
     )
 endif ()
+
+# 分层 INTERFACE：只需版本宏时链 usearch_setup；完整索引用 usearch / plugins / dense。
+add_library(usearch_setup INTERFACE)
+add_library(${PROJECT_NAME}::usearch_setup ALIAS usearch_setup)
+target_include_directories(
+    usearch_setup ${USEARCH_SYSTEM_INCLUDE} INTERFACE $<BUILD_INTERFACE:${USEARCH_INCLUDE_BUILD_DIR}>
+                                                      $<INSTALL_INTERFACE:include>
+)
+
+add_library(plugins INTERFACE)
+add_library(${PROJECT_NAME}::plugins ALIAS plugins)
+target_link_libraries(plugins INTERFACE ${USEARCH_TARGET_NAME})
+
+add_library(dense INTERFACE)
+add_library(${PROJECT_NAME}::dense ALIAS dense)
+target_link_libraries(dense INTERFACE plugins)
+
 # Install a pkg-config file, so other tools can find this
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/cmake/pkg-config.pc.in" "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}.pc")
 
@@ -211,57 +228,48 @@ if (USEARCH_USE_NUMKONG)
     list(APPEND USEARCH_HEADER_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/numkong/include")
 endif ()
 
-# Function to setup target
-function (setup_target TARGET_NAME)
-    # Compiler-specific options List of all possible compiler IDs:
-    # https://cmake.org/cmake/help/latest/variable/CMAKE_LANG_COMPILER_ID.html
+# 可移植核心选项：警告 / sanitizer / include / 定义；Release 用 -O2，不加 -march=native。
+function (setup_core_target TARGET_NAME)
     if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         target_compile_options(
             ${TARGET_NAME}
-            PRIVATE $<$<CONFIG:RELEASE>:-O3>
-                    $<$<CONFIG:RELWITHDEBINFO>:-O3
+            PRIVATE $<$<CONFIG:RELEASE>:-O2>
+                    $<$<CONFIG:RELWITHDEBINFO>:-O2
                     -g>
                     $<$<CONFIG:DEBUG>:-O0
                     -g>
-                    -ffast-math
                     -fPIC
                     -Wall
                     -Wextra
                     -Wno-conversion
                     -Wno-unknown-pragmas
-                    -march=native
                     -fmax-errors=1
                     -pedantic
                     -fdiagnostics-color=always
         )
         target_link_options(${TARGET_NAME} PRIVATE -fPIC)
-
         if (USEARCH_USE_OPENMP)
             target_link_libraries(${TARGET_NAME} PRIVATE OpenMP::OpenMP_CXX)
         endif ()
-
         target_link_libraries(${TARGET_NAME} PRIVATE Threads::Threads)
 
     elseif (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         target_compile_options(
             ${TARGET_NAME}
-            PRIVATE $<$<CONFIG:RELEASE>:-O3>
-                    $<$<CONFIG:RELWITHDEBINFO>:-O3
+            PRIVATE $<$<CONFIG:RELEASE>:-O2>
+                    $<$<CONFIG:RELWITHDEBINFO>:-O2
                     -g>
                     $<$<CONFIG:DEBUG>:-O0
                     -g>
-                    -ffast-math
                     -fPIC
                     -pedantic
                     -Wfatal-errors
                     -fcolor-diagnostics
         )
         target_link_options(${TARGET_NAME} PRIVATE -fPIC)
-
         if (USEARCH_USE_OPENMP)
             target_link_libraries(${TARGET_NAME} PRIVATE OpenMP::OpenMP_CXX)
         endif ()
-
         if (CMAKE_HOST_SYSTEM_NAME MATCHES "Darwin")
             target_link_libraries(
                 ${TARGET_NAME} PRIVATE "-framework CoreFoundation" "-framework Security" Threads::Threads
@@ -271,7 +279,7 @@ function (setup_target TARGET_NAME)
         endif ()
 
     elseif (CMAKE_CXX_COMPILER_ID STREQUAL "NVIDIA" OR CMAKE_CXX_COMPILER_ID STREQUAL "NVHPC")
-        target_compile_options(${TARGET_NAME} PRIVATE $<$<CONFIG:RELEASE>:-O3>)
+        target_compile_options(${TARGET_NAME} PRIVATE $<$<CONFIG:RELEASE>:-O2>)
         target_compile_definitions(${TARGET_NAME} PRIVATE --expt-relaxed-constexpr --extended-lambda)
         set_property(SOURCE bench.cpp PROPERTY LANGUAGE CUDA)
         set_target_properties(${TARGET_NAME} PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -281,7 +289,6 @@ function (setup_target TARGET_NAME)
         target_compile_options(${TARGET_NAME} PRIVATE -w -ferror-limit=1)
 
     elseif (CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
-        # MSVC has no O3 optimization level
         target_compile_options(${TARGET_NAME} PRIVATE /wd4068 /wd4996)
         target_compile_options(
             ${TARGET_NAME} PRIVATE $<$<CONFIG:DEBUG>:/DEBUG> $<$<CONFIG:RELEASE>:/O2> $<$<CONFIG:RELWITHDEBINFO>:/O2
@@ -290,63 +297,41 @@ function (setup_target TARGET_NAME)
     endif ()
 
     usearch_apply_sanitizers(${TARGET_NAME})
-
     target_include_directories(${TARGET_NAME} PRIVATE ${USEARCH_HEADER_INCLUDES})
     set_target_properties(${TARGET_NAME} PROPERTIES CXX_STANDARD 17)
 
-    # On Windows, when using multi-configuration CMake builds, the paths will be nested, resulting in
-    # "build_debug\Debug" on Windows instead of "build_debug". That's why we override all the configs to use the same
-    # output directory.
     set_target_properties(
         ${TARGET_NAME}
         PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
                    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
                    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
-    )
-    set_target_properties(
-        ${TARGET_NAME}
-        PROPERTIES RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}"
+                   RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}"
                    ARCHIVE_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}"
                    LIBRARY_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}"
-    )
-    set_target_properties(
-        ${TARGET_NAME}
-        PROPERTIES RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}"
+                   RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}"
                    ARCHIVE_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}"
                    LIBRARY_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}"
-    )
-    set_target_properties(
-        ${TARGET_NAME}
-        PROPERTIES RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}"
+                   RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}"
                    ARCHIVE_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}"
                    LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}"
     )
 
     get_target_property(TARGET_TYPE ${TARGET_NAME} TYPE)
-
     if (TARGET_TYPE STREQUAL "SHARED_LIBRARY" OR TARGET_TYPE STREQUAL "STATIC_LIBRARY")
         set_target_properties(${TARGET_NAME} PROPERTIES PREFIX "lib")
     endif ()
 
-    # Core compilation settings affecting "index.hpp"
     target_compile_definitions(${TARGET_NAME} PRIVATE "USEARCH_USE_OPENMP=$<BOOL:${USEARCH_USE_OPENMP}>")
-
-    # Supplementary compilation settings affecting "index_plugins.hpp"
     target_compile_definitions(${TARGET_NAME} PRIVATE "USEARCH_USE_NUMKONG=$<BOOL:${USEARCH_USE_NUMKONG}>")
 
-    # Link NumKong: the `nk_shared` target from `add_subdirectory(numkong)` carries its own include paths, compile
-    # definitions (NK_DYNAMIC_DISPATCH, NK_TARGET_*), and ISA probes.
     if (USEARCH_USE_NUMKONG AND TARGET nk_shared)
         target_compile_definitions(${TARGET_NAME} PRIVATE "NK_DYNAMIC_DISPATCH=1")
         target_link_libraries(${TARGET_NAME} PRIVATE nk_shared)
-
-        # Keep NumKong discoverable in the build tree (`build/numkong`).
         if (APPLE)
             set(_USEARCH_NUMKONG_RPATH "@loader_path;@loader_path/numkong")
         elseif (UNIX AND NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
             set(_USEARCH_NUMKONG_RPATH "$ORIGIN;$ORIGIN/numkong")
         endif ()
-
         if (DEFINED _USEARCH_NUMKONG_RPATH)
             set_target_properties(
                 ${TARGET_NAME} PROPERTIES BUILD_RPATH "${_USEARCH_NUMKONG_RPATH}"
@@ -354,7 +339,27 @@ function (setup_target TARGET_NAME)
             )
         endif ()
     endif ()
+endfunction ()
 
+# 本机性能选项：在 core 上叠加 -O3 / -march=native / -ffast-math（bench 用；服务端勿用）。
+function (setup_perf_target TARGET_NAME)
+    setup_core_target(${TARGET_NAME})
+    if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_compile_options(
+            ${TARGET_NAME}
+            PRIVATE $<$<CONFIG:RELEASE>:-O3>
+                    $<$<CONFIG:RELWITHDEBINFO>:-O3>
+                    -ffast-math
+                    -march=native
+        )
+    elseif (CMAKE_CXX_COMPILER_ID STREQUAL "NVIDIA" OR CMAKE_CXX_COMPILER_ID STREQUAL "NVHPC")
+        target_compile_options(${TARGET_NAME} PRIVATE $<$<CONFIG:RELEASE>:-O3>)
+    endif ()
+endfunction ()
+
+# 兼容旧调用：默认走性能档（与历史 bench/test 行为接近）。
+function (setup_target TARGET_NAME)
+    setup_perf_target(${TARGET_NAME})
 endfunction ()
 
 # Delegate NumKong compilation to its own CMakeLists.txt — it handles ISA detection, NK_TARGET_* flags, and SIMD
@@ -394,8 +399,13 @@ endif ()
 # https://stackoverflow.com/questions/30250494/ctest-not-detecting-tests.
 enable_testing()
 
-if (${USEARCH_BUILD_TEST_CPP} OR ${USEARCH_BUILD_BENCH_CPP} OR ${USEARCH_BUILD_API} OR ${USEARCH_BUILD_FUZZ})
+# cpp/：bench + fuzz；tools/apex/：HTTP/MCP 网关（与核心解耦）。
+if (${USEARCH_BUILD_TEST_CPP} OR ${USEARCH_BUILD_BENCH_CPP} OR ${USEARCH_BUILD_FUZZ})
     add_subdirectory(cpp)
+endif ()
+
+if (USEARCH_BUILD_API)
+    add_subdirectory(tools/apex)
 endif ()
 
 # 单元测试源码只放 tests/（与 cpp/ 产品代码分离）。

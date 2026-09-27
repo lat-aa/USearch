@@ -100,7 +100,7 @@ assert not miss, miss
 " && pass "mcp tools/list apex+aliases" || bad "mcp tools/list" "missing"
 
 rules=$(curl -fsS --max-time 60 "${MCP[@]}" \
-  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"rules","arguments":{"task":"deploy depth test","files":["cpp/mcp.cpp"],"manual":[]}}}' \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"rules","arguments":{"task":"deploy depth test","files":["tools/apex/mcp.cpp"],"manual":[]}}}' \
   "$USE/mcp")
 echo "$rules" | python3 -c "
 import sys,json
@@ -218,10 +218,10 @@ assert 'policyFingerprint' in d and 'answerConfidence' in d
 
 # 冲突记忆：含禁止命名 token，应 refuse/pack 且不得 answered
 curl -fsS --max-time 60 "${MCP[@]}" \
-  -d '{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"upsert","arguments":{"id":"conflict-depth","text":"use model_ready please"}}}' \
+  -d '{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"upsert","arguments":{"id":"conflict-depth","text":"use foo_bar please"}}}' \
   "$USE/mcp" >/dev/null || true
 gconf=$(curl -fsS --max-time 120 "${AUTH[@]}" "${JSON[@]}" \
-  -d '{"task":"add model_ready flag to encoder"}' "$USE/v1/gate")
+  -d '{"task":"add foo_bar flag to encoder"}' "$USE/v1/gate")
 echo "$gconf" | python3 -c "
 import sys,json
 d=json.load(sys.stdin)

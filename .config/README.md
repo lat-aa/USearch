@@ -25,7 +25,7 @@ HTTP/MCP 线协议仍为 JSON；仅进程配置与 decide 词表用 TOML。
 | `gguf` | 权重路径（相对仓库根） |
 | `ctx` / `gpu` / `threads` | 推理上下文；`gpu=-1` 全层卸载；`threads=0` 用硬件并发 |
 | `pooling` | 须为 `lasttoken` |
-| `listen` | 必须 `host:port` |
+| `listen` | 必须 `host:port`；k3s Pod 须 `0.0.0.0:8088`（勿绑 `127.0.0.1`） |
 | `index` | USearch 图路径 |
 | `base` | SQLite 载荷路径 |
 | `knowledge` / `rules` / `workspace` | 目录 |
@@ -37,7 +37,7 @@ HTTP/MCP 线协议仍为 JSON；仅进程配置与 decide 词表用 TOML。
 
 ## 启动（WSL Ubuntu）
 
-依赖：`build-essential`、`cmake`、`git`。可选 GPU：按 [CUDA on WSL](https://docs.nvidia.com/cuda/wsl-user-guide/index.html) 安装 toolkit（CMake 检测到则开 `GGML_CUDA`）。
+依赖：`build-essential`、`cmake`、`git`。可选 GPU：按 [CUDA on WSL](https://docs.nvidia.com/cuda/wsl-user-guide/index.html) 安装 toolkit（CMake 检测到则开 `GGML_CUDA`）。网关源码在 `tools/apex/`（SQLite 在 `tools/sqlite/`）；上游同步见 [`docs/upstream.md`](../docs/upstream.md)。
 
 ```bash
 cp .config/config.example.toml .config/config.toml

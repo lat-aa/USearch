@@ -17,7 +17,8 @@ This covers 90% of use cases.
 
 ```cpp
 #include <usearch/index.hpp>
-#include <usearch/index_dense.hpp>
+#include <dense/dense.hpp>
+#include <plugins/plugins.hpp>
 
 using namespace unum::usearch;
 

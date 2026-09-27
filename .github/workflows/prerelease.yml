@@ -37,11 +37,11 @@ jobs:
             README.md:version = {(\d+\.\d+\.\d+)}
             CMakeLists.txt:VERSION (\d+\.\d+\.\d+)
           update-major-version-in: |
-            include/usearch/index.hpp:^#define USEARCH_VERSION_MAJOR (\d+)
+            include/usearch/setup.hpp:^#define USEARCH_VERSION_MAJOR (\d+)
           update-minor-version-in: |
-            include/usearch/index.hpp:^#define USEARCH_VERSION_MINOR (\d+)
+            include/usearch/setup.hpp:^#define USEARCH_VERSION_MINOR (\d+)
           update-patch-version-in: |
-            include/usearch/index.hpp:^#define USEARCH_VERSION_PATCH (\d+)
+            include/usearch/setup.hpp:^#define USEARCH_VERSION_PATCH (\d+)
           dry-run: "true"
 
   test_ubuntu_gcc:
@@ -205,9 +205,12 @@ jobs:
             --suppress=nullPointerRedundantCheck --suppress=pointerSize \
             --suppress=unmatchedSuppression \
             -I include -I stringzilla/include \
+            include/usearch/setup.hpp \
             include/usearch/index.hpp \
-            include/usearch/index_dense.hpp \
-            include/usearch/index_plugins.hpp \
+            include/usearch/hnsw.hpp \
+            include/dense/dense.hpp \
+            include/plugins/plugins.hpp \
+            include/plugins/kinds.hpp \
             cpp/fuzz_index.cpp
       - name: Configure compile_commands
         run: |

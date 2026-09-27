@@ -22,7 +22,7 @@ curl -sS --max-time 10 "${MCP[@]}" \
 
 # A1 rules → decide → cost
 rules=$(curl -fsS --max-time 60 "${MCP[@]}" \
-  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"rules","arguments":{"task":"deploy apex smoke","files":["cpp/mcp.cpp"],"manual":[]}}}' \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"rules","arguments":{"task":"deploy apex smoke","files":["tools/apex/mcp.cpp"],"manual":[]}}}' \
   "$SMOKE_BASE/mcp")
 echo "$rules" | python3 -c "
 import sys,json

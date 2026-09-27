@@ -1,390 +1,16 @@
 /**
- *  @file       index_dense.hpp
- *  @author     Ash Vardanian
- *  @brief      Single-header Vector Search engine for equi-dimensional dense vectors.
- *  @date       July 26, 2023
+ *  @file       index.hpp
+ *  @brief      index_dense_gt：可持向量的稠密 HNSW 封装；OOM 路径须经 unlink_slot_。
  */
 #pragma once
-#include "index.hpp"
-#include <stdlib.h> // `aligned_alloc`
-
-#include <usearch/index.hpp>
-#include <usearch/index_plugins.hpp>
+#include <dense/meta.hpp>
+#include <vector>
 
 #if defined(USEARCH_DEFINED_CPP17)
-#include <shared_mutex> // `std::shared_mutex`
+#include <shared_mutex>
 #endif
-
 namespace unum {
 namespace usearch {
-
-template <typename, typename> class index_dense_gt;
-
-/**
- *  @brief  The "magic" sequence helps infer the type of the file.
- *          USearch indexes start with the "usearch" string.
- */
-constexpr char const* default_magic() { return "usearch"; }
-
-using index_dense_head_buffer_t = byte_t[64];
-
-static_assert(sizeof(index_dense_head_buffer_t) == 64, "File header should be exactly 64 bytes");
-
-/**
- *  @brief  Serialized binary representations of the USearch index start with metadata.
- *          Metadata is parsed into a `index_dense_head_t`, containing the USearch package version,
- *          and the properties of the index.
- *
- *  It uses: 13 bytes for file versioning, 22 bytes for structural information = 35 bytes.
- *  The following 24 bytes contain binary size of the graph, of the vectors, and the checksum,
- *  leaving 5 bytes at the end vacant.
- */
-struct index_dense_head_t {
-
-    // Versioning:
-    using magic_t = char[7];
-    using version_t = std::uint16_t;
-
-    // Versioning: 7 + 2 * 3 = 13 bytes
-    char const* magic;
-    misaligned_ref_gt<version_t> version_major;
-    misaligned_ref_gt<version_t> version_minor;
-    misaligned_ref_gt<version_t> version_patch;
-
-    // Structural: 4 * 3 = 12 bytes
-    misaligned_ref_gt<metric_kind_t> kind_metric;
-    misaligned_ref_gt<scalar_kind_t> kind_scalar;
-    misaligned_ref_gt<scalar_kind_t> kind_key;
-    misaligned_ref_gt<scalar_kind_t> kind_compressed_slot;
-
-    // Population: 8 * 3 = 24 bytes
-    misaligned_ref_gt<std::uint64_t> count_present;
-    misaligned_ref_gt<std::uint64_t> count_deleted;
-    misaligned_ref_gt<std::uint64_t> dimensions;
-    misaligned_ref_gt<bool> multi;
-
-    index_dense_head_t(byte_t* ptr) noexcept
-        : magic((char const*)exchange(ptr, ptr + sizeof(magic_t))),         //
-          version_major(exchange(ptr, ptr + sizeof(version_t))),            //
-          version_minor(exchange(ptr, ptr + sizeof(version_t))),            //
-          version_patch(exchange(ptr, ptr + sizeof(version_t))),            //
-          kind_metric(exchange(ptr, ptr + sizeof(metric_kind_t))),          //
-          kind_scalar(exchange(ptr, ptr + sizeof(scalar_kind_t))),          //
-          kind_key(exchange(ptr, ptr + sizeof(scalar_kind_t))),             //
-          kind_compressed_slot(exchange(ptr, ptr + sizeof(scalar_kind_t))), //
-          count_present(exchange(ptr, ptr + sizeof(std::uint64_t))),        //
-          count_deleted(exchange(ptr, ptr + sizeof(std::uint64_t))),        //
-          dimensions(exchange(ptr, ptr + sizeof(std::uint64_t))),           //
-          multi(exchange(ptr, ptr + sizeof(bool))) {}
-};
-
-struct index_dense_head_result_t {
-
-    index_dense_head_buffer_t buffer;
-    index_dense_head_t head;
-    error_t error;
-
-    explicit operator bool() const noexcept { return !error; }
-    index_dense_head_result_t failed(error_t message) noexcept {
-        error = std::move(message);
-        return std::move(*this);
-    }
-};
-
-/**
- *  @brief  Configuration settings for the construction of dense
- *          equidimensional vector indexes.
- *
- *  Unlike the underlying `index_gt` class, incorporates the
- *  `::expansion_add` and `::expansion_search` parameters passed
- *  separately for the lower-level engine.
- */
-struct index_dense_config_t : public index_config_t {
-    std::size_t expansion_add = default_expansion_add();
-    std::size_t expansion_search = default_expansion_search();
-
-    /**
-     *  @brief  Excludes vectors from the serialized file.
-     *          This is handy when you want to store the vectors in a separate file.
-     *
-     *  ! For advanced users only.
-     */
-    bool exclude_vectors = false;
-
-    /**
-     *  @brief  Allows you to store multiple vectors per key.
-     *          This is handy when a large document is chunked into many parts.
-     *
-     *  ! May degrade the performance of iterators.
-     */
-    bool multi = false;
-
-    /**
-     *  @brief  Allows you to reduce RAM consumption by avoiding
-     *          reverse-indexing keys-to-vectors, and only keeping
-     *          the vectors-to-keys mappings.
-     *
-     *  ! This configuration parameter doesn't affect the serialized file,
-     *  ! and is not preserved between runs. Makes sense for smaller vectors
-     *  ! that fit in a couple of cache lines.
-     *
-     *  The trade-off is that some methods won't be available, like `get`, `rename`,
-     *  and `remove`. The basic functionality, like `add` and `search` will work as
-     *  expected even with `enable_key_lookups = false`.
-     *
-     *  If both `!multi && !enable_key_lookups`, the "duplicate entry" checks won't
-     *  be performed and no errors will be raised.
-     */
-    bool enable_key_lookups = true;
-
-    inline index_dense_config_t(index_config_t base) noexcept : index_config_t(base) {}
-
-    inline index_dense_config_t(std::size_t c = 0, std::size_t ea = 0, std::size_t es = 0) noexcept
-        : index_config_t(c), expansion_add(ea), expansion_search(es) {}
-
-    /**
-     *  @brief  Validates the configuration settings, updating them in-place.
-     *  @return Error message, if any.
-     */
-    inline error_t validate() noexcept {
-        error_t error = index_config_t::validate();
-        if (error)
-            return error;
-        if (expansion_add == 0)
-            expansion_add = default_expansion_add();
-        if (expansion_search == 0)
-            expansion_search = default_expansion_search();
-        return {};
-    }
-};
-
-struct index_dense_clustering_config_t {
-    std::size_t min_clusters = 0;
-    std::size_t max_clusters = 0;
-    enum mode_t {
-        merge_smallest_k,
-        merge_closest_k,
-    } mode = merge_smallest_k;
-};
-
-struct index_dense_serialization_config_t {
-    bool exclude_vectors = false;
-    bool use_64_bit_dimensions = false;
-};
-
-struct index_dense_copy_config_t : public index_copy_config_t {
-    bool force_vector_copy = true;
-
-    index_dense_copy_config_t() = default;
-    index_dense_copy_config_t(index_copy_config_t base) noexcept : index_copy_config_t(base) {}
-};
-
-struct index_dense_metadata_result_t {
-    index_dense_serialization_config_t config;
-    index_dense_head_buffer_t head_buffer;
-    index_dense_head_t head;
-    error_t error;
-
-    explicit operator bool() const noexcept { return !error; }
-    index_dense_metadata_result_t failed(error_t message) noexcept {
-        error = std::move(message);
-        return std::move(*this);
-    }
-
-    index_dense_metadata_result_t() noexcept : config(), head_buffer(), head(head_buffer), error() {}
-
-    index_dense_metadata_result_t(index_dense_metadata_result_t&& other) noexcept
-        : config(), head_buffer(), head(head_buffer), error(std::move(other.error)) {
-        std::memcpy(&config, &other.config, sizeof(other.config));
-        std::memcpy(&head_buffer, &other.head_buffer, sizeof(other.head_buffer));
-    }
-
-    index_dense_metadata_result_t& operator=(index_dense_metadata_result_t&& other) noexcept {
-        std::memcpy(&config, &other.config, sizeof(other.config));
-        std::memcpy(&head_buffer, &other.head_buffer, sizeof(other.head_buffer));
-        error = std::move(other.error);
-        return *this;
-    }
-};
-
-/**
- *  @brief  Fixes serialized scalar-kind codes for pre-v2.10 versions, until we can upgrade to v3.
- *          The old enum `scalar_kind_t` is defined without explicit constants from 0.
- */
-inline scalar_kind_t convert_pre_2_10_scalar_kind(scalar_kind_t scalar_kind) noexcept {
-    switch (static_cast<std::underlying_type<scalar_kind_t>::type>(scalar_kind)) {
-    case 0: return scalar_kind_t::unknown_k;
-    case 1: return scalar_kind_t::b1x8_k;
-    case 2: return scalar_kind_t::u40_k;
-    case 3: return scalar_kind_t::uuid_k;
-    case 4: return scalar_kind_t::f64_k;
-    case 5: return scalar_kind_t::f32_k;
-    case 6: return scalar_kind_t::f16_k;
-    case 7: return scalar_kind_t::e5m2_k;
-    case 8: return scalar_kind_t::u64_k;
-    case 9: return scalar_kind_t::u32_k;
-    case 10: return scalar_kind_t::u8_k;
-    case 11: return scalar_kind_t::i64_k;
-    case 12: return scalar_kind_t::i32_k;
-    case 13: return scalar_kind_t::i16_k;
-    case 14: return scalar_kind_t::i8_k;
-    default: return scalar_kind;
-    }
-}
-
-/**
- *  @brief  Fixes the metadata for pre-v2.10 versions, until we can upgrade to v3.
- *          Originates from: https://github.com/unum-cloud/USearch/issues/423
- */
-inline void fix_pre_2_10_metadata(index_dense_head_t& head) {
-    if (head.version_major == 2 && head.version_minor < 10) {
-        head.kind_scalar = convert_pre_2_10_scalar_kind(head.kind_scalar);
-        head.kind_key = convert_pre_2_10_scalar_kind(head.kind_key);
-        head.kind_compressed_slot = convert_pre_2_10_scalar_kind(head.kind_compressed_slot);
-        head.version_minor = 10;
-        head.version_patch = 0;
-    }
-}
-
-/**
- *  @brief  Extracts metadata from a pre-constructed index on disk,
- *          without loading it or mapping the whole binary file.
- */
-inline index_dense_metadata_result_t index_dense_metadata_from_path(char const* file_path) noexcept {
-    index_dense_metadata_result_t result;
-    std::unique_ptr<std::FILE, int (*)(std::FILE*)> file(std::fopen(file_path, "rb"), &std::fclose);
-    if (!file)
-        return result.failed(std::strerror(errno));
-
-    // Read the header
-    std::size_t read = std::fread(result.head_buffer, sizeof(index_dense_head_buffer_t), 1, file.get());
-    if (!read)
-        return result.failed(std::feof(file.get()) ? "End of file reached!" : std::strerror(errno));
-
-    // Check if the file immediately starts with the index, instead of vectors
-    result.config.exclude_vectors = true;
-    if (std::memcmp(result.head_buffer, default_magic(), std::strlen(default_magic())) == 0) {
-        fix_pre_2_10_metadata(result.head);
-        return result;
-    }
-
-    if (std::fseek(file.get(), 0L, SEEK_END) != 0)
-        return result.failed("Can't infer file size");
-
-    // Check if it starts with 32-bit
-    std::size_t const file_size = std::ftell(file.get());
-
-    std::uint32_t dimensions_u32[2]{0};
-    std::memcpy(dimensions_u32, result.head_buffer, sizeof(dimensions_u32));
-    checked_size_result_t offset_if_u32 =
-        checked_mul_add(std::size_t(dimensions_u32[0]), std::size_t(dimensions_u32[1]), sizeof(dimensions_u32));
-
-    std::uint64_t dimensions_u64[2]{0};
-    std::memcpy(dimensions_u64, result.head_buffer, sizeof(dimensions_u64));
-    checked_size_result_t rows_if_u64 = checked_size_from_u64(dimensions_u64[0]);
-    checked_size_result_t columns_if_u64 = checked_size_from_u64(dimensions_u64[1]);
-    checked_size_result_t offset_if_u64 =
-        rows_if_u64 && columns_if_u64 ? checked_mul_add(rows_if_u64.value, columns_if_u64.value, sizeof(dimensions_u64))
-                                      : checked_size_overflow();
-
-    // Check if it starts with 32-bit
-    checked_size_result_t head_offset_if_u32 =
-        offset_if_u32 ? checked_add(offset_if_u32.value, sizeof(index_dense_head_buffer_t)) : offset_if_u32;
-    if (head_offset_if_u32 && head_offset_if_u32.value < file_size) {
-        if (std::fseek(file.get(), static_cast<long>(offset_if_u32.value), SEEK_SET) != 0)
-            return result.failed(std::strerror(errno));
-        read = std::fread(result.head_buffer, sizeof(index_dense_head_buffer_t), 1, file.get());
-        if (!read)
-            return result.failed(std::feof(file.get()) ? "End of file reached!" : std::strerror(errno));
-
-        result.config.exclude_vectors = false;
-        result.config.use_64_bit_dimensions = false;
-        if (std::memcmp(result.head_buffer, default_magic(), std::strlen(default_magic())) == 0) {
-            fix_pre_2_10_metadata(result.head);
-            return result;
-        }
-    }
-
-    // Check if it starts with 64-bit
-    checked_size_result_t head_offset_if_u64 =
-        offset_if_u64 ? checked_add(offset_if_u64.value, sizeof(index_dense_head_buffer_t)) : offset_if_u64;
-    if (head_offset_if_u64 && head_offset_if_u64.value < file_size) {
-        if (std::fseek(file.get(), static_cast<long>(offset_if_u64.value), SEEK_SET) != 0)
-            return result.failed(std::strerror(errno));
-        read = std::fread(result.head_buffer, sizeof(index_dense_head_buffer_t), 1, file.get());
-        if (!read)
-            return result.failed(std::feof(file.get()) ? "End of file reached!" : std::strerror(errno));
-
-        // Check if it starts with 64-bit
-        result.config.exclude_vectors = false;
-        result.config.use_64_bit_dimensions = true;
-        if (std::memcmp(result.head_buffer, default_magic(), std::strlen(default_magic())) == 0) {
-            fix_pre_2_10_metadata(result.head);
-            return result;
-        }
-    }
-
-    return result.failed("Not a dense USearch index!");
-}
-
-/**
- *  @brief  Extracts metadata from a pre-constructed index serialized into an in-memory buffer.
- */
-inline index_dense_metadata_result_t index_dense_metadata_from_buffer(memory_mapped_file_t const& file,
-                                                                      std::size_t offset = 0) noexcept {
-    index_dense_metadata_result_t result;
-
-    // Read the header
-    if (offset + sizeof(index_dense_head_buffer_t) >= file.size())
-        return result.failed("End of file reached!");
-
-    byte_t const* file_data = file.data() + offset;
-    std::size_t const file_size = file.size() - offset;
-    std::memcpy(&result.head_buffer, file_data, sizeof(index_dense_head_buffer_t));
-
-    // Check if the file immediately starts with the index, instead of vectors
-    result.config.exclude_vectors = true;
-    if (std::memcmp(result.head_buffer, default_magic(), std::strlen(default_magic())) == 0)
-        return result;
-
-    // Check if it starts with 32-bit
-    std::uint32_t dimensions_u32[2]{0};
-    std::memcpy(dimensions_u32, result.head_buffer, sizeof(dimensions_u32));
-    checked_size_result_t offset_if_u32 =
-        checked_mul_add(std::size_t(dimensions_u32[0]), std::size_t(dimensions_u32[1]), sizeof(dimensions_u32));
-
-    std::uint64_t dimensions_u64[2]{0};
-    std::memcpy(dimensions_u64, result.head_buffer, sizeof(dimensions_u64));
-    checked_size_result_t rows_if_u64 = checked_size_from_u64(dimensions_u64[0]);
-    checked_size_result_t columns_if_u64 = checked_size_from_u64(dimensions_u64[1]);
-    checked_size_result_t offset_if_u64 =
-        rows_if_u64 && columns_if_u64 ? checked_mul_add(rows_if_u64.value, columns_if_u64.value, sizeof(dimensions_u64))
-                                      : checked_size_overflow();
-
-    // Check if it starts with 32-bit
-    checked_size_result_t head_offset_if_u32 =
-        offset_if_u32 ? checked_add(offset_if_u32.value, sizeof(index_dense_head_buffer_t)) : offset_if_u32;
-    if (head_offset_if_u32 && head_offset_if_u32.value < file_size) {
-        std::memcpy(&result.head_buffer, file_data + offset_if_u32.value, sizeof(index_dense_head_buffer_t));
-        result.config.exclude_vectors = false;
-        result.config.use_64_bit_dimensions = false;
-        if (std::memcmp(result.head_buffer, default_magic(), std::strlen(default_magic())) == 0)
-            return result;
-    }
-
-    // Check if it starts with 64-bit
-    checked_size_result_t head_offset_if_u64 =
-        offset_if_u64 ? checked_add(offset_if_u64.value, sizeof(index_dense_head_buffer_t)) : offset_if_u64;
-    if (head_offset_if_u64 && head_offset_if_u64.value < file_size) {
-        std::memcpy(&result.head_buffer, file_data + offset_if_u64.value, sizeof(index_dense_head_buffer_t));
-        result.config.exclude_vectors = false;
-        result.config.use_64_bit_dimensions = true;
-        if (std::memcmp(result.head_buffer, default_magic(), std::strlen(default_magic())) == 0)
-            return result;
-    }
-
-    return result.failed("Not a dense USearch index!");
-}
 
 /**
  *  @brief  Oversimplified type-punned index for equidimensional vectors
@@ -892,6 +518,87 @@ class index_dense_gt {
     search_result_t search(i8_t const* vector, std::size_t wanted, std::size_t thread = any_thread(), bool exact = false) const { return search_(vector, wanted, dummy_predicate_t {}, thread, exact, casts_.from.i8); }
     search_result_t search(u8_t const* vector, std::size_t wanted, std::size_t thread = any_thread(), bool exact = false) const { return search_(vector, wanted, dummy_predicate_t {}, thread, exact, casts_.from.u8); }
     search_result_t search(b1x8_t const* vector, std::size_t wanted, std::size_t thread = any_thread(), bool exact = false) const { return search_(vector, wanted, dummy_predicate_t {}, thread, exact, casts_.from.b1x8); }
+
+    /**
+     *  批量查询结果：keys/distances 按 query 行主序存放，每行 `wanted` 槽；
+     *  `counts[q]` 为该查询实际命中数（≤ wanted）。失败时 `error` 非空。
+     */
+    struct search_batch_result_t {
+        error_t error{};
+        std::size_t queries = 0;
+        std::size_t wanted = 0;
+        std::vector<std::size_t> counts;
+        std::vector<vector_key_t> keys;
+        std::vector<distance_t> distances;
+        std::size_t computed_distances = 0;
+        std::size_t visited_members = 0;
+
+        explicit operator bool() const noexcept { return !error; }
+        search_batch_result_t failed(error_t message) noexcept {
+            error = std::move(message);
+            return std::move(*this);
+        }
+    };
+
+    /**
+     *  多查询并行检索：executor 按 query 分发；`thread_idx` 绑定线程局部 cast/context，避免互踩。
+     *  单条路径走 `search`，邻居预取与 `search_` 同级（`usearch_prefetch_m`）。
+     *  @param queries 连续内存，布局 `[q0_dim0..dimD, q1_..., ...]`，标量与度量一致（常用 f32）。
+     *  @param queries_count 查询条数
+     *  @param wanted 每查询 top-k
+     */
+    template <typename scalar_at, typename executor_at = executor_default_t>
+    search_batch_result_t search_batch(                 //
+        scalar_at const* queries, std::size_t queries_count, std::size_t wanted, //
+        executor_at&& executor = executor_at{}, bool exact = false) const {
+
+        search_batch_result_t result;
+        result.queries = queries_count;
+        result.wanted = wanted;
+        if (!queries_count || !wanted)
+            return result;
+        if (!typed_)
+            return result.failed("Index is not initialized!");
+
+        std::size_t const dim = dimensions();
+        result.counts.assign(queries_count, 0);
+        result.keys.assign(queries_count * wanted, free_key_);
+        result.distances.assign(queries_count * wanted, infinite_distance());
+
+        std::atomic<std::size_t> computed{0};
+        std::atomic<std::size_t> visited{0};
+        std::atomic<char const*> atomic_error{nullptr};
+
+        executor.dynamic(queries_count, [&](std::size_t thread_idx, std::size_t query_idx) {
+            if (atomic_error.load())
+                return false;
+            // 预取下一条查询向量，掩盖本条 search 尾部的内存延迟。
+            if (query_idx + 1 < queries_count)
+                usearch_prefetch_m(queries + (query_idx + 1) * dim);
+            scalar_at const* q = queries + query_idx * dim;
+            search_result_t one = search(q, wanted, thread_idx, exact);
+            if (!one) {
+                atomic_error = one.error.release();
+                return false;
+            }
+            std::size_t n = one.size();
+            result.counts[query_idx] = n;
+            std::size_t base = query_idx * wanted;
+            for (std::size_t j = 0; j != n; ++j) {
+                result.keys[base + j] = one[j].member.key;
+                result.distances[base + j] = one[j].distance;
+            }
+            computed.fetch_add(one.computed_distances, std::memory_order_relaxed);
+            visited.fetch_add(one.visited_members, std::memory_order_relaxed);
+            return true;
+        });
+
+        if (char const* err = atomic_error.load())
+            return result.failed(err);
+        result.computed_distances = computed.load();
+        result.visited_members = visited.load();
+        return result;
+    }
 
     template <typename predicate_at> search_result_t filtered_search(f64_t const* vector, std::size_t wanted, predicate_at&& predicate, std::size_t thread = any_thread(), bool exact = false) const { return search_(vector, wanted, std::forward<predicate_at>(predicate), thread, exact, casts_.from.f64); }
     template <typename predicate_at> search_result_t filtered_search(f32_t const* vector, std::size_t wanted, predicate_at&& predicate, std::size_t thread = any_thread(), bool exact = false) const { return search_(vector, wanted, std::forward<predicate_at>(predicate), thread, exact, casts_.from.f32); }
@@ -1926,6 +1633,106 @@ class index_dense_gt {
         return result;
     }
 
+    /**
+     *  删除后空间回收：收集未标记删除的向量，重建索引并原子替换。
+     *  与 `compact()`（图槽重排）不同；与 `isolate()`（只剪边不释内存）不同。
+     *  建议：删除率 > 20% 时调用；会短暂占用约 2× 峰值内存。
+     */
+    struct reclaim_result_t {
+        error_t error{};
+        std::size_t before_size = 0;
+        std::size_t after_size = 0;
+        std::size_t reclaimed_nodes = 0;
+
+        explicit operator bool() const noexcept { return !error; }
+        reclaim_result_t failed(error_t message) noexcept {
+            error = std::move(message);
+            return std::move(*this);
+        }
+    };
+
+    reclaim_result_t reclaim() {
+        reclaim_result_t result;
+        result.before_size = size();
+        if (!typed_)
+            return result.failed("Index is not initialized!");
+        if (typed_->is_immutable())
+            return result.failed("Can't reclaim an immutable index");
+
+        std::size_t const slots = typed_->size();
+        std::size_t const live = size();
+        result.reclaimed_nodes = slots > live ? slots - live : 0;
+        if (result.reclaimed_nodes == 0) {
+            result.after_size = live;
+            return result;
+        }
+
+        std::size_t const threads = currently_available_threads();
+        auto made = make(metric_, config_, free_key_, index_limits_t{live, threads});
+        if (!made)
+            return result.failed(std::move(made.error));
+        index_dense_gt rebuilt = std::move(made.index);
+
+        // 先收集 live 槽，再并行重插（向量已是度量存储格式，免二次量化）。
+        std::vector<std::size_t> live_slots;
+        live_slots.reserve(live);
+        for (std::size_t slot = 0; slot != slots; ++slot) {
+            if (typed_->at(slot).key != free_key_)
+                live_slots.push_back(slot);
+        }
+
+        std::atomic<char const*> atomic_error{nullptr};
+        scalar_kind_t const kind = metric_.scalar_kind();
+        executor_default_t exec(threads ? threads : 1);
+        exec.fixed(live_slots.size(), [&](std::size_t thread_idx, std::size_t task_idx) {
+            if (atomic_error.load(std::memory_order_relaxed))
+                return;
+            std::size_t slot = live_slots[task_idx];
+            member_cref_t member = typed_->at(slot);
+            byte_t const* vec = vectors_lookup_[slot];
+            add_result_t added;
+            switch (kind) {
+            case scalar_kind_t::f64_k:
+                added = rebuilt.add(member.key, reinterpret_cast<f64_t const*>(vec), thread_idx);
+                break;
+            case scalar_kind_t::f32_k:
+                added = rebuilt.add(member.key, reinterpret_cast<f32_t const*>(vec), thread_idx);
+                break;
+            case scalar_kind_t::bf16_k:
+                added = rebuilt.add(member.key, reinterpret_cast<bf16_t const*>(vec), thread_idx);
+                break;
+            case scalar_kind_t::f16_k:
+                added = rebuilt.add(member.key, reinterpret_cast<f16_t const*>(vec), thread_idx);
+                break;
+            case scalar_kind_t::i8_k:
+                added = rebuilt.add(member.key, reinterpret_cast<i8_t const*>(vec), thread_idx);
+                break;
+            case scalar_kind_t::b1x8_k:
+                added = rebuilt.add(member.key, reinterpret_cast<b1x8_t const*>(vec), thread_idx);
+                break;
+            default:
+                atomic_error.store("reclaim: unsupported scalar kind", std::memory_order_relaxed);
+                return;
+            }
+            if (!added) {
+                // 只保留首错；释放本线程 error 串避免泄漏。
+                if (!atomic_error.load(std::memory_order_relaxed))
+                    atomic_error.store(added.error.release(), std::memory_order_relaxed);
+                else
+                    added.error.release();
+            }
+        });
+
+        if (char const* err = atomic_error.load())
+            return result.failed(err);
+
+        result.after_size = rebuilt.size();
+        if (result.after_size != live)
+            return result.failed("reclaim: live count mismatch after rebuild");
+        swap(rebuilt);
+        return result;
+    }
+
     template <                                                 //
         typename man_to_woman_at = dummy_key_to_key_mapping_t, //
         typename woman_to_man_at = dummy_key_to_key_mapping_t, //
@@ -2406,49 +2213,6 @@ class index_dense_gt {
         }
     }
 };
-
-using index_dense_t = index_dense_gt<>;
-using index_dense_big_t = index_dense_gt<uuid_t, uint40_t>;
-
-/**
- *  @brief  Adapts the Male-Optimal Stable Marriage algorithm for unequal sets
- *          to perform fast one-to-one matching between two large collections
- *          of vectors, using approximate nearest neighbors search.
- *
- *  @param[inout] man_to_woman Container to map ::first keys to ::second.
- *  @param[inout] woman_to_man Container to map ::second keys to ::first.
- *  @param[in] executor Thread-pool to execute the job in parallel.
- *  @param[in] progress Callback to report the execution progress.
- */
-template < //
-
-    typename men_key_at,    //
-    typename women_key_at,  //
-    typename men_slot_at,   //
-    typename women_slot_at, //
-
-    typename man_to_woman_at = dummy_key_to_key_mapping_t, //
-    typename woman_to_man_at = dummy_key_to_key_mapping_t, //
-    typename executor_at = dummy_executor_t,               //
-    typename progress_at = dummy_progress_t                //
-    >
-static join_result_t join(                                    //
-    index_dense_gt<men_key_at, men_slot_at> const& men,       //
-    index_dense_gt<women_key_at, women_slot_at> const& women, //
-
-    index_join_config_t config = {},                    //
-    man_to_woman_at&& man_to_woman = man_to_woman_at{}, //
-    woman_to_man_at&& woman_to_man = woman_to_man_at{}, //
-    executor_at&& executor = executor_at{},             //
-    progress_at&& progress = progress_at{}) {
-
-    return men.join(                                 //
-        women, config,                               //
-        std::forward<woman_to_man_at>(woman_to_man), //
-        std::forward<man_to_woman_at>(man_to_woman), //
-        std::forward<executor_at>(executor),         //
-        std::forward<progress_at>(progress));
-}
 
 } // namespace usearch
 } // namespace unum
