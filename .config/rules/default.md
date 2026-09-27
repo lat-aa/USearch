@@ -1,6 +1,7 @@
 ---
 name: default
 description: 构建、测试、提交与经验落盘的默认工作流
+always: true
 ---
 
 # 默认规则

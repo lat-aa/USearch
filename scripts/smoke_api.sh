@@ -21,16 +21,10 @@ if [[ ! -x "$API_BIN" && ! -f "$API_BIN" ]]; then
   exit 1
 fi
 # Always start from example so CI is deterministic.
-cp "$ROOT/.config/config.example.json" "$ROOT/.config/config.json"
+cp "$ROOT/.config/config.example.toml" "$ROOT/.config/config.toml"
 # Bind loopback for smoke even if example listens on 0.0.0.0.
-python3 - <<PY
-import json
-from pathlib import Path
-p = Path("${ROOT}/.config/config.json")
-cfg = json.loads(p.read_text())
-cfg["listen"] = "${HOST}:${PORT}"
-p.write_text(json.dumps(cfg, indent=2) + "\n")
-PY
+sed -i.bak -E "s|^listen = .*|listen = \"${HOST}:${PORT}\"|" "$ROOT/.config/config.toml"
+rm -f "$ROOT/.config/config.toml.bak"
 
 pkill -f "$API_BIN" 2>/dev/null || true
 sleep 1

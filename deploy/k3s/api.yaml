@@ -4,7 +4,7 @@ metadata:
   name: usearch
 ---
 # Prebuilt Alpine musl api via hostPath (.local/api + .local/lib). No apk at runtime.
-# listen must be 0.0.0.0:8088 in .config/config.json.
+# listen must be 0.0.0.0:8088 in .config/config.toml.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

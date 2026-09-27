@@ -9,34 +9,39 @@ namespace api {
 
 json toolDefs() {
     auto tool = [](char const* name, char const* description) {
+        json props = {
+            {"query", {{"type", "string"}}},
+            {"name", {{"type", "string"}}},
+            {"text", {{"type", "string"}}},
+            {"id", {{"type", "string"}}},
+            {"ids", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+            {"k", {{"type", "integer"}}},
+            {"command", {{"type", "string"}}},
+            {"message", {{"type", "string"}}},
+            {"title", {{"type", "string"}}},
+            {"summary", {{"type", "string"}}},
+            {"tags", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+            {"commands", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+            {"files", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+            {"outcome", {{"type", "string"}}},
+            {"task", {{"type", "string"}}},
+            {"latency", {{"type", "integer"}}},
+            {"hints", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+            {"manual", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+        };
         return json {{"name", name},
                      {"description", description},
-                     {"inputSchema",
-                      {{"type", "object"},
-                       {"properties",
-                        {{"query", {{"type", "string"}}},
-                         {"name", {{"type", "string"}}},
-                         {"text", {{"type", "string"}}},
-                         {"id", {{"type", "string"}}},
-                         {"ids", {{"type", "array"}, {"items", {{"type", "string"}}}}},
-                         {"k", {{"type", "integer"}}},
-                         {"command", {{"type", "string"}}},
-                         {"message", {{"type", "string"}}},
-                         {"title", {{"type", "string"}}},
-                         {"summary", {{"type", "string"}}},
-                         {"tags", {{"type", "array"}, {"items", {{"type", "string"}}}}},
-                         {"commands", {{"type", "array"}, {"items", {{"type", "string"}}}}},
-                         {"files", {{"type", "array"}, {"items", {{"type", "string"}}}}},
-                         {"outcome", {{"type", "string"}}}}}}}};
+                     {"inputSchema", {{"type", "object"}, {"properties", props}}}};
     };
     return json::array({
-        tool("rules", "按 query 匹配本地规则并返回正文"),
-        tool("catalog", "列出规则名与简述"),
+        tool("rules", "按 task/files/manual 解析规则（always/glob/semantic/manual）"),
+        tool("catalog", "列出规则名、简述与激活元数据"),
         tool("rule", "按名取单条规则"),
         tool("search", "按文本做向量检索"),
         tool("upsert", "写入或覆盖一条文档"),
         tool("delete", "按 id 删除文档"),
         tool("recall", "嵌入后检索（search 的一站式别名）"),
+        tool("decide", "路由：模型档/深度/检索/压缩/温度；回答前调用（确定性 Features→Decision）"),
         tool("shell", "在 workspace 执行 shell"),
         tool("test", "运行项目测试"),
         tool("status", "git status"),
@@ -51,24 +56,35 @@ json callTool(Runtime& rt, std::string const& name, json const& args) {
     };
     try {
         if (name == "rules") {
-            auto matched = resolveRules(rt.rules, args.value("query", ""));
+            Rulequery rq = rulequeryFromJson(args);
+            if (rq.task.empty())
+                rq.task = args.value("query", "");
+            auto matched = resolveRules(rt, rq);
             json arr = json::array();
             for (auto const& r : matched)
-                arr.push_back({{"name", r.name}, {"description", r.description}, {"body", r.body}});
+                arr.push_back(r.toJson());
             return textResult(arr.dump(2));
         }
         if (name == "catalog") {
             json arr = json::array();
             for (auto const& r : rt.rules)
-                arr.push_back({{"name", r.name}, {"description", r.description}});
+                arr.push_back({{"name", r.name},
+                               {"description", r.description},
+                               {"always", r.always},
+                               {"globs", r.globs},
+                               {"enabled", r.enabled}});
             return textResult(arr.dump(2));
         }
         if (name == "rule") {
             std::string want = args.value("name", "");
             for (auto const& r : rt.rules)
                 if (r.name == want)
-                    return textResult(
-                        json {{"name", r.name}, {"description", r.description}, {"body", r.body}}.dump(2));
+                    return textResult(json {{"name", r.name},
+                                            {"description", r.description},
+                                            {"always", r.always},
+                                            {"globs", r.globs},
+                                            {"body", r.body}}
+                                          .dump(2));
             return textResult("rule not found", true);
         }
         if (name == "search" || name == "recall") {
@@ -103,6 +119,16 @@ json callTool(Runtime& rt, std::string const& name, json const& args) {
                 rt.store.remove(args["id"].get<std::string>());
             }
             return textResult("ok");
+        }
+        if (name == "decide") {
+            Decideinput in = decideinputFromJson(args);
+            if (in.task.empty())
+                in.task = args.value("query", "");
+            if (in.task.empty())
+                return textResult("task required", true);
+            Features f = rt.decider.features(in);
+            Decision d = rt.decider.decideFrom(f);
+            return textResult(Deciderecord {f, d}.toJson().dump(2));
         }
         if (name == "shell")
             return textResult(rt.shell(args.value("command", "")));

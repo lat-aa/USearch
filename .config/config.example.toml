@@ -1,0 +1,43 @@
+# USearch api — 权威配置（TOML）。
+# 缺键启动失败；无产品默认值。命名：单单词键，禁止 _ / -。
+# 复制为 config.toml 后按需修改：cp .config/config.example.toml .config/config.toml
+
+gguf = ".config/models/Nanbeige4.1-3B-Instruct.Q4_K_M.gguf"
+ctx = 4096
+gpu = -1          # -1 = 全层卸载到 GPU（若可用）
+threads = 0       # 0 = 硬件并发
+pooling = "lasttoken"
+listen = "0.0.0.0:8088"
+index = ".config/index.usearch"
+base = ".config/store.sqlite"
+knowledge = ".config/knowledge"
+rules = ".config/rules"
+workspace = "."
+token = ""        # 空 = 开放；非空则 Bearer
+shadow = 4096     # SQ8 门槛；0 = 总是
+rate = 0          # 令牌桶；0 = 关闭
+refill = 1.0
+
+[chat]
+temperature = 0.2
+max = 2048
+
+# 级联决策：参数全显式；词表见 decide.lexicon
+[decide]
+speed = 800       # latency < speed → 时延敏感
+high = 70         # complexity >= high → Strong / Deep / L3
+low = 40          # complexity < low → Weak / Shallow / L0
+margin = 10       # 置信度边界带宽
+templow = 0.0
+tempmid = 0.2
+temphigh = 0.35
+tempcap = 0.4
+wmedium = 40      # 中档词命中加分
+wcomplex = 30     # 高复杂度词命中加分
+maxtask = 200     # 任务长度贡献封顶
+maxfile = 5       # 文件数贡献封顶
+keeplow = 0.4     # 低档上下文保留比
+keepmid = 0.7
+keephigh = 1.0
+topk = [2, 4, 8, 16]  # L0..L3 检索 k
+lexicon = ".config/decide/config.toml"

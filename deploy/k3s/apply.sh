@@ -5,12 +5,12 @@ ROOT=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 cd "$ROOT"
 export KUBECONFIG="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
 
-if [ ! -f .config/config.json ]; then
-  cp .config/config.example.json .config/config.json
+if [ ! -f .config/config.toml ]; then
+  cp .config/config.example.toml .config/config.toml
 fi
 
-if grep -q '"listen"[[:space:]]*:[[:space:]]*"127.0.0.1:' .config/config.json; then
-  echo "error: set listen to 0.0.0.0:8088 in .config/config.json for NodePort"
+if grep -Eq '^listen[[:space:]]*=[[:space:]]*"127\.0\.0\.1:' .config/config.toml; then
+  echo "error: set listen to 0.0.0.0:8088 in .config/config.toml for NodePort"
   exit 1
 fi
 

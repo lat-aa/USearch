@@ -1,12 +1,16 @@
 # `.config` — 唯一配置根
 
-权威配置是本目录下的 `config.json`（由 `config.example.json` 复制）。C++ 不硬编码路径或端口；缺键即启动失败。命名遵守 `rules/names.md`（单单词，禁止 `_` / `-`）。
+权威配置是 **TOML**：`config.toml`（由 `config.example.toml` 复制）。解析用 [toml++](https://github.com/marzer/tomlplusplus)。C++ 不硬编码路径或端口；缺键即启动失败。命名遵守 `rules/names.md`（单单词，禁止 `_` / `-`）。
+
+HTTP/MCP 线协议仍为 JSON；仅进程配置与 decide 词表用 TOML。
 
 ## 布局
 
 ```text
 .config/
-  config.json / config.example.json
+  config.toml / config.example.toml
+  decide/
+    config.toml    # complex / medium 词表数组
   models/          # 仅 GGUF 等大文件
   knowledge/       # 经验 Markdown
   rules/           # 规则 *.md（含 names.md）
@@ -29,13 +33,14 @@
 | `shadow` | SQ8 门槛；0=总是 |
 | `rate` / `refill` | 令牌桶；rate=0 关闭 |
 | `chat.temperature` / `chat.max` | 采样 |
+| `decide.*` | 级联路由阈值；`lexicon` → `.config/decide/config.toml`（含 `complex` / `medium`） |
 
 ## 启动（WSL Ubuntu）
 
 依赖：`build-essential`、`cmake`、`git`。可选 GPU：按 [CUDA on WSL](https://docs.nvidia.com/cuda/wsl-user-guide/index.html) 安装 toolkit（CMake 检测到则开 `GGML_CUDA`）。
 
 ```bash
-cp .config/config.example.json .config/config.json
+cp .config/config.example.toml .config/config.toml
 # 将 Nanbeige Q4_K_M 放到 .config/models/（见 config.gguf）
 cmake -B build -DUSEARCH_BUILD_API=ON -DUSEARCH_BUILD_TEST_CPP=OFF -DUSEARCH_BUILD_BENCH_CPP=OFF
 cmake --build build --config Release --target api -j"$(nproc)"
@@ -46,7 +51,15 @@ cmake --build build --config Release --target api -j"$(nproc)"
 
 - LLM（Codex / Claude Base URL）：`http://127.0.0.1:8088/v1`
 - MCP：`http://127.0.0.1:8088/mcp`
+- 路由决策：`POST /v1/route` 与 MCP 工具 `decide`（级联：model/depth/retrieval/compression/temperature）
+- 决策配置：`[decide]`（参数全显式，缺键启动失败）+ `.config/decide/config.toml`
 
+```bash
+curl -s http://127.0.0.1:8088/v1/route -H 'content-type: application/json' \
+  -d '{"task":"refactor auth for concurrency","files":["a.cpp"],"hints":["quality"]}'
+```
+
+`chat` / `chat/completions` 会先跑 decide：未显式传 `temperature` 时用决策温度；检索 `k` 与规则裁剪随 `retrieval` / `compression` 变化（分别来自 `decide.topk` / `keep*`）。规则激活：frontmatter `always` / `globs` + task 语义 + `manual`（对齐 apex）。
 嵌入维度随 GGUF 的 `n_embd` 变化。若提示 `index dim mismatch`，删除 `index` / 重建向量库后再 upsert。
 
 ## k3s（WSL）

@@ -48,6 +48,7 @@ if (USEARCH_BUILD_API)
     include(httplib)
     include(sqlite)
     include(llama)
+    include(toml)
     enable_language(C)
     add_executable(api
         api.cpp
@@ -57,11 +58,12 @@ if (USEARCH_BUILD_API)
         text.cpp
         http.cpp
         mcp.cpp
+        decide.cpp
     )
     setup_target(api)
     target_compile_features(api PRIVATE cxx_std_17)
     target_include_directories(api PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(api PRIVATE httplib::httplib nlohmann_json::nlohmann_json sqlite3 llama)
+    target_link_libraries(api PRIVATE httplib::httplib nlohmann_json::nlohmann_json tomlplusplus::tomlplusplus sqlite3 llama)
     if (WIN32)
         target_link_libraries(api PRIVATE ws2_32)
         target_compile_definitions(api PRIVATE _WIN32_WINNT=0x0A00)

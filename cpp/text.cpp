@@ -1,6 +1,6 @@
 /**
  *  @file       text.cpp
- *  @brief      规则加载/匹配、token 估计、抽取式压缩、经验 Markdown 落盘。
+ *  @brief      规则加载/激活（Always/Glob/Semantic/Manual）、token 估计、抽取式压缩、经验落盘。
  */
 
 #include "api.hpp"
@@ -8,40 +8,409 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <ctime>
 #include <fstream>
+#include <functional>
 #include <sstream>
+#include <unordered_map>
 
 namespace api {
 
-std::pair<std::string, std::string> parseFront(std::string const& text) {
+namespace {
+
+std::string trimAscii(std::string s) {
+    auto begin = s.find_first_not_of(" \t\r\n");
+    if (begin == std::string::npos)
+        return {};
+    auto end = s.find_last_not_of(" \t\r\n");
+    return s.substr(begin, end - begin + 1);
+}
+
+std::string unquote(std::string s) {
+    s = trimAscii(std::move(s));
+    if (s.size() >= 2 && ((s.front() == '"' && s.back() == '"') || (s.front() == '\'' && s.back() == '\'')))
+        return s.substr(1, s.size() - 2);
+    return s;
+}
+
+bool parseBool(std::string_view s, bool& out) {
+    std::string v(s);
+    for (char& c : v)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (v == "true" || v == "yes" || v == "1") {
+        out = true;
+        return true;
+    }
+    if (v == "false" || v == "no" || v == "0") {
+        out = false;
+        return true;
+    }
+    return false;
+}
+
+std::string asciiLower(std::string_view text) {
+    std::string out(text);
+    for (char& c : out)
+        if (static_cast<unsigned char>(c) <= 127)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return out;
+}
+
+std::string normalizePath(std::string_view raw) {
+    std::string out;
+    out.reserve(raw.size());
+    for (char c : raw)
+        out.push_back(c == '\\' ? '/' : c);
+    while (out.size() >= 2 && out[0] == '.' && out[1] == '/')
+        out.erase(0, 2);
+    while (!out.empty() && out.back() == '/')
+        out.pop_back();
+    // collapse //
+    std::string compact;
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        if (out[i] == '/' && !compact.empty() && compact.back() == '/')
+            continue;
+        compact.push_back(out[i]);
+    }
+    return compact;
+}
+
+std::string normalizeGlob(std::string_view raw) {
+    std::string g = normalizePath(raw);
+    if (g.find('/') == std::string::npos)
+        g = "**/" + g;
+    // collapse consecutive **
+    for (;;) {
+        auto pos = g.find("**/**");
+        if (pos == std::string::npos)
+            break;
+        g.replace(pos, 5, "**");
+    }
+    return g;
+}
+
+std::vector<std::string> splitSeg(std::string const& s) {
+    std::vector<std::string> out;
+    std::string cur;
+    for (char c : s) {
+        if (c == '/') {
+            if (!cur.empty())
+                out.push_back(std::move(cur));
+            cur.clear();
+        } else {
+            cur.push_back(c);
+        }
+    }
+    if (!cur.empty())
+        out.push_back(std::move(cur));
+    return out;
+}
+
+/** 段内 `*` / `?`；`**` 跨零或多段。 */
+bool segmentGlob(std::string_view pat, std::string_view seg) {
+    std::size_t i = 0, j = 0;
+    std::size_t star = std::string::npos, match = 0;
+    while (j < seg.size()) {
+        if (i < pat.size() && (pat[i] == '?' || pat[i] == seg[j])) {
+            ++i;
+            ++j;
+        } else if (i < pat.size() && pat[i] == '*') {
+            star = i++;
+            match = j;
+        } else if (star != std::string::npos) {
+            i = star + 1;
+            j = ++match;
+        } else {
+            return false;
+        }
+    }
+    while (i < pat.size() && pat[i] == '*')
+        ++i;
+    return i == pat.size();
+}
+
+bool matchGlobSegs(std::vector<std::string> const& pat, std::size_t pi, std::vector<std::string> const& path,
+                   std::size_t qi) {
+    if (pi == pat.size())
+        return qi == path.size();
+    if (pat[pi] == "**") {
+        if (matchGlobSegs(pat, pi + 1, path, qi))
+            return true;
+        if (qi < path.size() && matchGlobSegs(pat, pi, path, qi + 1))
+            return true;
+        return false;
+    }
+    if (qi == path.size())
+        return false;
+    if (!segmentGlob(pat[pi], path[qi]))
+        return false;
+    return matchGlobSegs(pat, pi + 1, path, qi + 1);
+}
+
+float cosine(std::vector<float> const& a, std::vector<float> const& b) {
+    if (a.empty() || a.size() != b.size())
+        return 0.0f;
+    double dot = 0, na = 0, nb = 0;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        dot += static_cast<double>(a[i]) * b[i];
+        na += static_cast<double>(a[i]) * a[i];
+        nb += static_cast<double>(b[i]) * b[i];
+    }
+    if (na <= 0 || nb <= 0)
+        return 0.0f;
+    return static_cast<float>(dot / (std::sqrt(na) * std::sqrt(nb)));
+}
+
+float lexicalScore(std::string const& taskLower, Rule const& rule) {
+    if (taskLower.empty())
+        return 0.0f;
+    float score = 0.0f;
+    std::istringstream ss(taskLower);
+    std::string token;
+    auto hit = [](std::string const& hay, std::string_view needle) {
+        return asciiLower(hay).find(needle) != std::string::npos;
+    };
+    while (ss >> token) {
+        if (token.size() < 2)
+            continue;
+        if (hit(rule.description, token))
+            score += 3.0f;
+        if (hit(rule.name, token))
+            score += 2.0f;
+        if (hit(rule.body, token))
+            score += 0.5f;
+    }
+    return score;
+}
+
+std::vector<Resolvedrule> resolveCore(std::vector<Rule> const& rules, Rulequery const& q,
+                                      std::function<float(Rule const&)> semanticScore, std::size_t topK) {
+    struct Sel {
+        std::size_t idx;
+        Activation act;
+        float score;
+        std::vector<std::string> triggers;
+    };
+    std::unordered_map<std::size_t, Sel> selected;
+
+    for (std::size_t i = 0; i < rules.size(); ++i) {
+        if (!rules[i].enabled)
+            continue;
+        if (rules[i].always)
+            selected.emplace(i, Sel {i, Activation::Always, 0.0f, {}});
+    }
+
+    std::vector<std::string> files = q.files;
+    std::sort(files.begin(), files.end());
+    files.erase(std::unique(files.begin(), files.end()), files.end());
+    for (std::size_t i = 0; i < rules.size(); ++i) {
+        if (!rules[i].enabled || rules[i].always || rules[i].globs.empty())
+            continue;
+        if (selected.count(i))
+            continue;
+        std::vector<std::string> hits;
+        for (auto const& f : files)
+            for (auto const& g : rules[i].globs)
+                if (globMatch(g, f)) {
+                    hits.push_back(f);
+                    break;
+                }
+        if (!hits.empty())
+            selected.emplace(i, Sel {i, Activation::Glob, 0.0f, std::move(hits)});
+    }
+
+    struct Cand {
+        std::size_t idx;
+        float score;
+    };
+    std::vector<Cand> sem;
+    for (std::size_t i = 0; i < rules.size(); ++i) {
+        if (!rules[i].enabled || rules[i].always || !rules[i].globs.empty())
+            continue;
+        if (rules[i].description.empty())
+            continue;
+        if (selected.count(i))
+            continue;
+        float s = semanticScore(rules[i]);
+        if (s > 0.0f)
+            sem.push_back({i, s});
+    }
+    std::sort(sem.begin(), sem.end(), [](Cand const& a, Cand const& b) { return a.score > b.score; });
+    for (std::size_t n = 0; n < sem.size() && n < topK; ++n)
+        selected.emplace(sem[n].idx, Sel {sem[n].idx, Activation::Semantic, sem[n].score, {}});
+
+    for (auto const& m : q.manual) {
+        std::string want = asciiLower(m);
+        for (std::size_t i = 0; i < rules.size(); ++i) {
+            if (!rules[i].enabled)
+                continue;
+            if (asciiLower(rules[i].name) != want)
+                continue;
+            selected.emplace(i, Sel {i, Activation::Manual, 0.0f, {}});
+        }
+    }
+
+    std::vector<Sel> order;
+    order.reserve(selected.size());
+    for (auto& kv : selected)
+        order.push_back(std::move(kv.second));
+    std::sort(order.begin(), order.end(), [](Sel const& a, Sel const& b) {
+        auto rank = [](Activation act) -> int {
+            switch (act) {
+            case Activation::Always:
+                return 0;
+            case Activation::Glob:
+                return 1;
+            case Activation::Semantic:
+                return 2;
+            case Activation::Manual:
+                return 3;
+            }
+            return 9;
+        };
+        int ra = rank(a.act), rb = rank(b.act);
+        if (ra != rb)
+            return ra < rb;
+        if (a.act == Activation::Semantic && a.score != b.score)
+            return a.score > b.score;
+        return a.idx < b.idx;
+    });
+
+    std::vector<Resolvedrule> out;
+    out.reserve(order.size());
+    for (auto const& s : order) {
+        Resolvedrule r;
+        r.rule = rules[s.idx];
+        r.activation = s.act;
+        r.score = s.score;
+        r.triggers = s.triggers;
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
+} // namespace
+
+char const* activationName(Activation a) noexcept {
+    switch (a) {
+    case Activation::Always:
+        return "always";
+    case Activation::Glob:
+        return "glob";
+    case Activation::Semantic:
+        return "semantic";
+    case Activation::Manual:
+        return "manual";
+    }
+    return "semantic";
+}
+
+json Resolvedrule::toJson() const {
+    json files = json::array();
+    for (auto const& f : triggers)
+        files.push_back(f);
+    return {{"name", rule.name},
+            {"description", rule.description},
+            {"body", rule.body},
+            {"activation", activationName(activation)},
+            {"score", score},
+            {"always", rule.always},
+            {"globs", rule.globs},
+            {"triggers", files}};
+}
+
+bool globMatch(std::string_view pattern, std::string_view path) {
+    auto pat = splitSeg(normalizeGlob(pattern));
+    auto segs = splitSeg(normalizePath(path));
+    return matchGlobSegs(pat, 0, segs, 0);
+}
+
+int ruleSections(Activation act, float score, float scoreSum, int baseSections) noexcept {
+    if (baseSections <= 0)
+        return 1;
+    if (act == Activation::Always)
+        return baseSections;
+    if (act == Activation::Semantic) {
+        float sum = (std::max)(scoreSum, 1e-6f);
+        int share = static_cast<int>(std::lround((score / sum) * (baseSections * 2.0f)));
+        return (std::max)(1, (std::min)(baseSections, share));
+    }
+    return (std::max)(1, baseSections / 2);
+}
+
+std::pair<Frontmatter, std::string> parseFront(std::string const& text) {
+    Frontmatter meta;
     if (text.size() < 3 || text.substr(0, 3) != "---")
-        return {{}, text};
+        return {meta, text};
     auto end = text.find("\n---", 3);
     if (end == std::string::npos)
-        return {{}, text};
+        return {meta, text};
     std::string yaml = text.substr(3, end - 3);
     std::string body = text.substr(end + 4);
     while (!body.empty() && (body[0] == '\n' || body[0] == '\r'))
         body.erase(body.begin());
-    std::string description;
+
     std::istringstream ss(yaml);
     std::string line;
+    std::string listKey;
     while (std::getline(ss, line)) {
-        auto pos = line.find("description:");
-        if (pos != std::string::npos) {
-            description = line.substr(pos + 12);
-            while (!description.empty() && description.front() == ' ')
-                description.erase(description.begin());
-            if (!description.empty() && description.front() == '"') {
-                description.erase(description.begin());
-                if (!description.empty() && description.back() == '"')
-                    description.pop_back();
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        std::string trimmed = trimAscii(line);
+        if (trimmed.empty() || trimmed[0] == '#')
+            continue;
+        if (!listKey.empty()) {
+            if (!trimmed.empty() && trimmed[0] == '-') {
+                std::string item = trimAscii(trimmed.substr(1));
+                item = unquote(item);
+                if (listKey == "globs" && !item.empty())
+                    meta.globs.push_back(std::move(item));
+                continue;
+            }
+            listKey.clear();
+        }
+        auto colon = trimmed.find(':');
+        if (colon == std::string::npos)
+            continue;
+        std::string key = trimAscii(trimmed.substr(0, colon));
+        std::string val = trimAscii(trimmed.substr(colon + 1));
+        for (char& c : key)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (key == "name") {
+            meta.name = unquote(val);
+        } else if (key == "description") {
+            meta.description = unquote(val);
+        } else if (key == "always" || key == "alwaysapply") {
+            bool b = false;
+            if (parseBool(val, b))
+                meta.always = b;
+        } else if (key == "enabled") {
+            bool b = true;
+            if (parseBool(val, b))
+                meta.enabled = b;
+        } else if (key == "globs" || key == "glob") {
+            if (val.empty()) {
+                listKey = "globs";
+            } else if (val.front() == '[') {
+                // [a, b] 简表
+                std::string inner = val.substr(1);
+                if (!inner.empty() && inner.back() == ']')
+                    inner.pop_back();
+                std::istringstream ls(inner);
+                std::string part;
+                while (std::getline(ls, part, ',')) {
+                    part = unquote(trimAscii(part));
+                    if (!part.empty())
+                        meta.globs.push_back(std::move(part));
+                }
+            } else {
+                meta.globs.push_back(unquote(val));
             }
         }
     }
-    return {description, body};
+    return {meta, body};
 }
 
 std::vector<Rule> loadRules(fs::path const& dir) {
@@ -54,59 +423,64 @@ std::vector<Rule> loadRules(fs::path const& dir) {
         std::ifstream in(entry.path());
         std::ostringstream ss;
         ss << in.rdbuf();
-        auto [description, body] = parseFront(ss.str());
+        auto [meta, body] = parseFront(ss.str());
         Rule rule;
-        rule.name = entry.path().stem().string();
-        rule.description = std::move(description);
+        rule.name = meta.name.empty() ? entry.path().stem().string() : meta.name;
+        rule.description = std::move(meta.description);
         rule.body = std::move(body);
         rule.path = entry.path().string();
+        rule.always = meta.always;
+        rule.enabled = meta.enabled;
+        rule.globs = std::move(meta.globs);
         out.push_back(std::move(rule));
     }
     std::sort(out.begin(), out.end(), [](Rule const& a, Rule const& b) { return a.name < b.name; });
     return out;
 }
 
-std::vector<Rule> resolveRules(std::vector<Rule> const& rules, std::string const& query) {
-    std::string q = query;
-    for (char& c : q)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    struct Scored {
-        std::size_t score;
-        Rule const* rule;
-    };
-    std::vector<Scored> scored;
-    for (auto const& rule : rules) {
-        std::size_t score = 0;
-        auto contains = [&](std::string const& hay, std::string_view needle) {
-            std::string h = hay;
-            for (char& c : h)
-                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            return h.find(needle) != std::string::npos;
-        };
-        std::istringstream ss(q);
-        std::string token;
-        while (ss >> token) {
-            if (contains(rule.name, token))
-                score += 3;
-            if (contains(rule.description, token))
-                score += 2;
-            if (contains(rule.body, token))
-                score += 1;
-        }
-        if (score)
-            scored.push_back({score, &rule});
+Rulequery rulequeryFromJson(json const& body) {
+    Rulequery q;
+    if (body.contains("task") && body["task"].is_string())
+        q.task = body["task"].get<std::string>();
+    else if (body.contains("query") && body["query"].is_string())
+        q.task = body["query"].get<std::string>();
+    if (body.contains("files") && body["files"].is_array())
+        for (auto const& f : body["files"])
+            if (f.is_string())
+                q.files.push_back(f.get<std::string>());
+    if (body.contains("manual") && body["manual"].is_array())
+        for (auto const& m : body["manual"])
+            if (m.is_string())
+                q.manual.push_back(m.get<std::string>());
+    return q;
+}
+
+std::vector<Resolvedrule> resolveRules(std::vector<Rule> const& rules, Rulequery const& q) {
+    std::string taskLower = asciiLower(q.task);
+    return resolveCore(
+        rules, q, [&](Rule const& r) { return lexicalScore(taskLower, r); }, 3);
+}
+
+std::vector<Resolvedrule> resolveRules(Runtime& rt, Rulequery const& q) {
+    std::string taskLower = asciiLower(q.task);
+    std::vector<float> qVec;
+    bool dense = false;
+    if (!q.task.empty()) {
+        qVec = rt.encoder.embed(q.task);
+        dense = !qVec.empty();
     }
-    if (scored.empty()) {
-        std::vector<Rule> fallback;
-        for (std::size_t i = 0; i < rules.size() && i < 3; ++i)
-            fallback.push_back(rules[i]);
-        return fallback;
-    }
-    std::sort(scored.begin(), scored.end(), [](Scored const& a, Scored const& b) { return a.score > b.score; });
-    std::vector<Rule> out;
-    for (std::size_t i = 0; i < scored.size() && i < 5; ++i)
-        out.push_back(*scored[i].rule);
-    return out;
+    return resolveCore(
+        rt.rules, q,
+        [&](Rule const& r) -> float {
+            if (dense) {
+                auto dVec = rt.encoder.embed(r.description);
+                float c = cosine(qVec, dVec);
+                // 与词法混合：稠密为主，词法托底
+                return (std::max)(c, lexicalScore(taskLower, r) * 0.05f);
+            }
+            return lexicalScore(taskLower, r);
+        },
+        3);
 }
 
 Experience experienceFromJson(json const& j) {

@@ -10,7 +10,7 @@ bin
 core
 core.*
 .config/smoke*.sh
-.config/config.json
+.config/config.toml
 .config/store.sqlite
 .config/store.sqlite-*
 .config/models/config.json

@@ -5,11 +5,13 @@
 
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -51,7 +53,42 @@ struct Chat {
     std::uint32_t max = 0;
 };
 
-/** 进程级只读快照。全部字段由 `.config/config.json` 提供，无产品默认值。 */
+/**
+ * `/v1` 采样温度政策（编码场景偏低）。
+ * 注入 @ref Decider，热路径只读本结构。不变量经 sanitized：low ≤ mid ≤ high ≤ cap ∈ [0,2]。
+ */
+struct Temppolicy {
+    float low = 0.0f;
+    float mid = 0.0f;
+    float high = 0.0f;
+    float cap = 0.0f;
+    Temppolicy sanitized() const;
+    float resolve(std::uint8_t complexity, std::uint8_t lowC, std::uint8_t highC, bool latencySensitive,
+                  bool qualityPreferred) const;
+};
+
+/**
+ * 决策引擎配置（全部来自 `config.decide` + 词表文件；缺键启动失败）。
+ * 词表路径相对仓库根；运行时载入 @ref Decider::complex / medium。
+ */
+struct Decideconfig {
+    std::uint64_t speed = 0;
+    std::uint8_t high = 0;
+    std::uint8_t low = 0;
+    std::uint8_t margin = 0;
+    Temppolicy temperature {};
+    std::uint8_t wmedium = 0;
+    std::uint8_t wcomplex = 0;
+    std::size_t maxtask = 0;
+    std::size_t maxfile = 0;
+    float keeplow = 0;
+    float keepmid = 0;
+    float keephigh = 0;
+    std::array<std::size_t, 4> topk {};
+    std::string lexicon; ///< 词表路径（默认 `.config/decide/config.toml`，含 complex / medium）
+};
+
+/** 进程级只读快照。全部字段由 `.config/config.toml` 提供，无产品默认值。 */
 struct Config {
     std::string gguf;
     std::uint32_t ctx = 0;
@@ -66,6 +103,7 @@ struct Config {
     std::string workspace;
     std::string token;
     Chat chat {};
+    Decideconfig decide {};
     std::size_t shadow = 0;
     std::uint32_t rate = 0;
     double refill = 0.0;
@@ -186,7 +224,51 @@ struct Rule {
     std::string description;
     std::string body;
     std::string path;
+    bool always = false;   ///< 无条件激活
+    bool enabled = true;
+    std::vector<std::string> globs; ///< 路径 glob；非空则走 Glob，不进 Semantic
 };
+
+/** 规则激活原因（对齐 apex：Always → Glob → Semantic → Manual）。 */
+enum class Activation : std::uint8_t { Always, Glob, Semantic, Manual };
+
+char const* activationName(Activation a) noexcept;
+
+/** 一次规则解析输入。 */
+struct Rulequery {
+    std::string task;
+    std::vector<std::string> files;
+    std::vector<std::string> manual; ///< 显式 @name
+};
+
+/** 一条被选中的规则。 */
+struct Resolvedrule {
+    Rule rule;
+    Activation activation = Activation::Semantic;
+    float score = 0.0f; ///< Semantic 相似度；其余为 0
+    std::vector<std::string> triggers; ///< Glob 命中的文件
+    json toJson() const;
+};
+
+struct Frontmatter {
+    std::string name;
+    std::string description;
+    bool always = false;
+    bool enabled = true;
+    std::vector<std::string> globs;
+};
+
+struct Runtime;
+
+std::pair<Frontmatter, std::string> parseFront(std::string const& text);
+std::vector<Rule> loadRules(fs::path const& dir);
+/** 纯词法语义（无 Encoder）；供轻量路径。 */
+std::vector<Resolvedrule> resolveRules(std::vector<Rule> const& rules, Rulequery const& q);
+/** 语义分支优先用 Encoder 稠密向量，否则回退 hashEmbed / 词法。 */
+std::vector<Resolvedrule> resolveRules(Runtime& rt, Rulequery const& q);
+/** 从 JSON 填 Rulequery：task|query、files、manual。 */
+Rulequery rulequeryFromJson(json const& body);
+bool globMatch(std::string_view pattern, std::string_view path);
 
 struct Experience {
     std::string title;
@@ -197,15 +279,14 @@ struct Experience {
     std::string outcome = "ok";
 };
 
-std::pair<std::string, std::string> parseFront(std::string const& text);
-std::vector<Rule> loadRules(fs::path const& dir);
-std::vector<Rule> resolveRules(std::vector<Rule> const& rules, std::string const& query);
 Experience experienceFromJson(json const& j);
 expected_gt<std::string> saveMark(fs::path const& dir, Experience const& exp);
 std::size_t estimate(std::string_view text);
 std::size_t estimateMany(std::vector<std::string_view> const& texts);
 std::string compressBody(std::string_view body, std::string_view task, std::size_t maxBullets);
 std::string compressSections(std::string_view body, std::string_view task, std::size_t maxSections);
+/** 按激活档分配 section 配额：Always=满额，Semantic 按分占比，其余=半额起。 */
+int ruleSections(Activation act, float score, float scoreSum, int baseSections) noexcept;
 
 struct Runtime {
     fs::path root;
@@ -213,6 +294,7 @@ struct Runtime {
     Encoder encoder;
     Store store;
     std::vector<Rule> rules;
+    Decider decider;
     Runtime() = default;
     Runtime(Runtime const&) = delete;
     Runtime& operator=(Runtime const&) = delete;
@@ -247,6 +329,130 @@ struct Pipeline {
     Pipeline& stage(Stage s);
     bool run(Runtime& rt, json& ctx);
 };
+
+/** 模型能力档（建议档，≠ 会话真实模型名 / GGUF id）。 */
+enum class Model : std::uint8_t { Weak, Standard, Strong };
+/** 推理 / 思考深度（映射到 max_tokens 或上游 reasoning 强度由调用方解释）。 */
+enum class Depth : std::uint8_t { Shallow, Medium, Deep };
+/**
+ * 检索深度：L0 窄召回 → L3 宽语义。
+ * @see Decider::topkFor 映射到向量 search 的 k（来自 config.decide.topk）。
+ */
+enum class Retrieval : std::uint8_t { L0, L1, L2, L3 };
+
+/**
+ * 输入携带的硬约束 / 偏好。
+ * Force* 压过启发式；PreferSpeed 视同时延敏感；PreferQuality 豁免时延降档并微升温度。
+ */
+enum class Hint : std::uint8_t {
+    ForceWeak,
+    ForceStandard,
+    ForceStrong,
+    ForceShallow,
+    ForceMedium,
+    ForceDeep,
+    PreferSpeed,
+    PreferQuality,
+};
+
+char const* modelName(Model m) noexcept;
+char const* depthName(Depth d) noexcept;
+char const* retrievalName(Retrieval r) noexcept;
+Model modelDowngrade(Model m) noexcept;
+Depth depthDowngrade(Depth d) noexcept;
+Retrieval retrievalDowngrade(Retrieval r) noexcept;
+
+/** 一次路由决策结果；reasons 供人读与校准，不参与哈希。 */
+struct Decision {
+    Model model = Model::Standard;
+    Depth depth = Depth::Medium;
+    /** 上下文*保留*比例：1.0 全留；越低裁剪越狠（勿称作「压缩率」）。 */
+    float compression = 1.0f;
+    Retrieval retrieval = Retrieval::L2;
+    /** 0..1；强制 hint 为 1.0；靠近分档边界时更低。 */
+    float confidence = 0.5f;
+    /** 请求未显式传 temperature 时由 chat 采用。 */
+    float temperature = 0.2f;
+    std::vector<std::string> reasons;
+    json toJson() const;
+};
+
+/** 决策输入（HTTP/MCP JSON 经 decideinputFromJson 填入）。 */
+struct Decideinput {
+    std::string task;
+    std::vector<std::string> files;
+    /** 可选时延预算（毫秒）；小于 speedMs 则视为 latencySensitive。 */
+    std::optional<std::uint64_t> latency;
+    std::vector<Hint> hints;
+};
+
+/**
+ * 可回放特征集：决策是它的纯函数。
+ * @see Decider::features @see Decider::decideFrom
+ */
+struct Features {
+    std::size_t taskLen = 0;
+    std::size_t fileCount = 0;
+    bool complexKeyword = false;
+    bool mediumKeyword = false;
+    bool latencySensitive = false;
+    bool qualityPreferred = false;
+    std::optional<Model> forcedModel;
+    std::optional<Depth> forcedDepth;
+    /** 0..100 复杂度分。 */
+    std::uint8_t complexity = 0;
+};
+
+/** 一次可回放单元：特征 + 决策（展平 JSON 见 toJson）。 */
+struct Deciderecord {
+    Features features;
+    Decision decision;
+    json toJson() const;
+};
+
+/**
+ * 确定性级联决策器。全部阈值与词表来自 @ref Decideconfig（启动时载入）。
+ * 无 I/O、无全局可变状态；同 Features → 同 Decision。
+ */
+struct Decider {
+    std::uint64_t speedMs = 0;
+    std::uint8_t highComplexity = 0;
+    std::uint8_t lowComplexity = 0;
+    std::uint8_t margin = 0;
+    Temppolicy temperature {};
+    std::uint8_t wmedium = 0;
+    std::uint8_t wcomplex = 0;
+    std::size_t maxtask = 0;
+    std::size_t maxfile = 0;
+    float keeplow = 0;
+    float keepmid = 0;
+    float keephigh = 0;
+    std::array<std::size_t, 4> topk {};
+    std::vector<std::string> complex;
+    std::vector<std::string> medium;
+
+    /** 从配置 + 已载入词表构造；词表须非空。 */
+    static expected_gt<Decider> open(Decideconfig const& cfg, Lexicon lexicon);
+    Features features(Decideinput const& input) const;
+    Decision decide(Decideinput const& input) const;
+    Decision decideFrom(Features const& f) const;
+    /** Retrieval → config.decide.topk[L0..L3]。 */
+    std::size_t topkFor(Retrieval r) const noexcept;
+    /** compression 保留比 → 规则裁剪段数：≥keepmid→3，≥keeplow→2，否则 1。 */
+    int sectionsFor(float compression) const noexcept;
+};
+
+/** 词表：`complex` / `medium` 字符串数组，相对仓库根的单一 TOML。 */
+struct Lexicon {
+    std::vector<std::string> complex;
+    std::vector<std::string> medium;
+};
+expected_gt<Lexicon> loadLexicon(fs::path const& path);
+
+/** 解析 route/decide 请求体；键名：task|query、files、latency、hints。 */
+Decideinput decideinputFromJson(json const& body);
+/** 解析单个 hint 字符串；未知值勿调用（由 decideinputFromJson 白名单过滤）。 */
+Hint parseHint(std::string const& s);
 
 json toolDefs();
 json callTool(Runtime& rt, std::string const& name, json const& args);
