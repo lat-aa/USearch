@@ -51,17 +51,20 @@ cmake --build build --config Release --target api -j"$(nproc)"
 
 ## k3s（WSL）
 
-清单：`deploy/k3s/api.yaml`（hostPath 挂仓库 + `.local/api`，镜像 `alpine:3.20`）。`listen` 须为 `0.0.0.0:8088`。
+清单：`deploy/k3s/api.yaml`。hostPath 挂仓库 + `.local/api` + `.local/lib`（musl 依赖），镜像 `alpine:3.20`。`listen` 须为 `0.0.0.0:8088`。
 
-同一台机器上只能有一个 k3s 占用 `:6443`（mirrored 网络下 Alpine/Ubuntu 会抢端口）。优先用已正常的 Ubuntu k3s：
+同一台机器上只能有一个 k3s 占用 `:6443`（mirrored 网络下 Alpine/Ubuntu 会冲突）。用已正常的 **Ubuntu** k3s：
 
 ```bash
-# Alpine 上编好后拷到共享目录
+# Alpine 编译产物落到共享目录
+mkdir -p /mnt/e/data/USearch/.local/lib
 cp /root/usearch-build/api /mnt/e/data/USearch/.local/api
+cp /usr/lib/libstdc++.so.6 /usr/lib/libgomp.so.1 /usr/lib/libgcc_s.so.1 \
+   /usr/lib/libssl.so.3 /usr/lib/libcrypto.so.3 /mnt/e/data/USearch/.local/lib/
 # Ubuntu WSL
-tr -d '\r' < deploy/k3s/apply.sh | sh
+sed 's/\r$//' deploy/k3s/apply.sh | sh
 ```
 
 NodePort：`http://127.0.0.1:30088/v1` 、`/mcp`、`/alive`。
 
-可选全量镜像构建见仓库根 `Dockerfile`（需 docker + `USEARCH_K3S_IMAGE=1`）。
+可选全量镜像见仓库根 `Dockerfile`。

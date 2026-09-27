@@ -1,0 +1,88 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: usearch
+---
+# Prebuilt Alpine musl api via hostPath (.local/api + .local/lib). No apk at runtime.
+# listen must be 0.0.0.0:8088 in .config/config.json.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: usearch
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+        - name: api
+          image: alpine:3.20
+          imagePullPolicy: IfNotPresent
+          command: ["/opt/usearch/api", "serve"]
+          workingDir: /app
+          ports:
+            - name: http
+              containerPort: 8088
+          env:
+            - name: HOME
+              value: /app
+            - name: LD_LIBRARY_PATH
+              value: /opt/usearch/lib
+          volumeMounts:
+            - name: repo
+              mountPath: /app
+            - name: bin
+              mountPath: /opt/usearch
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /alive
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /alive
+              port: http
+            initialDelaySeconds: 300
+            periodSeconds: 30
+          resources:
+            requests:
+              memory: 4Gi
+              cpu: "2"
+            limits:
+              memory: 12Gi
+              cpu: "4"
+      volumes:
+        - name: repo
+          hostPath:
+            path: /mnt/e/data/USearch
+            type: Directory
+        - name: bin
+          hostPath:
+            path: /mnt/e/data/USearch/.local
+            type: Directory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: usearch
+spec:
+  type: NodePort
+  selector:
+    app: api
+  ports:
+    - name: http
+      port: 8088
+      targetPort: http
+      nodePort: 30088

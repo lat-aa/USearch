@@ -7,6 +7,9 @@ bin
 *.usearch
 .cache
 .local/
+core
+core.*
+.config/smoke*.sh
 .config/config.json
 .config/store.sqlite
 .config/store.sqlite-*

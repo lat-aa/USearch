@@ -1,16 +1,16 @@
-# Contribution Guide
+# 贡献指南
 
-Thank you for contributing.
+感谢你的贡献。
 
-## Conventions
+## 约定
 
-- Branch off `main-dev` and open the PR against `main-dev`. The `main` branch follows tagged releases.
-- Commit subjects start with verbs like `Fix:`, `Make:`, `Improve:`, `Add:`, `Docs:`, `Chore:`.
-- Reference closed issues with `Closes #N` in the body; credit collaborators with `Co-Authored-By:` trailers.
+- 从 `main-dev` 拉出分支，并向 `main-dev` 提交 PR。`main` 分支跟随带标签的正式发布。
+- 提交说明以动词开头，例如：`Fix:`、`Make:`、`Improve:`、`Add:`、`Docs:`、`Chore:`。
+- 在正文中用 `Closes #N` 关联已关闭的议题；用 `Co-Authored-By:` trailer 标注合作者。
 
-## Before you start
+## 开始之前
 
-Pull Git submodules (StringZilla is required for `test_cpp`; NumKong is required when `USEARCH_USE_NUMKONG=ON`):
+拉取 Git 子模块（`test_cpp` 需要 StringZilla；启用 `USEARCH_USE_NUMKONG=ON` 时需要 NumKong）：
 
 ```sh
 git submodule update --init --recursive
@@ -19,7 +19,7 @@ git submodule update --init --recursive
 ## C++ / CMake
 
 ```sh
-# Ubuntu example
+# Ubuntu 示例
 sudo apt-get update && sudo apt-get install cmake build-essential libjemalloc-dev libomp-dev
 
 cmake -B build_debug \
@@ -30,7 +30,7 @@ cmake --build build_debug --config Debug
 ctest --test-dir build_debug --output-on-failure -L unit
 ```
 
-Release / RelWithDebInfo:
+Release / RelWithDebInfo：
 
 ```sh
 cmake -B build_release \
@@ -43,49 +43,49 @@ cmake --build build_release --config RelWithDebInfo
 ctest --test-dir build_release --output-on-failure -L unit
 ```
 
-### Top-tier memory-safety matrix
+### 顶级内存安全矩阵
 
-| Mode | Configure extras | Run |
+| 模式 | 额外配置 | 运行 |
 |------|------------------|-----|
 | ASan+UBSan | `-DUSEARCH_ENABLE_ASAN=ON -DUSEARCH_ENABLE_UBSAN=ON -DUSEARCH_SANITIZE_DEBUG=OFF` | `ctest -L unit` |
 | TSan | `-DUSEARCH_ENABLE_TSAN=ON -DUSEARCH_SANITIZE_DEBUG=OFF` | `ctest -L unit` |
 | Coverage | `-DUSEARCH_ENABLE_COVERAGE=ON -DUSEARCH_SANITIZE_DEBUG=OFF` | `ctest` + `lcov` |
 | Fuzz | Clang + `-DUSEARCH_BUILD_FUZZ=ON` | `./fuzz_index -max_total_time=60` |
-| API smoke | `-DUSEARCH_BUILD_API=ON` (+ ASan optional) | `API_BIN=./build/api ./scripts/smoke_api.sh` |
+| API smoke | `-DUSEARCH_BUILD_API=ON`（可选加 ASan） | `API_BIN=./build/api ./scripts/smoke_api.sh` |
 
-Debug builds still enable ASan+UBSan by default (`USEARCH_SANITIZE_DEBUG=ON`) when no explicit sanitizer flag is set. ASan and TSan are mutually exclusive.
+在未显式设置 sanitizer 标志时，Debug 构建默认仍启用 ASan+UBSan（`USEARCH_SANITIZE_DEBUG=ON`）。ASan 与 TSan 互斥，不可同时开启。
 
-CI (`.github/workflows/prerelease.yml` + `quality.yml`) gates:
+CI（`.github/workflows/prerelease.yml` + `quality.yml`）门禁：
 
-| Gate | Workflow |
+| 门禁 | 工作流 |
 |------|----------|
-| ASan+UBSan+correctness, TSan, fuzz smoke | `quality.yml` (also required by **Release**) |
-| Multi-OS unit (x86/ARM/macOS/Windows), MSVC ASan | `prerelease.yml` |
-| Coverage **floor** (`MIN_LINE_PCT`, default 40% on `include/usearch`) | `prerelease.yml` |
+| ASan+UBSan+正确性、TSan、fuzz smoke | `quality.yml`（也为 **Release** 所要求） |
+| 多操作系统单元测试（x86/ARM/macOS/Windows）、MSVC ASan | `prerelease.yml` |
+| 覆盖率**下限**（`MIN_LINE_PCT`，`include/usearch` 默认 40%） | `prerelease.yml` |
 | cppcheck + `.clang-tidy.ci` | `prerelease.yml` |
-| API HTTP/MCP under ASan | `prerelease.yml` |
+| ASan 下的 API HTTP/MCP | `prerelease.yml` |
 | CodeQL security-and-quality | `codeql.yml` |
-| PR continuous fuzz + seed corpus | `cifuzz.yml` |
-| Nightly MSan / Valgrind / 30m fuzz | `nightly-memory.yml` |
+| PR 持续 fuzz + seed corpus | `cifuzz.yml` |
+| 夜间 MSan / Valgrind / 30 分钟 fuzz | `nightly-memory.yml` |
 
-Local correctness differential: `test_correctness` (exact vs HNSW, SQ8 candidates vs f32).
-OSS-Fuzz / ClusterFuzzLite scaffolds: `ossfuzz/`, `.clusterfuzzlite/`, `fuzz/corpus/`.
+本地正确性差分：`test_correctness`（精确检索 vs HNSW，SQ8 候选 vs f32）。
+OSS-Fuzz / ClusterFuzzLite 脚手架：`ossfuzz/`、`.clusterfuzzlite/`、`fuzz/corpus/`。
 
-### CMake options
+### CMake 选项
 
-- `USEARCH_BUILD_TEST_CPP` — C++ unit tests (`test_cpp`)
-- `USEARCH_BUILD_BENCH_CPP` — C++ benchmark (`bench_cpp`)
-- `USEARCH_BUILD_API` — HTTP/MCP `api` binary
+- `USEARCH_BUILD_TEST_CPP` — C++ 单元测试（`test_cpp`）
+- `USEARCH_BUILD_BENCH_CPP` — C++ 基准测试（`bench_cpp`）
+- `USEARCH_BUILD_API` — HTTP/MCP `api` 二进制
 - `USEARCH_BUILD_FUZZ` — libFuzzer `fuzz_index`
 - `USEARCH_ENABLE_ASAN` / `USEARCH_ENABLE_UBSAN` / `USEARCH_ENABLE_TSAN`
-- `USEARCH_ENABLE_COVERAGE` — gcov / llvm coverage
-- `USEARCH_SANITIZE_DEBUG` — legacy Debug ASan+UBSan when explicit sanitizers are off
+- `USEARCH_ENABLE_COVERAGE` — gcov / llvm 覆盖率
+- `USEARCH_SANITIZE_DEBUG` — 未显式开启 sanitizer 时，Debug 下的旧版 ASan+UBSan
 - `USEARCH_USE_OPENMP` — OpenMP
-- `USEARCH_USE_NUMKONG` — NumKong SIMD metrics (submodule)
-- `USEARCH_USE_JEMALLOC` — jemalloc helper (optional)
-- `USEARCH_INSTALL` — install headers and CMake/pkg-config files
+- `USEARCH_USE_NUMKONG` — NumKong SIMD 度量（子模块）
+- `USEARCH_USE_JEMALLOC` — jemalloc 辅助（可选）
+- `USEARCH_INSTALL` — 安装头文件与 CMake/pkg-config 文件
 
-### Linting
+### 静态检查
 
 ```sh
 cppcheck --enable=warning,performance,portability --error-exitcode=1 --inline-suppr \
@@ -99,13 +99,13 @@ cmake -B build_tidy -D CMAKE_EXPORT_COMPILE_COMMANDS=ON -D USEARCH_BUILD_TEST_CP
 clang-tidy -p build_tidy cpp/test.cpp --header-filter='include/usearch/.*'
 ```
 
-Useful GDB breakpoints when debugging sanitizer builds:
+调试 sanitizer 构建时可用的 GDB 断点：
 
 - `__asan::ReportGenericError`
 - `__ubsan::ScopedReport::~ScopedReport`
 - `usearch_raise_runtime_error`
 
-### Cross compilation (LLVM)
+### 交叉编译（LLVM）
 
 ```sh
 sudo apt-get install -y clang lld crossbuild-essential-arm64
@@ -123,13 +123,13 @@ cmake -B build_artifacts \
 cmake --build build_artifacts --config Release
 ```
 
-## Working on NumKong
+## 参与 NumKong 开发
 
-NumKong lives in the `numkong/` submodule. Prefer contributing metric / SIMD fixes upstream there, then bump the submodule pin in this repo.
+NumKong 位于 `numkong/` 子模块。度量 / SIMD 相关修复请优先向上游贡献，再在本仓库更新子模块指针。
 
-## Docs
+## 文档
 
-Sphinx + Doxygen for C++ headers:
+使用 Sphinx + Doxygen 为 C++ 头文件生成文档：
 
 ```sh
 pip install -r docs/requirements.txt
