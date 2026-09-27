@@ -43,10 +43,10 @@
 #define USEARCH_USE_PRAGMA_REGION
 #endif
 
-// Inferring hardware architecture: x86 vs Arm
-#if defined(__x86_64__)
+// Inferring hardware architecture: x86 vs Arm（MSVC 用 _M_X64，无 __x86_64__）
+#if defined(__x86_64__) || defined(_M_X64) || defined(_M_AMD64) || defined(__i386__) || defined(_M_IX86)
 #define USEARCH_DEFINED_X86
-#elif defined(__aarch64__)
+#elif defined(__aarch64__) || defined(_M_ARM64)
 #define USEARCH_DEFINED_ARM
 #endif
 
@@ -103,17 +103,18 @@
 #define usearch_stringify_helper_m(x) #x
 #define usearch_stringify_m(x) usearch_stringify_helper_m(x)
 
-// Prefetching
-#if defined(USEARCH_DEFINED_GCC)
+// Prefetching：空宏在 `if (...) prefetch;` 上会触发 MSVC C4390，故兜底为 (void)
+#if defined(USEARCH_DEFINED_CLANG) || defined(USEARCH_DEFINED_GCC)
 // https://gcc.gnu.org/onlinedocs/gcc/Other-Builtins.html
-// Zero means we are only going to read from that memory.
-// Three means high temporal locality and suggests to keep
-// the data in all layers of cache.
+// Zero = read-only；3 = 高时间局部性，尽量留在各级 cache
 #define usearch_prefetch_m(ptr) __builtin_prefetch((void*)(ptr), 0, 3)
 #elif defined(USEARCH_DEFINED_X86)
-#define usearch_prefetch_m(ptr) _mm_prefetch((void*)(ptr), _MM_HINT_T0)
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
+#define usearch_prefetch_m(ptr) _mm_prefetch((char const*)(void const*)(ptr), _MM_HINT_T0)
 #else
-#define usearch_prefetch_m(ptr)
+#define usearch_prefetch_m(ptr) ((void)(ptr))
 #endif
 
 // Function profiling

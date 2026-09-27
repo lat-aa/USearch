@@ -81,6 +81,32 @@ class index_dense_gt {
         inline distance_t f(byte_t const* a, byte_t const* b) const noexcept { return index_->metric_(a, b); }
     };
 
+    /**
+     *  HNSW 图节点不含向量；在 base 层遍历前把邻居向量拉进 cache。
+     *  上限 kMax 避免高连通度时刷爆 L1；第二 cache line 覆盖常见 ≥64B 向量。
+     */
+    struct vectors_prefetch_t {
+        index_dense_gt const* index_ = nullptr;
+        std::size_t bytes_ = 0;
+        static constexpr std::size_t kMax = 32;
+
+        template <typename member_citerator_like_at>
+        inline void operator()(member_citerator_like_at begin, member_citerator_like_at end) const noexcept {
+            std::size_t n = 0;
+            for (; begin != end && n < kMax; ++begin, ++n) {
+                compressed_slot_t slot = static_cast<compressed_slot_t>(get_slot(begin));
+                if (slot >= index_->vectors_lookup_.size())
+                    continue;
+                byte_t const* vec = index_->vectors_lookup_[slot];
+                if (!vec)
+                    continue;
+                usearch_prefetch_m(vec);
+                if (bytes_ > 64)
+                    usearch_prefetch_m(vec + 64);
+            }
+        }
+    };
+
     index_dense_config_t config_;
     index_t* typed_ = nullptr;
 
@@ -542,7 +568,7 @@ class index_dense_gt {
 
     /**
      *  多查询并行检索：executor 按 query 分发；`thread_idx` 绑定线程局部 cast/context，避免互踩。
-     *  单条路径走 `search`，邻居预取与 `search_` 同级（`usearch_prefetch_m`）。
+     *  单条路径走 `search`（经 `vectors_prefetch_t` 预取邻居向量）；另预取下一条查询行。
      *  @param queries 连续内存，布局 `[q0_dim0..dimD, q1_..., ...]`，标量与度量一致（常用 f32）。
      *  @param queries_count 查询条数
      *  @param wanted 每查询 top-k
@@ -1688,6 +1714,7 @@ class index_dense_gt {
             member_cref_t member = typed_->at(slot);
             byte_t const* vec = vectors_lookup_[slot];
             add_result_t added;
+            // 与 add() 公开标量入口对齐；缺省 kinds 才 fail，避免 SQ8/fp8 只能离线重建
             switch (kind) {
             case scalar_kind_t::f64_k:
                 added = rebuilt.add(member.key, reinterpret_cast<f64_t const*>(vec), thread_idx);
@@ -1701,8 +1728,23 @@ class index_dense_gt {
             case scalar_kind_t::f16_k:
                 added = rebuilt.add(member.key, reinterpret_cast<f16_t const*>(vec), thread_idx);
                 break;
+            case scalar_kind_t::e5m2_k:
+                added = rebuilt.add(member.key, reinterpret_cast<e5m2_t const*>(vec), thread_idx);
+                break;
+            case scalar_kind_t::e4m3_k:
+                added = rebuilt.add(member.key, reinterpret_cast<e4m3_t const*>(vec), thread_idx);
+                break;
+            case scalar_kind_t::e3m2_k:
+                added = rebuilt.add(member.key, reinterpret_cast<e3m2_t const*>(vec), thread_idx);
+                break;
+            case scalar_kind_t::e2m3_k:
+                added = rebuilt.add(member.key, reinterpret_cast<e2m3_t const*>(vec), thread_idx);
+                break;
             case scalar_kind_t::i8_k:
                 added = rebuilt.add(member.key, reinterpret_cast<i8_t const*>(vec), thread_idx);
+                break;
+            case scalar_kind_t::u8_k:
+                added = rebuilt.add(member.key, reinterpret_cast<u8_t const*>(vec), thread_idx);
                 break;
             case scalar_kind_t::b1x8_k:
                 added = rebuilt.add(member.key, reinterpret_cast<b1x8_t const*>(vec), thread_idx);
@@ -2023,9 +2065,12 @@ class index_dense_gt {
         update_config.expansion = config_.expansion_add;
 
         metric_proxy_t metric{*this};
+        // 插入/更新同样走图遍历；与 search_ 共用向量预取，避免 add 热路径仍是 dummy
+        vectors_prefetch_t prefetch{this, metric_.bytes_per_vector()};
         return reuse_node //
-                   ? typed_->update(typed_->iterator_at(free_slot), key, vector_data, metric, update_config, on_success)
-                   : typed_->add(key, vector_data, metric, update_config, on_success);
+                   ? typed_->update(typed_->iterator_at(free_slot), key, vector_data, metric, update_config, on_success,
+                                    prefetch)
+                   : typed_->add(key, vector_data, metric, update_config, on_success, prefetch);
     }
 
     template <typename scalar_at, typename predicate_at>
@@ -2050,17 +2095,21 @@ class index_dense_gt {
         search_config.exact = exact;
 
         vector_key_t free_key_copy = free_key_;
+        // 把向量预取交给 HNSW base 层（原先默认 dummy_prefetch，注释承诺未兑现）
+        vectors_prefetch_t prefetch {this, metric_.bytes_per_vector()};
         if (std::is_same<typename std::decay<predicate_at>::type, dummy_predicate_t>::value) {
             auto allow = [free_key_copy](member_cref_t const& member) noexcept {
                 return (vector_key_t)member.key != free_key_copy;
             };
-            auto typed_result = typed_->search(vector_data, wanted, metric_proxy_t{*this}, search_config, allow);
+            auto typed_result =
+                typed_->search(vector_data, wanted, metric_proxy_t{*this}, search_config, allow, prefetch);
             return search_result_t{std::move(typed_result), std::move(lock)};
         } else {
             auto allow = [free_key_copy, &predicate](member_cref_t const& member) noexcept {
                 return (vector_key_t)member.key != free_key_copy && predicate(member.key);
             };
-            auto typed_result = typed_->search(vector_data, wanted, metric_proxy_t{*this}, search_config, allow);
+            auto typed_result =
+                typed_->search(vector_data, wanted, metric_proxy_t{*this}, search_config, allow, prefetch);
             return search_result_t{std::move(typed_result), std::move(lock)};
         }
     }

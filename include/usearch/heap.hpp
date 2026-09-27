@@ -609,6 +609,19 @@ class growing_hash_set_gt {
         return false;
     }
 
+    /// 只读探测：供 HNSW 软件流水在测距前预取「下一个未访问」邻居，避免误用 set 污染 visits。
+    inline bool contains(element_t const& elem) const noexcept {
+        if (!slots_ || !capacity_)
+            return false;
+        std::size_t index = hasher_(elem) & (capacity_ - 1);
+        while (slots_[index] != default_free_value<element_t>()) {
+            if (slots_[index] == elem)
+                return true;
+            index = (index + 1) & (capacity_ - 1);
+        }
+        return false;
+    }
+
     /**
      *  @brief  Inserts an element into the hash-set.
      *  @return Similar to `bitset_gt`, returns the previous value.

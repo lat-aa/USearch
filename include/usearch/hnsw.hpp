@@ -2321,9 +2321,22 @@ class index_gt {
             if (!visits.reserve(visits.size() + candidate_neighbors.size()))
                 return false;
 
-            for (compressed_slot_t successor_slot : candidate_neighbors) {
+            // 测距当前邻居时预取下一个未访问槽（与 base 检索同一软件流水）
+            std::size_t const neigh_n = candidate_neighbors.size();
+            for (std::size_t ni = 0; ni != neigh_n; ++ni) {
+                compressed_slot_t successor_slot = candidate_neighbors[ni];
                 if (visits.set(successor_slot))
                     continue;
+
+                if (!is_dummy<prefetch_at>()) {
+                    for (std::size_t nj = ni + 1; nj != neigh_n; ++nj) {
+                        compressed_slot_t nxt = candidate_neighbors[nj];
+                        if (!visits.contains(nxt)) {
+                            prefetch(citerator_at(nxt), citerator_at(nxt) + 1);
+                            break;
+                        }
+                    }
+                }
 
                 // We don't access the neighbors of the `successor_slot` node,
                 // so we don't have to lock it.
@@ -2413,9 +2426,21 @@ class index_gt {
             if (!visits.reserve(visits.size() + candidate_neighbors.size()))
                 return false;
 
-            for (compressed_slot_t successor_slot : candidate_neighbors) {
+            std::size_t const neigh_n = candidate_neighbors.size();
+            for (std::size_t ni = 0; ni != neigh_n; ++ni) {
+                compressed_slot_t successor_slot = candidate_neighbors[ni];
                 if (visits.set(successor_slot))
                     continue;
+
+                if (!is_dummy<prefetch_at>()) {
+                    for (std::size_t nj = ni + 1; nj != neigh_n; ++nj) {
+                        compressed_slot_t nxt = candidate_neighbors[nj];
+                        if (!visits.contains(nxt)) {
+                            prefetch(citerator_at(nxt), citerator_at(nxt) + 1);
+                            break;
+                        }
+                    }
+                }
 
                 // We don't access the neighbors of the `successor_slot` node,
                 // so we don't have to lock it.
@@ -2493,9 +2518,22 @@ class index_gt {
             if (!visits.reserve(visits.size() + candidate_neighbors.size()))
                 return false;
 
-            for (compressed_slot_t successor_slot : candidate_neighbors) {
+            // 软件流水：测当前邻居时，用 prefetch 拉下一个未访问邻居（dense 侧预取向量）
+            std::size_t const neigh_n = candidate_neighbors.size();
+            for (std::size_t ni = 0; ni != neigh_n; ++ni) {
+                compressed_slot_t successor_slot = candidate_neighbors[ni];
                 if (visits.set(successor_slot))
                     continue;
+
+                if (!is_dummy<prefetch_at>()) {
+                    for (std::size_t nj = ni + 1; nj != neigh_n; ++nj) {
+                        compressed_slot_t nxt = candidate_neighbors[nj];
+                        if (!visits.contains(nxt)) {
+                            prefetch(citerator_at(nxt), citerator_at(nxt) + 1);
+                            break;
+                        }
+                    }
+                }
 
                 distance_t successor_dist = context.measure(query, citerator_at(successor_slot), metric);
                 if (top.size() < top_limit || successor_dist < radius) {

@@ -62,6 +62,33 @@ int main() {
     assert(rec.after_size == live);
     assert(index.size() == live);
 
+    // i8 reclaim：覆盖扩展后的 scalar switch（非 f32 路径）
+    {
+        metric_punned_t m8(dim, metric_kind_t::l2sq_k, scalar_kind_t::i8_k);
+        auto made8 = index_dense_t::make(m8);
+        assert(made8);
+        index_dense_t idx8 = std::move(made8.index);
+        assert(idx8.try_reserve({64, 2}));
+        std::vector<i8_t> v8(dim, 0);
+        for (std::size_t i = 0; i < 48; ++i) {
+            for (std::size_t d = 0; d < dim; ++d)
+                v8[d] = static_cast<i8_t>((i + d) % 127 - 63);
+            auto r = idx8.add(static_cast<std::int64_t>(i), v8.data());
+            assert(r);
+            r.error.release();
+        }
+        for (std::size_t i = 0; i < 16; ++i) {
+            auto rem = idx8.remove(static_cast<std::int64_t>(i));
+            rem.error.release();
+        }
+        std::size_t live8 = idx8.size();
+        auto rec8 = idx8.reclaim();
+        assert(rec8);
+        assert(rec8.after_size == live8);
+        auto hit = idx8.search(v8.data(), 3);
+        assert(hit && hit.size() > 0);
+    }
+
     std::puts("batch: ok");
     return 0;
 }
