@@ -1,6 +1,6 @@
 #!/bin/sh
 # 将 apex（rules / decide / cost）结果渲染成七块报告。
-# 第 7 块：摘要一行 + 唯一真源 prompt（CorpusFile=turn.prompt/corpus，禁止截断）。
+# 第 7 块：摘要一行 + 人读 corpus（CorpusFile=turn.corpus markdown；完整 JSON 在 turn.prompt，禁止截断）。
 # 前六行句式冻结；Compression = 保留上下文比例。用法见 AGENTS.md。
 set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
@@ -242,7 +242,7 @@ printf '%s 命中规则 %s · 省量 筛选 **%s** ＋ 裁剪 **%s**%s  \n' \
 printf '%s 依据 %s · %s  \n' \
   "$ic_why" "$reasonCn" "$biasCn"
 
-# 第 7 块：摘要一行 + 唯一 prompt 正文（CorpusFile；禁止 "..." 截断）
+# 第 7 块：摘要一行 + 人读 corpus 正文（CorpusFile；禁止 "..." 截断）
 fmtOrUnknown() {
   if [ -n "$1" ]; then printf '%s' "$1"; else printf '未上报'; fi
 }

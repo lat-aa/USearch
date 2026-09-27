@@ -250,20 +250,137 @@ void Turnstats::rebuildPrompt(Decision const& d) {
         packn = 0;
         packtok = 0;
     }
+    // prompt = 模型注入契约（JSON）；corpus = 聊天统计块人读摘要，见 rebuildCorpus
     prompt = "Local knowledge JSON follows.\n" + knowledge.dump(2);
     source = "rebuild";
 }
 
+namespace {
+
+/** 0..1 → 百分整数；非法则 -1（调用方跳过该字段）。 */
+int pct01(json const& j, char const* key) {
+    auto it = j.find(key);
+    if (it == j.end() || !it->is_number())
+        return -1;
+    float x = it->get<float>();
+    if (!(x >= 0.f) || !(x <= 1.f))
+        return -1;
+    return static_cast<int>(std::lround(x * 100.f));
+}
+
+/** 规则正文写入 corpus 前去掉 CR，避免 Windows 源文件在聊天里刷 `\r`。 */
+std::string bodyForCorpus(std::string_view body) {
+    std::string out;
+    out.reserve(body.size());
+    for (char c : body) {
+        if (c != '\r')
+            out.push_back(c);
+    }
+    while (!out.empty() && (out.back() == '\n' || out.back() == ' '))
+        out.pop_back();
+    return out;
+}
+
+} // namespace
+
 void Turnstats::rebuildCorpus() {
-    // 统计块唯一正文：## prompt + 完整命令包（禁止再贴 rules/kept/pack）
+    // 统计块只贴人读 markdown：禁止原样 dump knowledge JSON（转义与缩进会刷屏）
+    // 完整 JSON 仍在 turn.prompt，供 /v1 注入与工具校验。
     if (prompt.empty()) {
         corpus.clear();
         return;
     }
+    constexpr char const* kPrefix = "Local knowledge JSON follows.";
+    json knowledge;
+    bool parsed = false;
+    if (prompt.rfind(kPrefix, 0) == 0) {
+        std::size_t i = std::strlen(kPrefix);
+        while (i < prompt.size() && (prompt[i] == '\n' || prompt[i] == '\r'))
+            ++i;
+        try {
+            knowledge = json::parse(prompt.substr(i));
+            parsed = knowledge.is_object();
+        } catch (...) {
+            parsed = false;
+        }
+    }
+
     std::ostringstream oss;
-    oss << "## prompt\n" << prompt;
-    if (prompt.back() != '\n')
+    oss << "## prompt\n";
+    if (!parsed) {
+        // 非标准 prompt：无法美化时才回退原文，避免丢信息
+        oss << prompt;
+        if (!prompt.empty() && prompt.back() != '\n')
+            oss << '\n';
+        corpus = oss.str();
+        return;
+    }
+
+    if (auto it = knowledge.find("decision"); it != knowledge.end() && it->is_object()) {
+        auto const& d = *it;
+        oss << "路由 " << d.value("model", "?") << " · " << d.value("depth", "?") << " · "
+            << d.value("retrieval", "?");
+        int const retainPct = pct01(d, "compression");
+        if (retainPct >= 0)
+            oss << " · 保留 " << retainPct << "%";
+        int const confPct = pct01(d, "confidence");
+        if (confPct >= 0)
+            oss << " · 置信 " << confPct << "%";
+        if (auto t = d.find("temperature"); t != d.end() && t->is_number())
+            oss << " · temp " << t->get<float>();
         oss << '\n';
+        if (auto rs = d.find("reasons"); rs != d.end() && rs->is_array() && !rs->empty()) {
+            oss << "依据";
+            for (auto const& r : *rs) {
+                if (!r.is_string())
+                    continue;
+                oss << " · " << r.get_ref<std::string const&>();
+            }
+            oss << '\n';
+        }
+    }
+
+    std::size_t hitN = 0;
+    if (auto hits = knowledge.find("hits"); hits != knowledge.end() && hits->is_array())
+        hitN = hits->size();
+    oss << "hits " << (hitN == 0 ? "无" : std::to_string(hitN)) << '\n';
+
+    if (auto pack = knowledge.find("pack"); pack != knowledge.end() && pack->is_object()) {
+        std::size_t n = 0;
+        if (auto items = pack->find("items"); items != pack->end() && items->is_array())
+            n = items->size();
+        oss << "gatePack " << n << " 条\n";
+    }
+
+    if (auto rules = knowledge.find("rules"); rules != knowledge.end() && rules->is_array()) {
+        std::vector<std::string> names;
+        names.reserve(rules->size());
+        for (auto const& r : *rules) {
+            if (!r.is_object())
+                continue;
+            std::string name = r.value("name", r.value("id", ""));
+            if (!name.empty())
+                names.push_back(std::move(name));
+        }
+        oss << "规则";
+        if (names.empty()) {
+            oss << " 无\n";
+        } else {
+            for (std::size_t i = 0; i < names.size(); ++i)
+                oss << (i == 0 ? " " : " · ") << names[i];
+            oss << '\n';
+            for (auto const& r : *rules) {
+                if (!r.is_object())
+                    continue;
+                std::string name = r.value("name", r.value("id", ""));
+                std::string body = r.value("body", "");
+                if (name.empty() || body.empty())
+                    continue;
+                oss << '\n' << "### " << name << '\n' << bodyForCorpus(body) << '\n';
+            }
+        }
+    }
+
     corpus = oss.str();
 }
 

@@ -136,6 +136,8 @@ p=tr.get('prompt') or ''
 assert c and c.startswith('## prompt\n')
 assert '## rules' not in c and '## kept' not in c and '## pack' not in c
 assert 'Local knowledge JSON follows.' in p
+assert 'Local knowledge JSON follows.' not in c
+assert '路由' in c
 assert '"body": "..."' not in p and '"body":"..."' not in p
 assert tr.get('source') == 'rebuild'
 assert '(none)' not in c
@@ -313,7 +315,9 @@ assert "naive" in out and "kept" in out and "gatePack" in out
 assert "注入" in out
 assert "## prompt" in out
 assert "## rules" not in out and "## kept" not in out
-assert "Local knowledge JSON follows." in out
+# 统计块贴人读 corpus，禁止再刷 knowledge JSON
+assert "Local knowledge JSON follows." not in out
+assert "路由" in out
 assert '"body": "..."' not in out and '"body":"..."' not in out
 PY
 pass "stats.sh seven-line+prompt-only"

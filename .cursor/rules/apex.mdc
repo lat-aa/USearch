@@ -40,13 +40,13 @@ alwaysApply: true
   - 必读：`*_cost`、`cache_hit`、`peak`、`actual_model`、`actual_model_source`、`model`（计价/上游档）、`stack.{nanbeige,usearch,sqlite}`、`turn`（gate/saved/source/corpus/prompt…）
   - `decide.model` = 建议档；`cost.model` = 计价或 `/v1` 上游档；`actual_model` = 客户端侧名（可与上游不同）
   - 🔖 行用 `stack`（turn 实测，禁止口编）；💰/🏷️/📦 从 `turn` 抄，缺字段勿冒充 0
-  - 第 7 块：摘要（含 `-PromptSource`=`turn.source`）+ `turn.corpus`（**仅** `## prompt`）；禁止再贴 rules/kept/pack；禁止 `"body":"..."`
+  - 第 7 块：摘要（含 `-PromptSource`=`turn.source`）+ `turn.corpus`（人读 markdown，**仅** `## prompt`）；禁止再贴 rules/kept/pack；禁止把 `turn.prompt` JSON 原样贴进聊天；`prompt` 内禁止 `"body":"..."`
 - **诚信底线**：统计块每一个数字必须来自工具返回，禁止口算或杜撰
 
 ### 统计块
 
 1. 用 `scripts/stats.sh`（默认 `-Style clear`）渲染。
-2. **stdout 原样**贴在回复**最末**（七块：⚡ 🔖 🧭 💰 🏷️ 💡 📦；📦 = 摘要一行 + 唯一 prompt 全文）。
+2. **stdout 原样**贴在回复**最末**（七块：⚡ 🔖 🧭 💰 🏷️ 💡 📦；📦 = 摘要一行 + 人读 corpus）。
 3. **禁止**自绘表格 / 进度条 / ASCII 边框（CJK+emoji 双宽会错位）；**禁止**把前六行改成电报式缩写。
 4. 用户需动手的事写在统计块**之前**；块内保持短句。
 

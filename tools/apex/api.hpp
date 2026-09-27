@@ -504,14 +504,14 @@ struct Turnstats {
     std::vector<std::pair<std::string, std::string>> packText;
     /** gate 返回的 pack 对象；仅 items 非空时写入 prompt.pack。 */
     json packRaw = json::object();
-    /** 唯一给人看的命令包全文：`Local knowledge JSON follows.` + knowledge JSON。 */
+    /** 模型侧命令包：`Local knowledge JSON follows.` + 完整 knowledge JSON（禁止省略 body）。 */
     std::string prompt;
     /** injected=/v1 notePrompt；rebuild=cost 重建；空=未生成。 */
     std::string source;
-    /** 统计块正文：仅 ## prompt + prompt（禁止再贴 rules/kept/pack）。 */
+    /** 统计块正文：人读 markdown（路由一行 + 规则 ###）；禁止再贴 rules/kept/pack 段。 */
     std::string corpus;
 
-    /** 调用方须已持有 mutex。corpus = ## prompt + 完整 prompt。 */
+    /** 调用方须已持有 mutex。从 prompt JSON 生成人读 corpus；勿把 JSON 原样贴进聊天。 */
     void rebuildCorpus();
     /** 调用方须已持有 mutex。重建 prompt 并标 source=rebuild；无真实 gate pack 时省略 pack 键。 */
     void rebuildPrompt(Decision const& d);

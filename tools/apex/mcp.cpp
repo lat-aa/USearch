@@ -379,11 +379,11 @@ json callTool(Runtime& rt, std::string const& name, json const& args, Mcpclient 
                 rt.turn.naive = stats.value("naiveTokens", 0);
                 rt.turn.picked = stats.value("selectedTokens", 0);
                 rt.turn.kept = stats.value("optimizedTokens", 0);
-                // 仅空 prompt 时重建并标 rebuild；/v1 已 injected 则原样保留
-                if (rt.turn.prompt.empty()) {
-                    rt.turn.rebuildPrompt(d);
+                // /v1 注入：保留 prompt，只刷人读 corpus；MCP 轮每轮按当前决策重建，禁止串上一轮 JSON
+                if (rt.turn.source == "injected" && !rt.turn.prompt.empty()) {
                     rt.turn.rebuildCorpus();
-                } else if (rt.turn.corpus.empty()) {
+                } else {
+                    rt.turn.rebuildPrompt(d);
                     rt.turn.rebuildCorpus();
                 }
                 if (rt.turn.cache == "L1" || rt.turn.cache == "L2")
