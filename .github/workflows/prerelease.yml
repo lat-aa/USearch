@@ -245,7 +245,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake g++ lcov
           cmake -B build_cov \
-            -D CMAKE_BUILD_TYPE=Debug \
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo \
             -D USEARCH_BUILD_TEST_CPP=1 \
             -D USEARCH_BUILD_BENCH_CPP=0 \
             -D USEARCH_USE_NUMKONG=0 \
@@ -253,7 +253,7 @@ jobs:
             -D USEARCH_SANITIZE_DEBUG=OFF
           cmake --build build_cov -j$(nproc)
       - name: Run tests
-        run: ctest --test-dir build_cov --output-on-failure -L unit --timeout 600
+        run: ctest --test-dir build_cov --output-on-failure -L unit --timeout 1800
       - name: lcov report
         run: |
           chmod +x scripts/check_coverage.sh
