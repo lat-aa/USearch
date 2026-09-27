@@ -13,6 +13,10 @@ permissions:
   contents: read
 
 jobs:
+  quality:
+    name: Quality matrix
+    uses: ./.github/workflows/quality.yml
+
   versioning:
     name: Update Version
     runs-on: ubuntu-24.04
@@ -246,17 +250,66 @@ jobs:
         run: ctest --test-dir build_cov --output-on-failure -L unit --timeout 600
       - name: lcov report
         run: |
+          chmod +x scripts/check_coverage.sh
           lcov --capture --directory build_cov --output-file coverage.info --ignore-errors mismatch,gcov || \
             lcov --capture --directory build_cov --output-file coverage.info
-          lcov --remove coverage.info '/usr/*' '*/stringzilla/*' '*/numkong/*' --output-file coverage.info || true
-          lcov --list coverage.info | tee coverage.txt
+          lcov --extract coverage.info '*/include/usearch/*' --output-file coverage_usearch.info || \
+            cp coverage.info coverage_usearch.info
+          lcov --list coverage_usearch.info | tee coverage.txt
+          MIN_LINE_PCT=40 ./scripts/check_coverage.sh coverage_usearch.info
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
           name: coverage-lcov
           path: |
             coverage.info
+            coverage_usearch.info
             coverage.txt
+
+  test_linux_arm:
+    name: Linux (ARM64)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Pull Git submodules
+        run: git submodule update --init --recursive
+      - name: Build C++
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+          cmake -B build_artifacts \
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+            -D USEARCH_BUILD_TEST_CPP=1 \
+            -D USEARCH_BUILD_BENCH_CPP=0 \
+            -D USEARCH_USE_NUMKONG=0 \
+            -D USEARCH_SANITIZE_DEBUG=OFF
+          cmake --build build_artifacts --config RelWithDebInfo -j"$(nproc)"
+      - name: Test C++ (ctest)
+        run: ctest --test-dir build_artifacts --output-on-failure -L unit --timeout 600
+
+  test_windows_asan:
+    name: Windows (MSVC ASan)
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Pull Git submodules
+        run: git submodule update --init --recursive
+      - name: Build with ASan
+        run: |
+          cmake -B build_asan `
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo `
+            -D USEARCH_BUILD_TEST_CPP=1 `
+            -D USEARCH_BUILD_BENCH_CPP=0 `
+            -D USEARCH_USE_NUMKONG=0 `
+            -D USEARCH_ENABLE_ASAN=ON `
+            -D USEARCH_SANITIZE_DEBUG=OFF
+          cmake --build build_asan --config RelWithDebInfo
+      - name: Test
+        run: ctest --test-dir build_asan --output-on-failure -C RelWithDebInfo -L unit --timeout 900
+        env:
+          ASAN_OPTIONS: halt_on_error=1
 
   test_macos:
     name: macOS

@@ -55,9 +55,21 @@ ctest --test-dir build_release --output-on-failure -L unit
 
 Debug builds still enable ASan+UBSan by default (`USEARCH_SANITIZE_DEBUG=ON`) when no explicit sanitizer flag is set. ASan and TSan are mutually exclusive.
 
-CI (`.github/workflows/prerelease.yml`) gates: multi-OS RelWithDebInfo, ASan+UBSan, TSan, libFuzzer smoke, coverage artifact, cppcheck, **clang-tidy via `.clang-tidy.ci` (hard)**, API HTTP/MCP smoke under ASan.
+CI (`.github/workflows/prerelease.yml` + `quality.yml`) gates:
 
-Nightly (`.github/workflows/nightly-memory.yml`) hard gates: MSan, Valgrind (+ `cmake/valgrind.supp`), 30‑minute fuzz.
+| Gate | Workflow |
+|------|----------|
+| ASan+UBSan+correctness, TSan, fuzz smoke | `quality.yml` (also required by **Release**) |
+| Multi-OS unit (x86/ARM/macOS/Windows), MSVC ASan | `prerelease.yml` |
+| Coverage **floor** (`MIN_LINE_PCT`, default 40% on `include/usearch`) | `prerelease.yml` |
+| cppcheck + `.clang-tidy.ci` | `prerelease.yml` |
+| API HTTP/MCP under ASan | `prerelease.yml` |
+| CodeQL security-and-quality | `codeql.yml` |
+| PR continuous fuzz + seed corpus | `cifuzz.yml` |
+| Nightly MSan / Valgrind / 30m fuzz | `nightly-memory.yml` |
+
+Local correctness differential: `test_correctness` (exact vs HNSW, SQ8 candidates vs f32).
+OSS-Fuzz / ClusterFuzzLite scaffolds: `ossfuzz/`, `.clusterfuzzlite/`, `fuzz/corpus/`.
 
 ### CMake options
 

@@ -1,0 +1,45 @@
+name: CodeQL
+
+on:
+  push:
+    branches: ["main-dev", "main"]
+  pull_request:
+    branches: ["main-dev"]
+  schedule:
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: Analyze C++
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Submodules
+        run: git submodule update --init --recursive
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: c-cpp
+          queries: security-and-quality
+      - name: Build
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+          cmake -B build_codeql \
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+            -D USEARCH_BUILD_TEST_CPP=1 \
+            -D USEARCH_BUILD_BENCH_CPP=0 \
+            -D USEARCH_BUILD_FUZZ=0 \
+            -D USEARCH_USE_NUMKONG=0 \
+            -D USEARCH_SANITIZE_DEBUG=OFF
+          cmake --build build_codeql -j"$(nproc)"
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:c-cpp"

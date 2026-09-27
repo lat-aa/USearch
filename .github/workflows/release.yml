@@ -13,8 +13,13 @@ permissions:
   id-token: write
 
 jobs:
+  quality:
+    name: Quality matrix
+    uses: ./.github/workflows/quality.yml
+
   versioning:
     name: Update Version
+    needs: quality
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout

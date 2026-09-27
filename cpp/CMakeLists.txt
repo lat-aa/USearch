@@ -6,6 +6,11 @@ if (USEARCH_BUILD_TEST_CPP)
     add_test(NAME test_cpp COMMAND test_cpp)
     set_tests_properties(test_cpp PROPERTIES LABELS "unit;memory" TIMEOUT 600)
 
+    add_executable(test_correctness test_correctness.cpp)
+    setup_target(test_correctness)
+    add_test(NAME test_correctness COMMAND test_correctness)
+    set_tests_properties(test_correctness PROPERTIES LABELS "unit;correctness" TIMEOUT 120)
+
     target_include_directories(test_cpp PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../stringzilla/include)
 
     # Export the dynamic symbol table so `backtrace_symbols` / `std::stacktrace`

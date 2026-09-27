@@ -1,0 +1,42 @@
+name: ClusterFuzzLite PR fuzz
+
+on:
+  pull_request:
+    branches: ["main-dev"]
+
+permissions:
+  contents: read
+  # Required for SARIF upload when available
+  security-events: write
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - run: git submodule update --init --recursive
+      - name: Build continuous fuzz mode
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang zip
+          cmake -B build_fuzz \
+            -D CMAKE_CXX_COMPILER=clang++ \
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+            -D USEARCH_BUILD_TEST_CPP=1 \
+            -D USEARCH_BUILD_FUZZ=ON \
+            -D USEARCH_BUILD_BENCH_CPP=0 \
+            -D USEARCH_USE_NUMKONG=0 \
+            -D USEARCH_SANITIZE_DEBUG=OFF
+          cmake --build build_fuzz --target fuzz_index -j"$(nproc)"
+      - name: Run with seed corpus (10m)
+        run: |
+          mkdir -p fuzz_work
+          cp -r fuzz/corpus fuzz_work/
+          build_fuzz/fuzz_index fuzz_work/corpus -max_total_time=600 -timeout=10 \
+            -rss_limit_mb=2048 -artifact_prefix=fuzz_work/
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz_work/

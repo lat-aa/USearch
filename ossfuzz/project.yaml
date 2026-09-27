@@ -1,0 +1,13 @@
+# OSS-Fuzz project metadata (register at https://github.com/google/oss-fuzz)
+homepage: "https://github.com/unum-cloud/USearch"
+language: c++
+primary_contacts:
+  - "ashvardanian"
+auto_ccs: []
+main_repo: "https://github.com/unum-cloud/USearch"
+fuzzing_engines:
+  - libfuzzer
+sanitizers:
+  - address
+  - undefined
+  - memory
