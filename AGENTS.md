@@ -65,19 +65,23 @@ Codex 实模：`.codex/hooks.json` 的 `PreToolUse` 把本轮 `model` 写入 `co
   -Retain "<cost.turn.retain>" \
   -CtxNaive "<cost.turn.naive>" -CtxPicked "<cost.turn.picked>" -CtxKept "<cost.turn.kept>" \
   -PackTok "<cost.turn.packtok>" -PackN "<cost.turn.packn>" \
-  -CorpusFile "<把 cost.turn.corpus 落入的临时文件路径>"
+  -PromptSource "<cost.turn.source：injected|rebuild>" \
+  -CorpusFile "<cost.turn.corpus 落入的临时文件；仅 ## prompt + 全文>"
 ```
 
 - 数字与栈动作一律来自工具；禁止编造
-- `cost.turn` / `cost.stack` **必须抄字段**；缺 `turn.saved` 勿写「省 0 次」；缺 `corpus` 第 7 块写未上报
+- `cost.turn` / `cost.stack` **必须抄字段**；缺 `turn.saved` 勿写「省 0 次」；缺 `corpus`/`prompt` 第 7 块写未上报
 - `compression` = 上下文**保留**比例（`1.0` 全保留），禁止写成「压缩率」
 - `decide.model` 只是建议档（weak/standard/strong），≠ 上游 id、≠ 客户端实模
 - 禁止自绘表格 / 进度条 / ASCII 边框
 - 用户需动手的事写在统计块**之前**
-- 第 7 块必须贴 `cost.turn.corpus` 全文（经 `-CorpusFile`），禁止只报 token、禁止截断
-- `turn.rules[]` / `turn.pack[]` 每项必有 `id` + `body`（完整正文）；`corpus` 同文，格式为 `### id` 下一行 `body` 再接全文；禁止只有 `body` 无正文、禁止 `(none)`
+- 第 7 块：摘要一行 + **唯一真源** `turn.corpus`（仅 `## prompt`）；禁止再贴 `## rules`/`## kept`/`## pack`
+- `turn.source`：`injected`（本轮 `/v1` 经 `notePrompt`）或 `rebuild`（仅 `cost` 重建）；摘要行写「注入 source」
+- `turn.rules` / `turn.clip` / `turn.pack` 留给工具 JSON；**不进**统计块粘贴
+- knowledge JSON 必须完整：禁止 `"body":"..."` 省略号；无真实 gate pack 时省略 `pack` 键（`gatePack 0`）
+- 裁剪是否生效只看摘要行 `naive → kept` 与 `裁剪 D`；禁止 `(none)` / 「同 rules」指针段
 
-目标七行（预设 `a`；前六行句式冻结，只追加 turn 字段；📦 下可多行全文）：
+目标七块（预设 `a`；前六行句式冻结；📦 = 摘要 + 唯一 prompt）：
 
 ```text
 ⚡ 规则 **m**/**t** 命中 · token **n → o** · **省 p%**
@@ -86,15 +90,10 @@ Codex 实模：`.codex/hooks.json` 的 `PreToolUse` 把本轮 `model` 写入 `co
 💰 费用 **¥…** · … · 主 LLM 省 **N** 次 · 本地 chat **M**
 🏷️ 命中规则 … · 省量 筛选 **…** ＋ 裁剪 **…** · gate=… · cache=…
 💡 依据 … · …
-📦 上下文 保留 r% · 全量 … · 命中 … · 注入 … · pack …tok×… 条
-## rules
-### default
-body
-（规则完整正文…）
-## pack
-### default
-body
-（同上或 gate pack 正文…）
+📦 上下文 保留 r% · naive N → kept K · 裁剪 D · gatePack M条/Ttok · 注入 source
+## prompt
+Local knowledge JSON follows.
+{ "hits":[], "rules":[{"name":"…","body":"完整正文"}], "decision":{…} }
 ```
 
 ## 远端工作区

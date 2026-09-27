@@ -64,12 +64,12 @@ jobs:
             -D USEARCH_BUILD_TEST_CPP=1 \
             -D USEARCH_BUILD_BENCH_CPP=1 \
             -D USEARCH_USE_OPENMP=1 \
-            -D USEARCH_USE_NUMKONG=0 \
+            -D USEARCH_USE_NUMKONG=1 \
             -D USEARCH_USE_JEMALLOC=0 \
             -D USEARCH_SANITIZE_DEBUG=OFF
           cmake --build build_artifacts --config RelWithDebInfo
       - name: Test C++ (ctest)
-        run: ctest --test-dir build_artifacts --output-on-failure -L unit --timeout 600
+        run: ctest --test-dir build_artifacts --output-on-failure -L "unit|numkong" --timeout 600
 
   test_ubuntu_clang:
     name: Ubuntu (Clang)
@@ -288,11 +288,11 @@ jobs:
             -D CMAKE_BUILD_TYPE=RelWithDebInfo \
             -D USEARCH_BUILD_TEST_CPP=1 \
             -D USEARCH_BUILD_BENCH_CPP=0 \
-            -D USEARCH_USE_NUMKONG=0 \
+            -D USEARCH_USE_NUMKONG=1 \
             -D USEARCH_SANITIZE_DEBUG=OFF
           cmake --build build_artifacts --config RelWithDebInfo -j"$(nproc)"
       - name: Test C++ (ctest)
-        run: ctest --test-dir build_artifacts --output-on-failure -L unit --timeout 600
+        run: ctest --test-dir build_artifacts --output-on-failure -L "unit|numkong" --timeout 600
 
   test_windows_asan:
     name: Windows (MSVC ASan)
@@ -400,7 +400,7 @@ jobs:
             -D USEARCH_BUILD_TEST_CPP=0 \
             -D USEARCH_BUILD_BENCH_CPP=0 \
             -D USEARCH_BUILD_API=ON \
-            -D USEARCH_USE_NUMKONG=0 \
+            -D USEARCH_USE_NUMKONG=1 \
             -D USEARCH_SANITIZE_DEBUG=OFF
           cmake --build build_api --target api -j$(nproc)
       - name: Smoke HTTP/MCP

@@ -296,44 +296,45 @@ struct Encoderguard {
 
 } // namespace
 
+void Turnstats::rebuildPrompt(Decision const& d) {
+    // 与 /v1 契约一致，但禁止用 rule:id 合成假 pack 冒充门控命中
+    json rulesArr = json::array();
+    auto const& keptSrc = !ruleKept.empty() ? ruleKept : ruleText;
+    for (auto const& [id, body] : keptSrc) {
+        if (body.empty())
+            continue;
+        rulesArr.push_back({{"name", id}, {"body", body}});
+    }
+    json knowledge = {{"hits", json::array()},
+                      {"rules", std::move(rulesArr)},
+                      {"decision", d.toJson()}};
+    bool hasGatePack = false;
+    if (packRaw.is_object()) {
+        auto items = packRaw.find("items");
+        if (items != packRaw.end() && items->is_array() && !items->empty()) {
+            knowledge["pack"] = packRaw;
+            hasGatePack = true;
+        }
+    }
+    // 无真实 gate pack：省略 pack 键；计量归零（摘要行 gatePack 0）
+    if (!hasGatePack) {
+        packn = 0;
+        packtok = 0;
+    }
+    prompt = "Local knowledge JSON follows.\n" + knowledge.dump(2);
+    source = "rebuild";
+}
+
 void Turnstats::rebuildCorpus() {
-    // 未调 rules 且未调 gate → 不拼 corpus（cost 侧省略字段）
-    if (!sawRules && !sawGate) {
+    // 统计块唯一正文：## prompt + 完整命令包（禁止再贴 rules/kept/pack）
+    if (prompt.empty()) {
         corpus.clear();
         return;
     }
-    // pack 空时回退为命中规则全文——禁止 (none)/空占位；规则段同理不得写假正文
-    auto const& packSrc = !packText.empty() ? packText : ruleText;
-    if (ruleText.empty() && packSrc.empty()) {
-        corpus.clear();
-        return;
-    }
-    // 每条固定 `### id` + 行 `body` + 全文：body 是字段名，下一行起才是正文（禁止只写 body 无内容）
-    auto appendSection = [](std::ostringstream& oss, char const* title,
-                            std::vector<std::pair<std::string, std::string>> const& items) {
-        oss << title << '\n';
-        for (auto const& [id, text] : items) {
-            if (text.empty())
-                continue;
-            oss << "### " << id << "\nbody\n" << text;
-            if (text.back() != '\n')
-                oss << '\n';
-        }
-    };
     std::ostringstream oss;
-    appendSection(oss, "## rules", ruleText);
-    oss << '\n';
-    appendSection(oss, "## pack", packSrc);
-    // 回退计入 pack 计量，避免摘要写 0×0 而正文却有规则
-    if (packText.empty() && !ruleText.empty()) {
-        packn = ruleText.size();
-        if (packtok == 0) {
-            std::size_t tok = 0;
-            for (auto const& [id, body] : ruleText)
-                tok += estimate(id) + estimate(body) + 8;
-            packtok = tok;
-        }
-    }
+    oss << "## prompt\n" << prompt;
+    if (prompt.back() != '\n')
+        oss << '\n';
     corpus = oss.str();
 }
 
@@ -355,8 +356,9 @@ json Turnstats::toJson() const {
         out["saved"] = saved;
     if (hasAnswer)
         out["answer"] = answer;
-    // 结构化 body：与 corpus 同源，Agent/验收可直接读 turn.rules[].body
-    if (sawRules || sawGate) {
+    if (!source.empty())
+        out["source"] = source;
+    if (sawRules || sawGate || !prompt.empty()) {
         auto toArr = [](std::vector<std::pair<std::string, std::string>> const& xs) {
             json arr = json::array();
             for (auto const& [id, body] : xs) {
@@ -367,8 +369,12 @@ json Turnstats::toJson() const {
             return arr;
         };
         out["rules"] = toArr(ruleText);
-        out["pack"] = toArr(!packText.empty() ? packText : ruleText);
-        out["corpus"] = corpus;
+        out["clip"] = toArr(!ruleKept.empty() ? ruleKept : ruleText);
+        out["pack"] = toArr(packText);
+        if (!prompt.empty()) {
+            out["prompt"] = prompt;
+            out["corpus"] = corpus;
+        }
     }
     return out;
 }
@@ -377,7 +383,6 @@ void noteRules(Runtime& rt, std::vector<Resolvedrule> const& matched) {
     std::vector<std::pair<std::string, std::string>> texts;
     texts.reserve(matched.size());
     for (auto const& r : matched) {
-        // 只要完整 body；空规则不进 corpus（避免 ### id 下空白/占位）
         if (r.rule.body.empty())
             continue;
         texts.emplace_back(r.rule.name, r.rule.body);
@@ -387,6 +392,24 @@ void noteRules(Runtime& rt, std::vector<Resolvedrule> const& matched) {
     std::lock_guard<std::mutex> lock(rt.turn.mutex);
     rt.turn.sawRules = true;
     rt.turn.ruleText = std::move(texts);
+    rt.turn.rebuildCorpus();
+}
+
+void noteKept(Runtime& rt, std::vector<std::pair<std::string, std::string>> kept) {
+    std::sort(kept.begin(), kept.end(),
+              [](auto const& a, auto const& b) { return a.first < b.first; });
+    std::lock_guard<std::mutex> lock(rt.turn.mutex);
+    rt.turn.sawRules = true;
+    rt.turn.ruleKept = std::move(kept);
+    rt.turn.rebuildCorpus();
+}
+
+void notePrompt(Runtime& rt, std::string prompt) {
+    if (prompt.empty())
+        return;
+    std::lock_guard<std::mutex> lock(rt.turn.mutex);
+    rt.turn.prompt = std::move(prompt);
+    rt.turn.source = "injected";
     rt.turn.rebuildCorpus();
 }
 
@@ -450,6 +473,9 @@ void noteGate(Runtime& rt, json const& result, bool didAnn, std::size_t annK, in
     rt.turn.packtok = packtok;
     rt.turn.packn = packn;
     rt.turn.packText = std::move(packItems);
+    // 保留 gate.pack 对象，供命令包 knowledge["pack"] 原样嵌入
+    if (auto it = result.find("pack"); it != result.end())
+        rt.turn.packRaw = *it;
     rt.turn.didAnn = didAnn;
     rt.turn.annK = annK;
     if (hasAnswer) {
@@ -563,7 +589,7 @@ json runGate(Runtime& rt, json const& args) {
     if (rq.task.empty())
         rq.task = task;
     auto matched = resolveRules(rt, rq, qVec);
-    // 门控路径也写入规则全文，保证 cost.turn.corpus 的 ## rules 可独立于 MCP rules
+    // 门控路径也写入 turn.rules，供工具侧消费；展示仍只靠 prompt
     noteRules(rt, matched);
 
     std::vector<std::pair<Doc, float>> memoryHits;

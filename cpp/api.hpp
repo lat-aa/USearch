@@ -498,13 +498,23 @@ struct Turnstats {
     bool sawGate = false;
     bool didAnn = false;
     std::size_t annK = 0;
-    /** 命中规则全文 / pack 条目正文，供拼 corpus。 */
+    /** 工具侧：全文 / 裁剪后 / 真实 gate pack（不进统计块重复粘贴）。 */
     std::vector<std::pair<std::string, std::string>> ruleText;
+    std::vector<std::pair<std::string, std::string>> ruleKept;
     std::vector<std::pair<std::string, std::string>> packText;
+    /** gate 返回的 pack 对象；仅 items 非空时写入 prompt.pack。 */
+    json packRaw = json::object();
+    /** 唯一给人看的命令包全文：`Local knowledge JSON follows.` + knowledge JSON。 */
+    std::string prompt;
+    /** injected=/v1 notePrompt；rebuild=cost 重建；空=未生成。 */
+    std::string source;
+    /** 统计块正文：仅 ## prompt + prompt（禁止再贴 rules/kept/pack）。 */
     std::string corpus;
 
-    /** 调用方须已持有 mutex。按契约拼 ## rules / ## pack。 */
+    /** 调用方须已持有 mutex。corpus = ## prompt + 完整 prompt。 */
     void rebuildCorpus();
+    /** 调用方须已持有 mutex。重建 prompt 并标 source=rebuild；无真实 gate pack 时省略 pack 键。 */
+    void rebuildPrompt(Decision const& d);
     /** 调用方须已持有 mutex。 */
     json toJson() const;
 };
@@ -548,10 +558,14 @@ json runGate(Runtime& rt, json const& args);
 /** observe 仅入队；Worker 后台蒸馏写 memory。 */
 json runObserve(Runtime& rt, json const& args);
 void workerLoop(Runtime& rt);
-/** 把本轮命中规则全文记入 turn（供 corpus ## rules）。 */
+/** 记入命中规则全文（turn.rules，供工具；不进统计块粘贴）。 */
 void noteRules(Runtime& rt, std::vector<Resolvedrule> const& matched);
+/** 记入裁剪后正文（turn.clip；与 optimized_tokens 对齐）。 */
+void noteKept(Runtime& rt, std::vector<std::pair<std::string, std::string>> kept);
 /** 把 gate 结局记入 turn；localChats=本路径 Nanbeige chat 次数。 */
 void noteGate(Runtime& rt, json const& result, bool didAnn, std::size_t annK, int localChats);
+/** /v1 主路径写入实测命令包；source=injected，覆盖 rebuild。 */
+void notePrompt(Runtime& rt, std::string prompt);
 /** observe 入队 id。 */
 void noteQueued(Runtime& rt, std::string const& id);
 /** Worker 落盘 memory id；didChat 表示跑过本地蒸馏 chat。 */

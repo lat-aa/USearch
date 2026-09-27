@@ -59,6 +59,84 @@ jobs:
       - name: ctest
         run: ctest --test-dir build --output-on-failure -L unit --timeout 1200
 
+  # NumKong integration gate (GCC). Clang+ASan+NumKong stays OFF (historical fragility).
+  unit_numkong:
+    name: GCC NumKong
+    runs-on: ubuntu-24.04
+    env:
+      CC: gcc
+      CXX: g++
+    steps:
+      - uses: actions/checkout@v6
+      - run: git submodule update --init --recursive
+      - name: Build
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libomp-dev
+          cmake -B build \
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+            -D USEARCH_BUILD_TEST_CPP=1 \
+            -D USEARCH_BUILD_BENCH_CPP=0 \
+            -D USEARCH_USE_NUMKONG=1 \
+            -D USEARCH_USE_OPENMP=1 \
+            -D USEARCH_SANITIZE_DEBUG=OFF
+          cmake --build build -j"$(nproc)"
+      - name: ctest
+        run: ctest --test-dir build --output-on-failure -L "unit|numkong" --timeout 900
+
+  # L3: GCC ASan+NumKong — prefer GCC over Clang for NumKong sanitizer matrix.
+  unit_numkong_asan:
+    name: GCC ASan NumKong
+    runs-on: ubuntu-24.04
+    env:
+      CC: gcc
+      CXX: g++
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+    steps:
+      - uses: actions/checkout@v6
+      - run: git submodule update --init --recursive
+      - name: Build
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libomp-dev
+          cmake -B build \
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+            -D USEARCH_BUILD_TEST_CPP=1 \
+            -D USEARCH_BUILD_BENCH_CPP=0 \
+            -D USEARCH_USE_NUMKONG=1 \
+            -D USEARCH_USE_OPENMP=1 \
+            -D USEARCH_ENABLE_ASAN=ON \
+            -D USEARCH_SANITIZE_DEBUG=OFF
+          cmake --build build -j"$(nproc)"
+      - name: ctest
+        run: ctest --test-dir build --output-on-failure -L "unit|numkong" --timeout 1200
+
+  # L3: GCC TSan+NumKong — concurrent nk_capabilities / metric init must be race-free.
+  unit_numkong_tsan:
+    name: GCC TSan NumKong
+    runs-on: ubuntu-24.04
+    env:
+      CC: gcc
+      CXX: g++
+      TSAN_OPTIONS: halt_on_error=1
+    steps:
+      - uses: actions/checkout@v6
+      - run: git submodule update --init --recursive
+      - name: Build
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+          cmake -B build \
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+            -D USEARCH_BUILD_TEST_CPP=1 \
+            -D USEARCH_BUILD_BENCH_CPP=0 \
+            -D USEARCH_USE_NUMKONG=1 \
+            -D USEARCH_ENABLE_TSAN=ON \
+            -D USEARCH_SANITIZE_DEBUG=OFF
+          cmake --build build -j"$(nproc)"
+      - name: ctest numkong
+        run: ctest --test-dir build --output-on-failure -L numkong --timeout 1200
+
   fuzz_smoke:
     name: libFuzzer smoke
     runs-on: ubuntu-24.04

@@ -8,6 +8,18 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <mutex>
+
+#if USEARCH_USE_NUMKONG
+#include <numkong/numkong.h>
+#endif
+
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+#include <arm_neon.h>
+#define USEARCH_SQ8_NEON 1
+#else
+#define USEARCH_SQ8_NEON 0
+#endif
 
 namespace api {
 namespace sq8 {
@@ -103,9 +115,30 @@ std::int32_t i8DotAvx2(std::int8_t const* doc, std::int16_t const* q, std::size_
 }
 #endif
 
+#if USEARCH_SQ8_NEON
+// ARM 粗排热路径：i8×i16 点积；与 AVX2 路径语义一致。
+std::int32_t i8DotNeon(std::int8_t const* doc, std::int16_t const* q, std::size_t dim) {
+    int32x4_t acc = vdupq_n_s32(0);
+    std::size_t i = 0;
+    for (; i + 8 <= dim; i += 8) {
+        int8x8_t d8 = vld1_s8(doc + i);
+        int16x8_t d16 = vmovl_s8(d8);
+        int16x8_t q16 = vld1q_s16(q + i);
+        acc = vmlal_s16(acc, vget_low_s16(d16), vget_low_s16(q16));
+        acc = vmlal_s16(acc, vget_high_s16(d16), vget_high_s16(q16));
+    }
+    std::int32_t s = vgetq_lane_s32(acc, 0) + vgetq_lane_s32(acc, 1) + vgetq_lane_s32(acc, 2) + vgetq_lane_s32(acc, 3);
+    for (; i < dim; ++i)
+        s += static_cast<std::int32_t>(doc[i]) * static_cast<std::int32_t>(q[i]);
+    return s;
+}
+#endif
+
 std::int32_t i8Dot(std::int8_t const* doc, std::int16_t const* q, std::size_t dim) {
 #if defined(__AVX2__)
     return i8DotAvx2(doc, q, dim);
+#elif USEARCH_SQ8_NEON
+    return i8DotNeon(doc, q, dim);
 #else
     return i8DotScalar(doc, q, dim);
 #endif
@@ -142,6 +175,24 @@ bool selectCandidates(float const* est, std::size_t n, std::size_t k, float eps,
 }
 
 float dot8(float const* a, float const* b, std::size_t dim) {
+#if USEARCH_USE_NUMKONG
+    // 精排热路径：once 探测 NumKong f32 dot；capability=0 的 miss stub 丢弃。
+    static nk_metric_dense_punned_t nk_dot = nullptr;
+    static std::once_flag nk_dot_once;
+    std::call_once(nk_dot_once, [] {
+        nk_capability_t used = 0;
+        nk_metric_dense_punned_t found = nullptr;
+        nk_find_kernel_punned(nk_kernel_dot_k, nk_f32_k, unum::usearch::nk_cached_capabilities(),
+                              reinterpret_cast<nk_kernel_punned_t*>(&found), &used);
+        if (found && used != 0)
+            nk_dot = found;
+    });
+    if (nk_dot) {
+        float product = 0.0f;
+        nk_dot(a, b, static_cast<nk_size_t>(dim), &product);
+        return product;
+    }
+#endif
     float acc[8] = {};
     std::size_t i = 0;
     for (; i + 8 <= dim; i += 8) {

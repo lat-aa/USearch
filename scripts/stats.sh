@@ -1,7 +1,7 @@
 #!/bin/sh
-# 将 apex（rules / decide / cost）结果渲染成固定七行报告（第 7 块可含多行全文）。
-# 数字与栈动作须来自工具；Compression = 保留上下文比例。
-# 前六行句式冻结；只追加 turn 实测字段。用法见 AGENTS.md。
+# 将 apex（rules / decide / cost）结果渲染成七块报告。
+# 第 7 块：摘要一行 + 唯一真源 prompt（CorpusFile=turn.prompt/corpus，禁止截断）。
+# 前六行句式冻结；Compression = 保留上下文比例。用法见 AGENTS.md。
 set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 
@@ -20,6 +20,7 @@ Nanbeige=; Usearch=; Sqlite=
 # turn 实测：空=未上报（禁止默认 0 冒充）
 Gate=; Cache=; Saved=; Local=; Queued=; Distill=
 Retain=; CtxNaive=; CtxPicked=; CtxKept=; PackTok=; PackN=
+PromptSource=
 CorpusFile=
 
 # 读 flag 后一参；缺省为空（Windows 常把 -ActualModel '' 吃掉）
@@ -70,6 +71,7 @@ while [ $# -gt 0 ]; do
     -CtxKept|--ctx-kept) CtxKept=$val ;;
     -PackTok|--pack-tok) PackTok=$val ;;
     -PackN|--pack-n) PackN=$val ;;
+    -PromptSource|--prompt-source) PromptSource=$val ;;
     -CorpusFile|--corpus-file) CorpusFile=$val ;;
     *) echo "unknown arg: $key" >&2; exit 2 ;;
   esac
@@ -240,26 +242,31 @@ printf '%s 命中规则 %s · 省量 筛选 **%s** ＋ 裁剪 **%s**%s  \n' \
 printf '%s 依据 %s · %s  \n' \
   "$ic_why" "$reasonCn" "$biasCn"
 
-# 第 7 块：摘要 + corpus 全文（禁止截断）
+# 第 7 块：摘要一行 + 唯一 prompt 正文（CorpusFile；禁止 "..." 截断）
 fmtOrUnknown() {
   if [ -n "$1" ]; then printf '%s' "$1"; else printf '未上报'; fi
 }
 naiveCtx=$(fmtOrUnknown "$CtxNaive")
-pickedCtx=$(fmtOrUnknown "$CtxPicked")
 keptCtx=$(fmtOrUnknown "$CtxKept")
-if [ -n "$PackTok" ] && [ -n "$PackN" ]; then
-  packCtx="${PackTok}tok×${PackN} 条"
-elif [ -n "$PackN" ]; then
-  packCtx="${PackN} 条"
+# 裁剪 token = naive - kept（缺任一则未上报）
+if [ -n "$CtxNaive" ] && [ -n "$CtxKept" ]; then
+  trimCtx=$((CtxNaive - CtxKept))
+  if [ "$trimCtx" -lt 0 ] 2>/dev/null; then trimCtx=0; fi
+else
+  trimCtx=未上报
+fi
+if [ -n "$PackN" ] || [ -n "$PackTok" ]; then
+  pn=${PackN:-0}
+  pt=${PackTok:-0}
+  packCtx="${pn}条/${pt}tok"
 else
   packCtx=未上报
 fi
-printf '%s 上下文 保留 %s%% · 全量 %s · 命中 %s · 注入 %s · pack %s  \n' \
-  "$ic_ctx" "$ctxRetainPct" "$naiveCtx" "$pickedCtx" "$keptCtx" "$packCtx"
+srcCtx=$(fmtOrUnknown "$PromptSource")
+printf '%s 上下文 保留 %s%% · naive %s → kept %s · 裁剪 %s · gatePack %s · 注入 %s  \n' \
+  "$ic_ctx" "$ctxRetainPct" "$naiveCtx" "$keptCtx" "$trimCtx" "$packCtx" "$srcCtx"
 if [ -n "$CorpusFile" ] && [ -f "$CorpusFile" ]; then
-  # 原样贴全文；不加省略号
   cat "$CorpusFile"
-  # 若文件末无换行，补一个，避免粘上下一轮输出
   if [ "$(tail -c1 "$CorpusFile" | wc -l)" -eq 0 ]; then
     printf '\n'
   fi

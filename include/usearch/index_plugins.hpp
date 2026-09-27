@@ -2930,6 +2930,29 @@ class metric_punned_t {
         return metric;
     }
 
+#if USEARCH_USE_NUMKONG
+    /**
+     *  @brief  Like `builtin`, but restricts NumKong dispatch to `caps`
+     *          (tests: serial-mask reference vs full CPU mask).
+     */
+    inline static metric_punned_t builtin_with_caps(std::size_t dimensions, metric_kind_t metric_kind,
+                                                    scalar_kind_t scalar_kind, nk_capability_t caps) noexcept {
+        metric_punned_t metric;
+        metric.metric_routed_ = &metric_punned_t::invoke_array_array_third;
+        metric.metric_ptr_ = 0;
+        metric.metric_third_arg_ =
+            scalar_kind == scalar_kind_t::b1x8_k ? divide_round_up<CHAR_BIT>(dimensions) : dimensions;
+        metric.dimensions_ = dimensions;
+        metric.metric_kind_ = metric_kind;
+        metric.scalar_kind_ = scalar_kind;
+
+        if (!metric.configure_with_numkong(caps))
+            metric.configure_with_autovec();
+
+        return metric;
+    }
+#endif
+
     /**
      *  @brief  Creates a metric using the provided function pointer for a stateless metric.
      *          So the provided ::metric_uintptr is a pointer to a function that takes two arrays
@@ -3054,10 +3077,13 @@ class metric_punned_t {
         default: return false;
         }
         nk_dtype_t datatype = scalar_kind_to_nk_dtype(scalar_kind_);
+        if (datatype == (nk_dtype_t)0)
+            return false;
         nk_metric_dense_punned_t simd_metric = NULL;
         nk_capability_t simd_kind = nk_cap_any_k;
         nk_find_kernel_punned(kind, datatype, simd_caps, (nk_kernel_punned_t*)&simd_metric, &simd_kind);
-        if (simd_metric == nullptr)
+        // Typed miss stubs are non-null with capability 0 — must not treat them as a real kernel.
+        if (simd_metric == nullptr || simd_kind == 0)
             return false;
 
         std::memcpy(&metric_ptr_, &simd_metric, sizeof(simd_metric));

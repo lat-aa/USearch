@@ -14,7 +14,7 @@ namespace {
 /** 规则统计信封：对齐 apex.mdc / stats.sh（totalRules、token 三档、entries[].id）。 */
 json rulesEnvelope(Runtime& rt, Rulequery const& rq, float compression) {
     auto matched = resolveRules(rt, rq);
-    // 同步全文进 turn，供 cost.turn.corpus 的 ## rules（完整 body，非裁剪后）
+    // 同步全文进 turn.rules（工具消费）；统计块只贴 prompt，不重复粘贴 rules
     noteRules(rt, matched);
     std::size_t total = 0;
     std::size_t naive = 0;
@@ -34,15 +34,22 @@ json rulesEnvelope(Runtime& rt, Rulequery const& rq, float compression) {
     int base = rt.decider.sectionsFor(compression);
     std::size_t optimized = 0;
     json entries = json::array();
+    std::vector<std::pair<std::string, std::string>> clipped;
+    clipped.reserve(matched.size());
     for (auto const& r : matched) {
         int sections = ruleSections(r.activation, r.score, semSum, base);
         std::string body = compressSections(r.rule.body, rq.task, static_cast<std::size_t>(sections));
         optimized += estimate(body) + estimate(r.rule.description) + estimate(r.rule.name);
+        if (!body.empty())
+            clipped.emplace_back(r.rule.name, body);
         json item = r.toJson();
         item["id"] = r.rule.name;
-        item["body"] = std::move(body);
+        // entries[].body = 裁剪后正文（与主路径 inject 一致）；全文在 turn.rules
+        item["body"] = body;
         entries.push_back(std::move(item));
     }
+    // clip / rebuildPrompt.rules 用裁剪后正文（与 inject 一致）
+    noteKept(rt, std::move(clipped));
     return {{"totalRules", total},
             {"matched", matched.size()},
             {"naiveTokens", naive},
@@ -372,7 +379,13 @@ json callTool(Runtime& rt, std::string const& name, json const& args, Mcpclient 
                 rt.turn.naive = stats.value("naiveTokens", 0);
                 rt.turn.picked = stats.value("selectedTokens", 0);
                 rt.turn.kept = stats.value("optimizedTokens", 0);
-                rt.turn.rebuildCorpus();
+                // 仅空 prompt 时重建并标 rebuild；/v1 已 injected 则原样保留
+                if (rt.turn.prompt.empty()) {
+                    rt.turn.rebuildPrompt(d);
+                    rt.turn.rebuildCorpus();
+                } else if (rt.turn.corpus.empty()) {
+                    rt.turn.rebuildCorpus();
+                }
                 if (rt.turn.cache == "L1" || rt.turn.cache == "L2")
                     cacheHit = true;
                 turnJson = rt.turn.toJson();

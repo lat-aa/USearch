@@ -42,10 +42,13 @@ HTTP/MCP 线协议仍为 JSON；仅进程配置与 decide 词表用 TOML。
 ```bash
 cp .config/config.example.toml .config/config.toml
 # 将 Nanbeige Q4_K_M 放到 .config/models/（见 config.gguf）
-cmake -B build -DUSEARCH_BUILD_API=ON -DUSEARCH_BUILD_TEST_CPP=OFF -DUSEARCH_BUILD_BENCH_CPP=OFF
+cmake -B build -DUSEARCH_BUILD_API=ON -DUSEARCH_BUILD_TEST_CPP=OFF -DUSEARCH_BUILD_BENCH_CPP=OFF \
+  -DUSEARCH_USE_NUMKONG=ON
 cmake --build build --config Release --target api -j"$(nproc)"
 ./build/api serve
 ```
+
+NumKong 单元门禁（与 CI `quality.yml` / Ubuntu GCC 对齐）：见 `CONTRIBUTING.md`「NumKong 门禁」。
 
 大编译可把 build 放在 Linux 文件系统（如 `-B ~/usearch-build`），源码仍可在 `/mnt/e/data/USearch`。
 

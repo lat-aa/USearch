@@ -25,7 +25,8 @@ endif ()
 option(USEARCH_INSTALL "Install CMake targets" OFF)
 
 option(USEARCH_USE_OPENMP "Use OpenMP for a thread pool" OFF)
-option(USEARCH_USE_NUMKONG "Use NumKong hardware-accelerated metrics" OFF)
+# 主工程默认开 NumKong（产品路径）；子工程 / 消毒矩阵可显式 -D USEARCH_USE_NUMKONG=0。
+option(USEARCH_USE_NUMKONG "Use NumKong hardware-accelerated metrics" ${USEARCH_IS_MAIN_PROJECT})
 option(USEARCH_USE_JEMALLOC "Use JeMalloc for faster memory allocations" OFF)
 
 option(USEARCH_BUILD_TEST_CPP "Compile a native unit test in C++" ${USEARCH_IS_MAIN_PROJECT})
@@ -368,6 +369,12 @@ if (USEARCH_USE_NUMKONG)
     if (TARGET nk_shared)
         set_target_properties(nk_shared PROPERTIES ENABLE_EXPORTS ON)
 
+        # Propagate NumKong to in-tree consumers (BUILD_INTERFACE) so link/includes/defs travel together.
+        # Avoid exporting nk_shared into the installed USearch package (submodule is not in the export set).
+        target_compile_definitions(${USEARCH_TARGET_NAME} INTERFACE
+                                   $<BUILD_INTERFACE:NK_DYNAMIC_DISPATCH=1>)
+        target_link_libraries(${USEARCH_TARGET_NAME} INTERFACE $<BUILD_INTERFACE:nk_shared>)
+
         # Windows has no RPATH equivalent, so the dynamic loader only finds
         # NumKong reliably when it sits next to the binaries that link it.
         if (WIN32)
@@ -389,4 +396,9 @@ enable_testing()
 
 if (${USEARCH_BUILD_TEST_CPP} OR ${USEARCH_BUILD_BENCH_CPP} OR ${USEARCH_BUILD_API} OR ${USEARCH_BUILD_FUZZ})
     add_subdirectory(cpp)
+endif ()
+
+# 单元测试源码只放 tests/（与 cpp/ 产品代码分离）。
+if (USEARCH_BUILD_TEST_CPP)
+    add_subdirectory(tests)
 endif ()

@@ -359,11 +359,14 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
         }
         if (!system.empty())
             system.push_back('\n');
-        system += "Local knowledge JSON follows.\n";
+        // 主路径命令包：与 turn.prompt / corpus ## prompt 同源，供统计块原样展示
+        std::string packPrompt = "Local knowledge JSON follows.\n";
         json knowledge = {{"hits", ctx["hits"]}, {"rules", ctx["rules"]}, {"decision", ctx["decision"]}};
         if (body.contains("_gatepack"))
             knowledge["pack"] = body["_gatepack"];
-        system += knowledge.dump();
+        packPrompt += knowledge.dump(2);
+        system += packPrompt;
+        notePrompt(rt, packPrompt);
 
         std::string modelName = body.value("model", rt.encoder.modelId);
         bool stream = body.value("stream", false);

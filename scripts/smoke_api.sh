@@ -69,6 +69,16 @@ if grep -q '^data: {' /tmp/usearch_mcp_sse.txt 2>/dev/null; then
   exit 1
 fi
 
+# At least one upsert + search on the product path (NumKong-on CI).
+curl -fsS --max-time 60 -X POST "$BASE/mcp" -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"upsert","arguments":{"id":"smoke-nk","text":"numkong smoke document"}}}' \
+  >/tmp/usearch_mcp_upsert.json
+curl -fsS --max-time 60 -X POST "$BASE/mcp" -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"search","arguments":{"text":"numkong smoke","k":3}}}' \
+  >/tmp/usearch_mcp_search.json
+
 python3 - <<'PY'
 import json
 emb = json.load(open("/tmp/usearch_emb.json"))
@@ -81,6 +91,10 @@ mcp = json.load(open("/tmp/usearch_mcp.json"))
 assert len(mcp["result"]["tools"]) >= 1, "no mcp tools"
 code = open("/tmp/usearch_mcp_inited.code").read().strip()
 assert code == "202", f"notifications/initialized expected 202 got {code}"
+up = json.load(open("/tmp/usearch_mcp_upsert.json"))
+assert "error" not in up, up
+search = json.load(open("/tmp/usearch_mcp_search.json"))
+assert "error" not in search, search
 print("smoke ok", "dim", len(emb["data"][0]["embedding"]), "tools", len(mcp["result"]["tools"]))
 PY
 

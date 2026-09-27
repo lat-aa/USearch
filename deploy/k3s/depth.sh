@@ -126,14 +126,20 @@ import sys,json
 t=json.loads(json.load(sys.stdin)['result']['content'][0]['text'])
 assert t['actual_model']=='Grok 4.6' and 'stack' in t
 assert 'turn' in t and 'gate' in t['turn']
-# 调过 rules（cost 内建）后 corpus 须含 ## rules
+# 唯一真源：corpus 仅 ## prompt；source=rebuild（无 /v1 notePrompt）
 tr=t['turn']
 c=tr.get('corpus') or ''
-assert c and '## rules' in c and '## pack' in c
+p=tr.get('prompt') or ''
+assert c and c.startswith('## prompt\n')
+assert '## rules' not in c and '## kept' not in c and '## pack' not in c
+assert 'Local knowledge JSON follows.' in p
+assert '"body": "..."' not in p and '"body":"..."' not in p
+assert tr.get('source') == 'rebuild'
 assert '(none)' not in c
 assert tr.get('rules') and tr['rules'][0].get('body')
-assert tr.get('pack') and tr['pack'][0].get('body')
-assert '\nbody\n' in c  # 字段名行；其后须有正文（上一断言已保证）
+assert tr.get('clip') and tr['clip'][0].get('body')
+# rebuild 且无真实 gate pack：knowledge 不得伪造 pack 键
+assert '"pack"' not in p or tr.get('packn', 0) > 0
 assert tr.get('kept') == t.get('optimized_tokens')
 " && pass "mcp cost stack+turn.corpus" || bad "mcp cost stack" "fail"
 
@@ -251,10 +257,13 @@ assert tr.get('gate') in ('answered','pack','refuse','none'), tr
 if tr.get('gate')=='answered':
   assert tr.get('saved')==1, tr
 c=tr.get('corpus') or ''
-assert c and '## rules' in c and '## pack' in c
+p=tr.get('prompt') or ''
+assert c and c.startswith('## prompt\n')
+assert '## rules' not in c and '## kept' not in c
+assert 'Local knowledge JSON follows.' in p
+assert '"body": "..."' not in p and '"body":"..."' not in p
+assert tr.get('source') in ('injected', 'rebuild')
 assert '(none)' not in c
-assert tr.get('rules') and tr['rules'][0].get('body')
-assert tr.get('pack') and tr['pack'][0].get('body')
 " && pass "cost.turn after gate saved/corpus" || bad "cost.turn gate" "status=$gstatus"
 
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)"
@@ -286,6 +295,7 @@ cmd=["bash",root+"/scripts/stats.sh",
 "-CtxKept",str(tr.get("kept") if tr.get("kept") is not None else c["optimized_tokens"]),
 "-PackTok",str(tr.get("packtok") if tr.get("packtok") is not None else ""),
 "-PackN",str(tr.get("packn") if tr.get("packn") is not None else ""),
+"-PromptSource",str(tr.get("source") or ""),
 "-CorpusFile",path]
 if "saved" in tr:
   cmd += ["-Saved",str(tr["saved"])]
@@ -296,9 +306,15 @@ os.unlink(path)
 print(out)
 assert "🔖 决策 Nanbeige4.1" in out
 assert "📦 上下文" in out
-assert "## rules" in out or "## pack" in out or "未上报" in out
+assert "naive" in out and "kept" in out and "gatePack" in out
+assert "注入" in out
+assert "## prompt" in out
+assert "## rules" not in out and "## kept" not in out
+assert "Local knowledge JSON follows." in out
+assert '"body": "..."' not in out and '"body":"..."' not in out
 PY
-pass "stats.sh seven-line+corpus"
+pass "stats.sh seven-line+prompt-only"
+
 
 echo
 echo "======== SUMMARY pass=$ok fail=$fail ========"

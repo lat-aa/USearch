@@ -21,7 +21,7 @@ alwaysApply: true
 1. 回复**开始前**固定顺序：若 Hook 未短路则先 `gate`（Cursor 无法靠 Hook 注入 pack）→ `rules` → `decide` → `cost`（**每轮必传** `actual_model`）→ `stats.sh`（可并行发起工具，语义顺序不变）。
 2. 无关联文件时：`files=[]`、`manual=[]`。**禁止**以「太简单 / 只是打招呼」为由省略。任务结束调 `observe`/`save` 仅入队。
 3. 调用失败：整链重试 **一次**；仍失败则写出**工具名 + 错误原文**。**禁止**谎称已调用或「工具返回空」。
-4. 本工作区 apex **默认可用**；不得预设「有时挂了」而不调用。
+4. 本工作区 apex **默认可用**；不得预设「有时挂了」而不调用。测试代码只能存入tests目录
 5. **MCP / 实模**：本文件只约束 Cursor。`.cursor/mcp.json` 直连 `/mcp`。`actual_model` **优先**由 `.cursor/hooks` 从本轮 `model` 注入（`cursor-state`）；其次请求头；再才是显式 `reported`。**禁止**沿用上轮旧名、禁止编造、禁止本机读库脚本。Codex 约定见仓库根 `AGENTS.md` 与 `.codex/config.toml`，不要写进本 `.mdc`。`actual_model` 与计价/`/v1` 的 `model` **分列**。有调 `/v1` 时统计 🧭 以 API `model` 为准；纯 MCP 轮 🧭 以本轮 `actual_model` 为准。禁止把 `decide.model` / 未调用的 `deepseek-flash` 当成客户端路由名。
 
 ### 调用要点
@@ -37,16 +37,16 @@ alwaysApply: true
   - **`compression` = 保留上下文**比例（`1.0` 全保留），**禁止**写成「压缩率」
   - `decide.model` 只是**建议档**，≠ 当前会话真实模型
 - **`cost`**：**每轮必调**；`actual_model` 优先 hook/`cursor-state`，否则头或显式 `reported` + `actual_model_source`
-  - 必读：`*_cost`、`cache_hit`、`peak`、`actual_model`、`actual_model_source`、`model`（计价/上游档）、`stack.{nanbeige,usearch,sqlite}`、`turn`（gate/saved/local/queued/distill/corpus…）
+  - 必读：`*_cost`、`cache_hit`、`peak`、`actual_model`、`actual_model_source`、`model`（计价/上游档）、`stack.{nanbeige,usearch,sqlite}`、`turn`（gate/saved/source/corpus/prompt…）
   - `decide.model` = 建议档；`cost.model` = 计价或 `/v1` 上游档；`actual_model` = 客户端侧名（可与上游不同）
   - 🔖 行用 `stack`（turn 实测，禁止口编）；💰/🏷️/📦 从 `turn` 抄，缺字段勿冒充 0
-  - 第 7 块必须贴 `turn.corpus` 全文（`-CorpusFile`），禁止只报 token；禁止 `(none)`/`body` 占位
+  - 第 7 块：摘要（含 `-PromptSource`=`turn.source`）+ `turn.corpus`（**仅** `## prompt`）；禁止再贴 rules/kept/pack；禁止 `"body":"..."`
 - **诚信底线**：统计块每一个数字必须来自工具返回，禁止口算或杜撰
 
 ### 统计块
 
 1. 用 `scripts/stats.sh`（默认 `-Style clear`）渲染。
-2. **stdout 原样**贴在回复**最末**（七块：⚡ 🔖 🧭 💰 🏷️ 💡 📦；📦 下可多行全文）。
+2. **stdout 原样**贴在回复**最末**（七块：⚡ 🔖 🧭 💰 🏷️ 💡 📦；📦 = 摘要一行 + 唯一 prompt 全文）。
 3. **禁止**自绘表格 / 进度条 / ASCII 边框（CJK+emoji 双宽会错位）；**禁止**把前六行改成电报式缩写。
 4. 用户需动手的事写在统计块**之前**；块内保持短句。
 

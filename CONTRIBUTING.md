@@ -60,16 +60,46 @@ CI（`.github/workflows/prerelease.yml` + `quality.yml`）门禁：
 | 门禁 | 工作流 |
 |------|----------|
 | ASan+UBSan+正确性、TSan、fuzz smoke | `quality.yml`（也为 **Release** 所要求） |
+| **GCC NumKong** + **GCC ASan NumKong** + **GCC TSan NumKong** | `quality.yml`（Clang+ASan+NumKong 仍关） |
+| Ubuntu GCC / **ARM64** / API smoke NumKong-on | `prerelease.yml` |
 | 多操作系统单元测试（x86/ARM/macOS/Windows）、MSVC ASan | `prerelease.yml` |
 | 覆盖率**下限**（`MIN_LINE_PCT`，`include/usearch` 默认 40%） | `prerelease.yml` |
 | cppcheck + `.clang-tidy.ci` | `prerelease.yml` |
-| ASan 下的 API HTTP/MCP | `prerelease.yml` |
+| API HTTP/MCP smoke（NumKong ON，含 upsert/search） | `prerelease.yml` |
 | CodeQL security-and-quality | `codeql.yml` |
 | PR 持续 fuzz + seed corpus | `cifuzz.yml` |
 | 夜间 MSan / Valgrind / 30 分钟 fuzz | `nightly-memory.yml` |
 
 本地正确性差分：`test_correctness`（精确检索 vs HNSW，SQ8 候选 vs f32）。
 OSS-Fuzz / ClusterFuzzLite 脚手架：`ossfuzz/`、`.clusterfuzzlite/`、`fuzz/corpus/`。
+
+### NumKong 门禁（本地）
+
+```sh
+cmake -B build_nk \
+  -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+  -D USEARCH_BUILD_TEST_CPP=ON \
+  -D USEARCH_USE_NUMKONG=ON \
+  -D USEARCH_USE_OPENMP=ON \
+  -D USEARCH_SANITIZE_DEBUG=OFF
+cmake --build build_nk -j"$(nproc)"
+# L0 分发 / L1 差分 / 单元：
+ctest --test-dir build_nk --output-on-failure -L "unit|numkong" --timeout 900
+```
+
+- 源码目录：`tests/`（`unit.cpp` / `correctness.cpp` / `dispatch.cpp` / `differential.cpp`）
+- `test_numkong_dispatch` ← `tests/dispatch.cpp` — capability 阶梯、typed miss、并发 init
+- `test_numkong_diff` ← `tests/differential.cpp` — f32/i8/bf16 差分 + SIMD 非 serial 断言 + L4 钉子
+- 消毒：GCC ASan 跑 `unit|numkong`；GCC TSan 跑 `numkong`；Clang+ASan+NumKong 仍关
+- `check_coverage` **不**要求 numkong 头文件进 40% 线；禁止删除 NumKong CI job
+
+#### USearch 已接线 vs 未接线（NumKong）
+
+| 状态 | 度量 |
+|------|------|
+| 已接线 | `ip` / `cos` / `l2sq` / `hamming` / `jaccard` / `tanimoto`（→ Jaccard 核） |
+| 故意不接线 | `sorensen`（不得走 Jaccard）、`pearson`、`haversine`、稀疏集度量等 |
+| SQ8 refine | `sq8::dot8` 可选走 NumKong f32 `dot` |
 
 ### CMake 选项
 
@@ -96,7 +126,7 @@ cppcheck --enable=warning,performance,portability --error-exitcode=1 --inline-su
     include/usearch/index_plugins.hpp
 
 cmake -B build_tidy -D CMAKE_EXPORT_COMPILE_COMMANDS=ON -D USEARCH_BUILD_TEST_CPP=ON
-clang-tidy -p build_tidy cpp/test.cpp --header-filter='include/usearch/.*'
+clang-tidy -p build_tidy tests/unit.cpp --header-filter='include/usearch/.*'
 ```
 
 调试 sanitizer 构建时可用的 GDB 断点：
