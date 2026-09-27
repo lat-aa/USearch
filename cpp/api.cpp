@@ -22,38 +22,48 @@ namespace api {
 
 void mountOpenai(httplib::Server& svr, Runtime& rt,
                  std::function<bool(httplib::Request const&, httplib::Response&)> gate) {
-    svr.Get("/v1/models", [&](httplib::Request const& req, httplib::Response& res) {
+    // gate must outlive handlers: take by value into each lambda (see http.cpp stored std::function).
+    svr.Get("/v1/models", [gate, &rt](httplib::Request const& req, httplib::Response& res) {
         if (!gate(req, res))
             return;
-        setJson(res, {{"object", "list"},
-                      {"data", json::array({{{"id", rt.encoder.modelId},
-                                             {"object", "model"},
-                                             {"owned_by", "local"}}})}});
+        json data = json::array();
+        data.push_back({{"id", rt.encoder.modelId}, {"object", "model"}, {"owned_by", "local"}});
+        setJson(res, {{"object", "list"}, {"data", data}});
     });
 
-    auto embed = [&](httplib::Request const& req, httplib::Response& res) {
+    auto embed = [gate, &rt](httplib::Request const& req, httplib::Response& res) {
         if (!gate(req, res))
             return;
-        auto body = json::parse(req.body, nullptr, false);
-        if (body.is_discarded())
-            return setJson(res, {{"error", {{"message", "bad json"}}}}, 400);
-        std::string text;
-        if (body["input"].is_string())
-            text = body["input"].get<std::string>();
-        else if (body["input"].is_array() && !body["input"].empty() && body["input"][0].is_string())
-            text = body["input"][0].get<std::string>();
-        else
-            return setJson(res, {{"error", {{"message", "input must be string"}}}}, 400);
-        auto vector = rt.encoder.embed(text);
-        setJson(res, {{"object", "list"},
-                      {"data", json::array({{{"object", "embedding"}, {"index", 0}, {"embedding", vector}}})},
-                      {"model", body.value("model", rt.encoder.modelId)},
-                      {"dim", rt.encoder.dimensions}});
+        try {
+            auto body = json::parse(req.body, nullptr, false);
+            if (body.is_discarded())
+                return setJson(res, {{"error", {{"message", "bad json"}}}}, 400);
+            std::string text;
+            if (body.contains("input") && body["input"].is_string())
+                text = body["input"].get<std::string>();
+            else if (body.contains("input") && body["input"].is_array() && !body["input"].empty() &&
+                     body["input"][0].is_string())
+                text = body["input"][0].get<std::string>();
+            else
+                return setJson(res, {{"error", {{"message", "input must be string"}}}}, 400);
+            auto vector = rt.encoder.embed(text);
+            json emb = json::array();
+            for (float v : vector)
+                emb.push_back(v);
+            setJson(res, {{"object", "list"},
+                          {"data", json::array({{{"object", "embedding"}, {"index", 0}, {"embedding", std::move(emb)}}})},
+                          {"model", body.value("model", rt.encoder.modelId)},
+                          {"dim", rt.encoder.dimensions ? rt.encoder.dimensions : vector.size()}});
+        } catch (std::exception const& ex) {
+            setJson(res, {{"error", {{"message", ex.what()}}}}, 500);
+        } catch (...) {
+            setJson(res, {{"error", {{"message", "embed failed"}}}}, 500);
+        }
     };
     svr.Post("/v1/embed", embed);
     svr.Post("/v1/embeddings", embed);
 
-    svr.Post("/v1/search", [&](httplib::Request const& req, httplib::Response& res) {
+    svr.Post("/v1/search", [gate, &rt](httplib::Request const& req, httplib::Response& res) {
         if (!gate(req, res))
             return;
         auto body = json::parse(req.body, nullptr, false);
@@ -74,7 +84,7 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
         setJson(res, {{"hits", arr}});
     });
 
-    svr.Post("/v1/upsert", [&](httplib::Request const& req, httplib::Response& res) {
+    svr.Post("/v1/upsert", [gate, &rt](httplib::Request const& req, httplib::Response& res) {
         if (!gate(req, res))
             return;
         auto body = json::parse(req.body, nullptr, false);
@@ -100,7 +110,7 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
         setJson(res, {{"upserted", n}});
     });
 
-    svr.Post("/v1/delete", [&](httplib::Request const& req, httplib::Response& res) {
+    svr.Post("/v1/delete", [gate, &rt](httplib::Request const& req, httplib::Response& res) {
         if (!gate(req, res))
             return;
         auto body = json::parse(req.body, nullptr, false);
@@ -117,7 +127,7 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
         setJson(res, {{"deleted", n}});
     });
 
-    auto chat = [&](httplib::Request const& req, httplib::Response& res) {
+    auto chat = [gate, &rt](httplib::Request const& req, httplib::Response& res) {
         if (!gate(req, res))
             return;
         auto body = json::parse(req.body, nullptr, false);
@@ -231,7 +241,7 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
     svr.Post("/v1/chat", chat);
     svr.Post("/v1/chat/completions", chat);
 
-    svr.Get("/v1/rules", [&](httplib::Request const& req, httplib::Response& res) {
+    svr.Get("/v1/rules", [gate, &rt](httplib::Request const& req, httplib::Response& res) {
         if (!gate(req, res))
             return;
         json arr = json::array();
@@ -240,7 +250,7 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
         setJson(res, {{"rules", arr}});
     });
 
-    svr.Post("/v1/rules", [&](httplib::Request const& req, httplib::Response& res) {
+    svr.Post("/v1/rules", [gate, &rt](httplib::Request const& req, httplib::Response& res) {
         if (!gate(req, res))
             return;
         auto body = json::parse(req.body, nullptr, false);

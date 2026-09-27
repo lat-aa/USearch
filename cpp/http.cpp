@@ -90,11 +90,12 @@ int serve(Runtime& rt) {
     }
 
     httplib::Server svr;
-    svr.new_task_queue = [] { return new httplib::ThreadPool(1); };
+    // 默认任务队列；自定义 ThreadPool(1) 在 keep-alive 下易踩死锁/崩溃。
     Bucket bucket(rt.config.rate, rt.config.refill);
     std::mutex bucketMutex;
 
-    auto gate = [&](httplib::Request const& req, httplib::Response& res) {
+    std::function<bool(httplib::Request const&, httplib::Response&)> gate =
+        [&](httplib::Request const& req, httplib::Response& res) {
         if (req.path == "/alive")
             return true;
         if (!authOk(rt, req)) {
