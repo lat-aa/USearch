@@ -1,5 +1,3 @@
-# Ignore all files without an extension
-
 # Temporary files
 .DS_Store
 *.fbin
@@ -8,6 +6,14 @@ datasets
 bin
 *.usearch
 .cache
+.local/
+.config/config.json
+.config/store.sqlite
+.config/store.sqlite-*
+.config/models/config.json
+.config/models/meta.jsonl
+.config/models/store.sqlite
+.config/models/store.sqlite-*
 
 # C++ builds
 /build
@@ -17,7 +23,7 @@ bin
 /build_profile
 /build_artifacts
 /build*
-_deps
+/_deps
 CMakeCache.txt
 CMakeFiles
 cmake_install.cmake
@@ -26,44 +32,11 @@ cmake_install.cmake
 gmon.out
 perf.data
 
-# Python SDK
+# Python tooling (docs / local helpers)
 __pycache__
 *.egg-info
-dist/
-wheelhouse/
 venv/
 uv.lock
-
-# JS SDK
-node_modules/
-javascript/dist/
-prebuilds/
-package-lock.json
-
-# Wasm
-wasi-sdk-*
-
-# Rust SDK
-Cargo.lock
-target/
-
-# Java SDK
-.gradle
-*.class
-
-# ObjC and Swift SDKs
-.build
-.swiftpm
-Package.resolved
-
-# Golang SDK
-golang/usearch.h
-
-# C# SDK
-csharp/**/[Bb]in/
-csharp/**/[Oo]bj/
-csharp/lib
-csharp/packages
 
 # Prerequisites
 *.d
@@ -83,13 +56,6 @@ csharp/packages
 *.dylib
 *.dll
 
-# Fortran module files
-*.mod
-*.smod
-
-# Allow golang go.mod
-!go.mod
-
 # Compiled Static libraries
 *.lai
 *.la
@@ -100,4 +66,3 @@ csharp/packages
 *.exe
 *.out
 *.app
-

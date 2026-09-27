@@ -8,21 +8,15 @@ on:
 
 env:
   GH_TOKEN: ${{ secrets.SEMANTIC_RELEASE_TOKEN }}
-  PYTHONUTF8: 1
-  PYTHONFAULTHANDLER: 1
-  PYTHON_VERSION: 3.11
-  DOTNET_VERSION: 10.0.x
-  NODE_VERSION: 24
-  JAVA_VERSION: 21
-  GO_VERSION: "^1.25.0"
-  ANDROID_NDK_VERSION: 27.2.12479018
-  ANDROID_SDK_VERSION: 21
 
-# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
 permissions:
   contents: read
 
 jobs:
+  quality:
+    name: Quality matrix
+    uses: ./.github/workflows/quality.yml
+
   versioning:
     name: Update Version
     runs-on: ubuntu-24.04
@@ -38,15 +32,9 @@ jobs:
           verbose: "true"
           version-file: "VERSION"
           update-version-in: |
-            package.json:"version": "(\d+\.\d+\.\d+)"
             CITATION.cff:^version: (\d+\.\d+\.\d+)
-            Cargo.toml:^version = "(\d+\.\d+\.\d+)"
-            wasmer.toml:^version = "(\d+\.\d+\.\d+)"
             conanfile.py:version = "(\d+\.\d+\.\d+)"
-            java/README.md:usearchVersion = '(\d+\.\d+\.\d+)'
-            java/README.md:version: '(\d+\.\d+\.\d+)'
             README.md:version = {(\d+\.\d+\.\d+)}
-            csharp/nuget/nuget-package.props:>(\d+\.\d+\.\d+)</Version>
             CMakeLists.txt:VERSION (\d+\.\d+\.\d+)
           update-major-version-in: |
             include/usearch/index.hpp:^#define USEARCH_VERSION_MAJOR (\d+)
@@ -57,246 +45,319 @@ jobs:
           dry-run: "true"
 
   test_ubuntu_gcc:
-    name: Ubuntu (GCC 14)
+    name: Ubuntu (GCC)
     runs-on: ubuntu-24.04
     env:
       CC: gcc
       CXX: g++
-
     steps:
       - name: Checkout
         uses: actions/checkout@v6
       - name: Pull Git submodules
         run: git submodule update --init --recursive
-        # C/C++
-      - name: Build C/C++
+      - name: Build C++
         run: |
-          sudo apt update
-          sudo apt install -y cmake build-essential libjemalloc-dev libomp-dev
-          cmake -B build_artifacts -D CMAKE_BUILD_TYPE=RelWithDebInfo -D USEARCH_BUILD_TEST_CPP=1 -D USEARCH_BUILD_TEST_C=1 -D USEARCH_BUILD_LIB_C=1 -D USEARCH_BUILD_SQLITE=1 -D USEARCH_USE_OPENMP=1 -D USEARCH_USE_NUMKONG=1 -D USEARCH_USE_JEMALLOC=1
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libjemalloc-dev libomp-dev
+          cmake -B build_artifacts \
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+            -D USEARCH_BUILD_TEST_CPP=1 \
+            -D USEARCH_BUILD_BENCH_CPP=1 \
+            -D USEARCH_USE_OPENMP=1 \
+            -D USEARCH_USE_NUMKONG=0 \
+            -D USEARCH_USE_JEMALLOC=0 \
+            -D USEARCH_SANITIZE_DEBUG=OFF
           cmake --build build_artifacts --config RelWithDebInfo
-      - name: Test C++
-        run: build_artifacts/test_cpp
-      - name: Test C
-        run: build_artifacts/test_c
-        # Python
-      - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      - name: Build Python
-        run: |
-          python -m pip install --upgrade pip
-          pip install pytest pytest-repeat numpy numba cppyy
-
-          python -m pip install .
-      - name: Test Python
-        run: pytest
-        # JavaScript
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-      - name: Install dependencies
-        run: npm install --skip-scripts
-      - name: Build JavaScript
-        run: npm run build-js
-      - name: Test JavaScript
-        run: npm test
-        # Rust
-      - name: Set up Rust
-        run: |
-          rustup update stable
-          rustup default stable
-          rustup component add clippy
-          rustc -vV
-      - name: Lint Rust
-        run: cargo clippy --all-targets -- -D warnings
-      - name: Build Rust
-        run: cargo build
-      - name: Test Rust
-        run: cargo test
-        # Java
-      - name: Setup Java
-        uses: actions/setup-java@v5
-        with:
-          java-version: ${{ env.JAVA_VERSION }}
-          distribution: "adopt"
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v5
-      - name: Check Java formatting
-        run: gradle spotlessCheck
-      - name: Test Java
-        run: gradle clean build
-        # C#
-      - name: Setup .NET ${{ env.DOTNET_VERSION }}
-        uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
-      - name: Test .NET
-        run: |
-          mkdir -p "${{ github.workspace }}/csharp/lib/runtimes/linux-x64/native"
-          cp "${{ github.workspace }}/build_artifacts/libusearch_c.so" "${{ github.workspace }}/csharp/lib/runtimes/linux-x64/native"
-          cp "${{ github.workspace }}/build_artifacts/numkong/libnumkong.so" "${{ github.workspace }}/csharp/lib/runtimes/linux-x64/native"
-          dotnet test -c Debug --logger "console;verbosity=detailed"
-        shell: bash
-        working-directory: ${{ github.workspace }}/csharp
-        # GoLang
-        # With `LD_DEBUG=all` we detect the addresses of the libraries that are loaded
-      - name: Test GoLang
-        run: |
-          sudo cp ${{ github.workspace }}/build_artifacts/libusearch_c.so /usr/lib/libusearch_c.so
-          sudo cp ${{ github.workspace }}/c/usearch.h /usr/include/usearch.h
-          LD_DEBUG=all go test -v
-        working-directory: ${{ github.workspace }}/golang/
+      - name: Test C++ (ctest)
+        run: ctest --test-dir build_artifacts --output-on-failure -L unit --timeout 600
 
   test_ubuntu_clang:
-    name: Ubuntu (Clang 20)
+    name: Ubuntu (Clang)
     runs-on: ubuntu-24.04
     env:
-      CC: clang-20
-      CXX: clang++-20
-
+      CC: clang
+      CXX: clang++
     steps:
       - name: Checkout
         uses: actions/checkout@v6
       - name: Pull Git submodules
         run: git submodule update --init --recursive
-        # C/C++
-      - name: Build C/C++
+      - name: Build C++
         run: |
-          sudo apt update
-          sudo apt install -y cmake build-essential libjemalloc-dev clang-20
-          cmake -B build_artifacts -D CMAKE_BUILD_TYPE=RelWithDebInfo -D USEARCH_BUILD_TEST_CPP=1 -D USEARCH_BUILD_TEST_C=1 -D USEARCH_BUILD_LIB_C=1 -D USEARCH_BUILD_SQLITE=1 -D USEARCH_USE_OPENMP=0 -D USEARCH_USE_NUMKONG=1 -D USEARCH_USE_JEMALLOC=1
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential clang libomp-dev
+          cmake -B build_artifacts \
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+            -D USEARCH_BUILD_TEST_CPP=1 \
+            -D USEARCH_BUILD_BENCH_CPP=1 \
+            -D USEARCH_USE_OPENMP=1 \
+            -D USEARCH_USE_NUMKONG=0 \
+            -D USEARCH_SANITIZE_DEBUG=OFF
           cmake --build build_artifacts --config RelWithDebInfo
-      - name: Test C++
-        run: build_artifacts/test_cpp
-      - name: Test C
-        run: build_artifacts/test_c
-        # JavaScript
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-      - name: Install dependencies
-        run: npm install --skip-scripts
-      - name: Build JavaScript
-        run: npm run build-js
-      - name: Test JavaScript
-        run: npm test
-        # Python
-      - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      - name: Build Python
-        run: |
-          python -m pip install --upgrade pip
-          pip install pytest pytest-repeat numpy numba cppyy
+      - name: Test C++ (ctest)
+        run: ctest --test-dir build_artifacts --output-on-failure -L unit --timeout 600
 
-          python -m pip install .
-        env:
-          CXX: clang++
-          CC: clang++ # Override the default compiler
-      - name: Test Python
-        run: pytest
-        # Rust
-      - name: Set up Rust
+  test_asan:
+    name: Ubuntu (ASan+UBSan)
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang
+      CXX: clang++
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Pull Git submodules
+        run: git submodule update --init --recursive
+      - name: Build with sanitizers
         run: |
-          rustup update stable
-          rustup default stable
-          rustc -vV
-      - name: Build Rust
-        run: cargo build
-      - name: Test Rust
-        run: cargo test
-        # C#
-      - name: Setup .NET ${{ env.DOTNET_VERSION }}
-        uses: actions/setup-dotnet@v5
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential clang libomp-dev
+          cmake -B build_asan \
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+            -D USEARCH_BUILD_TEST_CPP=1 \
+            -D USEARCH_BUILD_BENCH_CPP=0 \
+            -D USEARCH_USE_NUMKONG=0 \
+            -D USEARCH_ENABLE_ASAN=ON \
+            -D USEARCH_ENABLE_UBSAN=ON \
+            -D USEARCH_SANITIZE_DEBUG=OFF
+          cmake --build build_asan --config RelWithDebInfo -j$(nproc)
+      - name: ctest under ASan
+        run: ctest --test-dir build_asan --output-on-failure -L unit --timeout 900
+
+  test_tsan:
+    name: Ubuntu (TSan)
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang
+      CXX: clang++
+      TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Pull Git submodules
+        run: git submodule update --init --recursive
+      - name: Build with TSan
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential clang libomp-dev
+          cmake -B build_tsan \
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+            -D USEARCH_BUILD_TEST_CPP=1 \
+            -D USEARCH_BUILD_BENCH_CPP=0 \
+            -D USEARCH_USE_NUMKONG=0 \
+            -D USEARCH_USE_OPENMP=0 \
+            -D USEARCH_ENABLE_TSAN=ON \
+            -D USEARCH_SANITIZE_DEBUG=OFF
+          cmake --build build_tsan --config RelWithDebInfo -j$(nproc)
+      - name: ctest under TSan
+        run: ctest --test-dir build_tsan --output-on-failure -L unit --timeout 1200
+
+  test_fuzz:
+    name: Ubuntu (libFuzzer)
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Pull Git submodules
+        run: git submodule update --init --recursive
+      - name: Build fuzz_index
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang
+          cmake -B build_fuzz \
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+            -D USEARCH_BUILD_TEST_CPP=1 \
+            -D USEARCH_BUILD_BENCH_CPP=0 \
+            -D USEARCH_BUILD_FUZZ=ON \
+            -D USEARCH_USE_NUMKONG=0 \
+            -D USEARCH_SANITIZE_DEBUG=OFF \
+            -D USEARCH_ENABLE_ASAN=OFF \
+            -D USEARCH_ENABLE_UBSAN=OFF
+          cmake --build build_fuzz --target fuzz_index -j$(nproc)
+      - name: Fuzz smoke (60s)
+        run: build_fuzz/fuzz_index -max_total_time=60 -timeout=10 -rss_limit_mb=2048
+
+  test_static:
+    name: Static analysis
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Pull Git submodules
+        run: git submodule update --init --recursive
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-tidy cppcheck cmake clang
+      - name: cppcheck
+        run: |
+          # warning-only：performance/portability 对 header-only 模板噪声过大。
+          cppcheck --enable=warning --error-exitcode=1 --inline-suppr \
+            --suppress=missingIncludeSystem --suppress=unusedFunction \
+            --suppress=throwInNoexceptFunction --suppress=returnDanglingLifetime \
+            --suppress=duplInheritedMember --suppress=toomanyconfigs \
+            --suppress=signConversionCond --suppress=uselessAssignmentPtrArg \
+            --suppress=nullPointerRedundantCheck --suppress=pointerSize \
+            --suppress=unmatchedSuppression \
+            -I include -I stringzilla/include \
+            include/usearch/index.hpp \
+            include/usearch/index_dense.hpp \
+            include/usearch/index_plugins.hpp \
+            cpp/fuzz_index.cpp
+      - name: Configure compile_commands
+        run: |
+          cmake -B build_tidy \
+            -D CMAKE_BUILD_TYPE=Debug \
+            -D CMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -D CMAKE_CXX_COMPILER=clang++ \
+            -D USEARCH_BUILD_TEST_CPP=1 \
+            -D USEARCH_BUILD_FUZZ=ON \
+            -D USEARCH_BUILD_BENCH_CPP=0 \
+            -D USEARCH_USE_NUMKONG=0 \
+            -D USEARCH_SANITIZE_DEBUG=OFF
+      - name: clang-tidy (CI hard gate)
+        run: |
+          clang-tidy -p build_tidy \
+            --config-file=.clang-tidy.ci \
+            cpp/fuzz_index.cpp \
+            --warnings-as-errors='*' \
+            --header-filter='^$' \
+            -extra-arg=-Wno-unknown-warning-option
+
+  test_coverage:
+    name: Coverage (GCC)
+    runs-on: ubuntu-24.04
+    env:
+      CC: gcc
+      CXX: g++
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Pull Git submodules
+        run: git submodule update --init --recursive
+      - name: Build with coverage
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ lcov
+          cmake -B build_cov \
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+            -D USEARCH_BUILD_TEST_CPP=1 \
+            -D USEARCH_BUILD_BENCH_CPP=0 \
+            -D USEARCH_USE_NUMKONG=0 \
+            -D USEARCH_ENABLE_COVERAGE=ON \
+            -D USEARCH_SANITIZE_DEBUG=OFF
+          cmake --build build_cov -j$(nproc)
+      - name: Run tests
+        run: ctest --test-dir build_cov --output-on-failure -L unit --timeout 1800
+      - name: lcov report
+        run: |
+          chmod +x scripts/check_coverage.sh
+          lcov --capture --directory build_cov --output-file coverage.info --ignore-errors mismatch,gcov || \
+            lcov --capture --directory build_cov --output-file coverage.info
+          lcov --extract coverage.info '*/include/usearch/*' --output-file coverage_usearch.info || \
+            cp coverage.info coverage_usearch.info
+          lcov --list coverage_usearch.info | tee coverage.txt
+          MIN_LINE_PCT=40 ./scripts/check_coverage.sh coverage_usearch.info
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
         with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
-      - name: Test .NET
+          name: coverage-lcov
+          path: |
+            coverage.info
+            coverage_usearch.info
+            coverage.txt
+
+  test_linux_arm:
+    name: Linux (ARM64)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Pull Git submodules
+        run: git submodule update --init --recursive
+      - name: Build C++
         run: |
-          mkdir -p "${{ github.workspace }}/csharp/lib/runtimes/linux-x64/native"
-          cp "${{ github.workspace }}/build_artifacts/libusearch_c.so" "${{ github.workspace }}/csharp/lib/runtimes/linux-x64/native"
-          cp "${{ github.workspace }}/build_artifacts/numkong/libnumkong.so" "${{ github.workspace }}/csharp/lib/runtimes/linux-x64/native"
-          dotnet test -c Debug --logger "console;verbosity=detailed"
-        shell: bash
-        working-directory: ${{ github.workspace }}/csharp
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+          cmake -B build_artifacts \
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+            -D USEARCH_BUILD_TEST_CPP=1 \
+            -D USEARCH_BUILD_BENCH_CPP=0 \
+            -D USEARCH_USE_NUMKONG=0 \
+            -D USEARCH_SANITIZE_DEBUG=OFF
+          cmake --build build_artifacts --config RelWithDebInfo -j"$(nproc)"
+      - name: Test C++ (ctest)
+        run: ctest --test-dir build_artifacts --output-on-failure -L unit --timeout 600
+
+  test_windows_asan:
+    name: Windows (MSVC ASan)
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Pull Git submodules
+        run: git submodule update --init --recursive
+      - name: Locate MSVC ASan runtime
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $dll = Get-ChildItem -Path "$vs\VC\Tools\MSVC" -Recurse -Filter "clang_rt.asan_dynamic-x86_64.dll" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+          if (-not $dll) { throw "MSVC ASan DLL not found under $vs\VC\Tools\MSVC" }
+          Write-Host "ASan DLL: $($dll.FullName)"
+          Set-Content -Path "$env:GITHUB_WORKSPACE/asan_dll_dir.txt" -Value $dll.DirectoryName -NoNewline
+          Add-Content -Path $env:GITHUB_PATH -Value $dll.DirectoryName
+          Add-Content -Path $env:GITHUB_ENV -Value "ASAN_DLL_DIR=$($dll.DirectoryName)"
+      - name: Build with ASan
+        run: |
+          cmake -B build_asan `
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo `
+            -D USEARCH_BUILD_TEST_CPP=1 `
+            -D USEARCH_BUILD_BENCH_CPP=0 `
+            -D USEARCH_USE_NUMKONG=0 `
+            -D USEARCH_ENABLE_ASAN=ON `
+            -D USEARCH_SANITIZE_DEBUG=OFF
+          cmake --build build_asan --config RelWithDebInfo
+      - name: Stage ASan DLL beside test binaries
+        shell: pwsh
+        run: |
+          $dllDir = if ($env:ASAN_DLL_DIR) { $env:ASAN_DLL_DIR } else { Get-Content -Raw "$env:GITHUB_WORKSPACE/asan_dll_dir.txt" }
+          if (-not (Test-Path "$dllDir\clang_rt.asan_dynamic-x86_64.dll")) { throw "missing $dllDir\clang_rt.asan_dynamic-x86_64.dll" }
+          Get-ChildItem build_asan -Recurse -Filter "*.exe" | ForEach-Object {
+            Copy-Item "$dllDir\clang_rt.asan_dynamic-x86_64.dll" $_.DirectoryName -Force
+          }
+      - name: Test
+        run: ctest --test-dir build_asan --output-on-failure -C RelWithDebInfo -L unit --timeout 900
+        env:
+          ASAN_OPTIONS: halt_on_error=1
 
   test_macos:
     name: macOS
     runs-on: macos-15
-
     steps:
       - name: Checkout
         uses: actions/checkout@v6
       - name: Pull Git submodules
         run: git submodule update --init --recursive
-        # C/C++
-      - name: Build C/C++
+      - name: Build C++
         run: |
           brew update
           brew reinstall cmake
-          cmake -B build_artifacts -D CMAKE_BUILD_TYPE=RelWithDebInfo -D USEARCH_BUILD_TEST_CPP=1 -D USEARCH_BUILD_TEST_C=1 -D USEARCH_BUILD_LIB_C=1 -D USEARCH_BUILD_SQLITE=1
+          cmake -B build_artifacts \
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+            -D USEARCH_BUILD_TEST_CPP=1 \
+            -D USEARCH_BUILD_BENCH_CPP=1 \
+            -D USEARCH_USE_NUMKONG=1 \
+            -D USEARCH_SANITIZE_DEBUG=OFF
           cmake --build build_artifacts --config RelWithDebInfo
-      - name: Test C++
-        run: build_artifacts/test_cpp
-      - name: Test C
-        run: build_artifacts/test_c
-        # JavaScript
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-      - name: Install dependencies
-        run: npm install --skip-scripts
-      - name: Build JavaScript
-        run: npm run build-js
-      - name: Test JavaScript
-        run: npm test
-        # Python
-      - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      - name: Build Python
-        run: |
-          python -m pip install --upgrade pip
-          pip install pytest pytest-repeat numpy
-          python -m pip install .
-        env:
-          CXX: clang++
-          CC: clang++ # Override the default compiler
-      - name: Test Python
-        run: pytest
-        # ObjC/Swift
-      - name: Build ObjC/Swift
-        run: swift build
-      - name: Test ObjC/Swift
-        run: swift test
-        # Rust
-      - name: Set up Rust
-        run: |
-          rustup update stable
-          rustup default stable
-          rustc -vV
-      - name: Build Rust
-        run: cargo build
-      - name: Test Rust
-        run: cargo test
-        # C#
-      - name: Setup .NET ${{ env.DOTNET_VERSION }}
-        uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
-      - name: Test .NET
-        run: |
-          mkdir -p "${{ github.workspace }}/csharp/lib/runtimes/osx-arm64/native"
-          cp "${{ github.workspace }}/build_artifacts/libusearch_c.dylib" "${{ github.workspace }}/csharp/lib/runtimes/osx-arm64/native"
-          dotnet test -c Debug --logger "console;verbosity=minimal" --filter "FullyQualifiedName!=Cloud.Unum.USearch.Tests.UsearchIndexTests.PersistAndRestore"
-        shell: bash
-        working-directory: ${{ github.workspace }}/csharp
+      - name: Test C++ (ctest)
+        run: ctest --test-dir build_artifacts --output-on-failure -L unit --timeout 600
 
   test_windows_x86:
     name: Windows (X86)
@@ -306,338 +367,43 @@ jobs:
         uses: actions/checkout@v6
       - name: Pull Git submodules
         run: git submodule update --init --recursive
-        # C/C++
-      - name: Build C/C++
+      - name: Build C++
         run: |
-          choco install cmake -y
-          cmake -B build_artifacts -D CMAKE_BUILD_TYPE=RelWithDebInfo -D USEARCH_BUILD_TEST_CPP=1 -D USEARCH_BUILD_TEST_C=1 -D USEARCH_BUILD_LIB_C=1 -D USEARCH_BUILD_SQLITE=0 -D USEARCH_USE_NUMKONG=1
+          cmake -B build_artifacts `
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo `
+            -D USEARCH_BUILD_TEST_CPP=1 `
+            -D USEARCH_BUILD_BENCH_CPP=1 `
+            -D USEARCH_USE_NUMKONG=1 `
+            -D USEARCH_SANITIZE_DEBUG=OFF
           cmake --build build_artifacts --config RelWithDebInfo
-      - name: Test C++
-        run: .\build_artifacts\test_cpp.exe
-      - name: Test C
-        run: .\build_artifacts\test_c.exe
-        # Python
-      - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      - name: Build Python
-        run: |
-          python -m pip install --upgrade pip
-          pip install pytest pytest-repeat numpy
-          python -m pip install .
-      - name: Test Python
-        run: pytest
-        # JavaScript
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-      - name: Install dependencies
-        run: npm install --skip-scripts
-      - name: Build JavaScript
-        run: npm run build-js
-      - name: Test JavaScript
-        run: npm test
-        # Rust
-      - name: Set up Rust
-        run: |
-          rustup update stable
-          rustup default stable
-          rustc -vV
-      - name: Build Rust
-        run: cargo build
-      - name: Test Rust
-        run: cargo test
-        # C#
-      - name: Setup .NET ${{ env.DOTNET_VERSION }}
-        uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
-      - name: Test .NET
-        shell: pwsh
-        run: |
-          $nativeDir = "${{ github.workspace }}\csharp\lib\runtimes\win-x64\native"
-          New-Item -ItemType Directory -Force -Path $nativeDir | Out-Null
-          Copy-Item "${{ github.workspace }}\build_artifacts\libusearch_c.dll" -Destination $nativeDir
-          Copy-Item "${{ github.workspace }}\build_artifacts\numkong.dll" -Destination $nativeDir
-          dotnet test -c Debug --logger "console;verbosity=detailed"
-        working-directory: ${{ github.workspace }}/csharp
+      - name: Test C++ (ctest)
+        run: ctest --test-dir build_artifacts --output-on-failure -C RelWithDebInfo -L unit --timeout 600
 
-  test_windows_arm:
-    name: Windows (ARM)
-    runs-on: windows-2022
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-      - name: Pull Git submodules
-        run: git submodule update --init --recursive
-
-      - name: Setup MSVC for ARM64
-        uses: microsoft/setup-msbuild@v2
-        # C/C++
-      - name: Build C/C++ (ARM64)
-        run: |
-          choco install cmake
-          cmake -G "Visual Studio 17 2022" -A ARM64 -B build_artifacts -D CMAKE_BUILD_TYPE=RelWithDebInfo -D USEARCH_BUILD_LIB_C=1 -D USEARCH_BUILD_SQLITE=0 -D USEARCH_BUILD_TEST_CPP=0 -D USEARCH_BUILD_TEST_C=0
-          cmake --build build_artifacts --config RelWithDebInfo
-
-      - name: Verify ARM64 build artifacts
-        run: |
-          if (!(Test-Path "build_artifacts\libusearch_c.dll")) { exit 1 }
-          Write-Host "ARM64 DLL built successfully"
-
-  build_docker:
-    name: Build Docker
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-      - name: Pull Git submodules
-        run: git submodule update --init --recursive
-      - name: Build
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          load: true
-          push: false
-
-  build_wheels_linux:
-    name: Build Python Wheels (Linux)
-    runs-on: ubuntu-24.04
-    needs: [test_ubuntu_gcc, test_ubuntu_clang]
-    strategy:
-      matrix:
-        python-version: ["310", "311", "312", "313", "314", "314t"]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      - name: Setup QEMU
-        uses: docker/setup-qemu-action@v3
-      - name: Install cibuildwheel
-        uses: nick-fields/retry@v4
-        with:
-          max_attempts: 3
-          retry_wait_seconds: 10
-          timeout_minutes: 180
-          command: python -m pip install "cibuildwheel~=4.1"
-      - name: Build wheels
-        uses: nick-fields/retry@v4
-        with:
-          max_attempts: 2
-          retry_wait_seconds: 30
-          timeout_minutes: 180
-          command: cibuildwheel --output-dir wheelhouse
-        env:
-          CIBW_BUILD: cp${{ matrix.python-version }}-*
-          CIBW_PLATFORM: linux
-
-  build_wheels_macos:
-    name: Build Python Wheels (macOS)
-    runs-on: macos-14
-    needs: [test_macos]
-    strategy:
-      matrix:
-        python-version: ["310", "311", "312", "313", "314", "314t"]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      - name: Install cibuildwheel
-        uses: nick-fields/retry@v4
-        with:
-          max_attempts: 3
-          retry_wait_seconds: 10
-          timeout_minutes: 180
-          command: python -m pip install "cibuildwheel~=4.1"
-      - name: Build wheels
-        uses: nick-fields/retry@v4
-        with:
-          max_attempts: 2
-          retry_wait_seconds: 30
-          timeout_minutes: 180
-          command: cibuildwheel --output-dir wheelhouse
-        env:
-          CIBW_BUILD: cp${{ matrix.python-version }}-*
-          CIBW_PLATFORM: macos
-
-  build_wheels_windows:
-    name: Build Python Wheels (Windows)
-    runs-on: windows-2022
-    needs: [test_windows_x86]
-    strategy:
-      matrix:
-        python-version: ["310", "311", "312", "313", "314", "314t"]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      - name: Install cibuildwheel
-        uses: nick-fields/retry@v4
-        with:
-          max_attempts: 3
-          retry_wait_seconds: 10
-          timeout_minutes: 180
-          command: python -m pip install "cibuildwheel~=4.1"
-      - name: Build wheels
-        uses: nick-fields/retry@v4
-        with:
-          max_attempts: 2
-          retry_wait_seconds: 30
-          timeout_minutes: 180
-          command: cibuildwheel --output-dir wheelhouse
-        env:
-          CIBW_BUILD: cp${{ matrix.python-version }}-*
-          CIBW_PLATFORM: windows
-
-  test_ubuntu_cross_compilation:
-    name: Cross-Compile Linux
+  # API smoke pulls llama.cpp — functional gate (sanitizers covered by unit jobs).
+  test_api_smoke:
+    name: API smoke
     runs-on: ubuntu-24.04
     env:
       CC: clang
       CXX: clang++
-      AR: llvm-ar
-      NM: llvm-nm
-      RANLIB: llvm-ranlib
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            target: x86_64-linux-gnu
-          - arch: arm64
-            target: aarch64-linux-gnu
-
     steps:
       - name: Checkout
         uses: actions/checkout@v6
       - name: Pull Git submodules
         run: git submodule update --init --recursive
-        # C/C++
-        # We need to install the cross-compilation toolchain for ARM64 and ARMHF
-      - name: Install dependencies
+      - name: Build api
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang lld make crossbuild-essential-arm64 crossbuild-essential-armhf libjemalloc-dev
-
-      - name: Build C/C++
-        run: |
-          cmake -B build_artifacts \
+          sudo apt-get install -y cmake clang libomp-dev python3 curl
+          cmake -B build_api \
             -D CMAKE_BUILD_TYPE=RelWithDebInfo \
-            -D CMAKE_EXPORT_COMPILE_COMMANDS=1 \
-            -D CMAKE_C_COMPILER_TARGET=${{ matrix.target }} \
-            -D CMAKE_CXX_COMPILER_TARGET=${{ matrix.target }} \
-            -D CMAKE_SYSTEM_NAME=Linux \
-            -D CMAKE_SYSTEM_PROCESSOR=${{ matrix.arch }} \
-            -D USEARCH_BUILD_LIB_C=1 \
-            -D USEARCH_BUILD_SQLITE=1 \
             -D USEARCH_BUILD_TEST_CPP=0 \
-            -D USEARCH_BUILD_BENCH_CPP=0
-
-          cmake --build build_artifacts --config RelWithDebInfo
-        # We can't run the produced builds, but we can make sure they exist
-      - name: Test artifacts presence
+            -D USEARCH_BUILD_BENCH_CPP=0 \
+            -D USEARCH_BUILD_API=ON \
+            -D USEARCH_USE_NUMKONG=0 \
+            -D USEARCH_SANITIZE_DEBUG=OFF
+          cmake --build build_api --target api -j$(nproc)
+      - name: Smoke HTTP/MCP
         run: |
-          test -e build_artifacts/libusearch_c.so
-          test -e build_artifacts/libusearch_sqlite.so
-
-  test_android:
-    name: Android
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - processor: armv7a
-            abi: armeabi-v7a
-            target: armv7-linux-androideabi
-            arch: arm32
-          - processor: aarch64
-            abi: arm64-v8a
-            target: aarch64-linux-android
-            arch: arm64
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-      - name: Pull Git submodules
-        run: git submodule update --init --recursive
-
-      - name: Install NDK
-        run: |
-          ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --install "ndk;${{ env.ANDROID_NDK_VERSION }}"
-
-      - name: Build C/C++
-        run: |
-          cmake -B build_artifacts \
-            -D CMAKE_BUILD_TYPE=RelWithDebInfo \
-            -D CMAKE_EXPORT_COMPILE_COMMANDS=1 \
-            -D CMAKE_TOOLCHAIN_FILE=${ANDROID_HOME}/ndk/${{ env.ANDROID_NDK_VERSION }}/build/cmake/android.toolchain.cmake \
-            -D CMAKE_ANDROID_STL_TYPE=c++_static \
-            -D ANDROID_PLATFORM=${{ env.ANDROID_SDK_VERSION }} \
-            -D ANDROID_ABI=${{ matrix.abi }} \
-            -D USEARCH_BUILD_LIB_C=1 \
-            -D USEARCH_BUILD_TEST_CPP=0 \
-            -D USEARCH_BUILD_BENCH_CPP=0
-
-          cmake --build build_artifacts --config RelWithDebInfo
-        # We can't run the produced builds, but we can make sure they exist
-      - name: Test artifacts presence
-        run: test -e build_artifacts/libusearch_c.so
-        # Rust
-      - name: Set up Rust
-        run: |
-          rustup update stable
-          rustup default stable
-          rustup target add ${{ matrix.target }}
-          rustc -vV
-
-      - name: Set up Rust Env
-        run: |
-          TOOLCHAIN=${ANDROID_HOME}/ndk/${{ env.ANDROID_NDK_VERSION }}/toolchains/llvm/prebuilt/linux-x86_64/bin/
-          NDK_CLANG=$(find ${TOOLCHAIN} -name "${{ matrix.processor }}*${{ env.ANDROID_SDK_VERSION }}-clang")
-          echo "CC_${{ matrix.target }}=${NDK_CLANG}" >> ${GITHUB_ENV}
-          echo "CXX_${{ matrix.target }}=${NDK_CLANG}++" >> ${GITHUB_ENV}
-          echo "AR_${{ matrix.target }}=${TOOLCHAIN}/llvm-ar" >> ${GITHUB_ENV}
-          echo "CARGO_${{ matrix.target }}=${NDK_CLANG}" >> ${GITHUB_ENV}
-          echo "CARGO_${{ matrix.target }}=${TOOLCHAIN}/llvm-ar" >> ${GITHUB_ENV}
-
-      - name: Build Rust
-        run: cargo build --target ${{ matrix.target }}
-        # Java
-      - name: Set up JDK 21
-        uses: actions/setup-java@v5
-        with:
-          java-version: ${{ env.JAVA_VERSION }}
-          distribution: "adopt"
-        # We skip native compilation with Gradle and focus just on the Java part,
-        # assuming the we won't be able to tun the tests without emulation
-      - name: Check Java formatting
-        run: gradle spotlessCheck
-      - name: Test Java bindings with Android library
-        run: |
-          mkdir -p build/libs/usearch/shared/
-          cp build_artifacts/libusearch_c.so build/libs/usearch/shared/
-          javac -cp . java/cloud/unum/usearch/*.java
-          echo "Java compilation successful with Android NDK library"
-
-      - name: Package Android libraries for release
-        run: |
-          version=$(cat VERSION)
-          zip -r usearch_android_${{ matrix.arch }}_${version}.zip build_artifacts/libusearch_c.so c/usearch.h
-
-      - name: Upload Android libraries
-        uses: actions/upload-artifact@v5
-        with:
-          name: android-${{ matrix.abi }}-libraries
-          path: usearch_android_*.zip
+          chmod +x scripts/smoke_api.sh
+          API_BIN="$PWD/build_api/api" ./scripts/smoke_api.sh

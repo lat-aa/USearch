@@ -1,0 +1,5 @@
+# CI hard-gate clang-tidy — start from empty set (avoid clang-analyzer false positives in headers).
+Checks: '-*,bugprone-use-after-move,bugprone-dangling-handle,modernize-use-nullptr,modernize-use-override,readability-misleading-indentation'
+WarningsAsErrors: '*'
+HeaderFilterRegex: ''
+FormatStyle: none

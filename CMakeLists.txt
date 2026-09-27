@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.11 FATAL_ERROR)
 project(
     usearch
     VERSION 2.26.2
-    LANGUAGES C CXX
+    LANGUAGES CXX
     DESCRIPTION "Smaller & Faster Single-File Vector Search Engine from Unum"
     HOMEPAGE_URL "https://github.com/unum-cloud/USearch"
 )
@@ -30,15 +30,12 @@ option(USEARCH_USE_JEMALLOC "Use JeMalloc for faster memory allocations" OFF)
 
 option(USEARCH_BUILD_TEST_CPP "Compile a native unit test in C++" ${USEARCH_IS_MAIN_PROJECT})
 option(USEARCH_BUILD_BENCH_CPP "Compile a native benchmark in C++" ${USEARCH_IS_MAIN_PROJECT})
-option(USEARCH_BUILD_LIB_C "Compile a native library for the C 99 interface" OFF)
-option(USEARCH_BUILD_TEST_C "Compile a test for the C 99 interface" OFF)
-option(USEARCH_BUILD_JNI "Compile JNI library for Java bindings" OFF)
-option(USEARCH_BUILD_WOLFRAM "Compile Wolfram Language bindings" OFF)
-option(USEARCH_BUILD_SQLITE "Compile separate SQLite extension" OFF)
+option(USEARCH_BUILD_API "Compile the C++ HTTP/MCP api binary" OFF)
 
 # Includes
 set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake ${CMAKE_MODULE_PATH})
 include(ExternalProject)
+include(sanitizers)
 
 # Configuration
 include(GNUInstallDirs)
@@ -56,12 +53,11 @@ set(USEARCH_CMAKE_PROJECT_CONFIG_FILE "${USEARCH_CMAKE_CONFIG_DIR}/${PROJECT_NAM
 set(USEARCH_CMAKE_PROJECT_TARGETS_FILE "${USEARCH_CMAKE_CONFIG_DIR}/${PROJECT_NAME}Targets.cmake")
 set(USEARCH_PKGCONFIG_INSTALL_DIR "${CMAKE_INSTALL_DATADIR}/pkgconfig")
 
-include(CheckCSourceCompiles)
+include(CheckCXXSourceCompiles)
 # Check for `__fp16` support
-check_c_source_compiles(
+check_cxx_source_compiles(
     [=[
-int
-main(int argc, char *argv)
+int main()
 {
   __fp16 a = 1.0;
   __fp16 b = a + a;
@@ -72,10 +68,9 @@ main(int argc, char *argv)
 )
 
 # Check for `_Float16` support
-check_c_source_compiles(
+check_cxx_source_compiles(
     [=[
-int
-main(int argc, char *argv)
+int main()
 {
   _Float16 a = 1.0;
   _Float16 b = a + a;
@@ -86,10 +81,9 @@ main(int argc, char *argv)
 )
 
 # Check for `__bf16` support
-check_c_source_compiles(
+check_cxx_source_compiles(
     [=[
-int
-main(int argc, char *argv)
+int main()
 {
   __bf16 a = 1.0;
   __bf16 b = a + a;
@@ -100,10 +94,9 @@ main(int argc, char *argv)
 )
 
 # Check for `_Bfloat16` support
-check_c_source_compiles(
+check_cxx_source_compiles(
     [=[
-int
-main(int argc, char *argv)
+int main()
 {
   _Bfloat16 a = 1.0;
   _Bfloat16 b = a + a;
@@ -211,8 +204,11 @@ if (NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE RelWithDebInfo)
 endif ()
 
-# Include directories
-set(USEARCH_HEADER_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/numkong/include")
+# Include directories for native targets (tests / benches)
+set(USEARCH_HEADER_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/include")
+if (USEARCH_USE_NUMKONG)
+    list(APPEND USEARCH_HEADER_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/numkong/include")
+endif ()
 
 # Function to setup target
 function (setup_target TARGET_NAME)
@@ -225,12 +221,7 @@ function (setup_target TARGET_NAME)
                     $<$<CONFIG:RELWITHDEBINFO>:-O3
                     -g>
                     $<$<CONFIG:DEBUG>:-O0
-                    -g
-                    -fsanitize=address
-                    -fsanitize=leak
-                    -fsanitize=alignment
-                    -fsanitize=undefined
-                    >
+                    -g>
                     -ffast-math
                     -fPIC
                     -Wall
@@ -242,17 +233,7 @@ function (setup_target TARGET_NAME)
                     -pedantic
                     -fdiagnostics-color=always
         )
-        target_link_options(
-            ${TARGET_NAME}
-            PRIVATE
-            $<$<CONFIG:DEBUG>:-g
-            -fsanitize=address
-            -fsanitize=leak
-            -fsanitize=alignment
-            -fsanitize=undefined
-            >
-            -fPIC
-        )
+        target_link_options(${TARGET_NAME} PRIVATE -fPIC)
 
         if (USEARCH_USE_OPENMP)
             target_link_libraries(${TARGET_NAME} PRIVATE OpenMP::OpenMP_CXX)
@@ -267,36 +248,14 @@ function (setup_target TARGET_NAME)
                     $<$<CONFIG:RELWITHDEBINFO>:-O3
                     -g>
                     $<$<CONFIG:DEBUG>:-O0
-                    -g
-                    -fsanitize=address
-                    -fsanitize=alignment
-                    -fsanitize=undefined
-                    >
+                    -g>
                     -ffast-math
                     -fPIC
                     -pedantic
                     -Wfatal-errors
                     -fcolor-diagnostics
         )
-        target_link_options(
-            ${TARGET_NAME}
-            PRIVATE
-            $<$<CONFIG:DEBUG>:-g
-            -fsanitize=address
-            -fsanitize=alignment
-            -fsanitize=undefined
-            >
-            -fPIC
-        )
-
-        # Check if the compiler is AppleClang, and if not, add the leak sanitizer
-        if (CMAKE_HOST_SYSTEM_NAME MATCHES "Darwin")
-            # It's likely AppleClang Adjust options as needed for AppleClang
-        else ()
-            # It's likely LLVM Clang
-            target_compile_options(${TARGET_NAME} PRIVATE $<$<CONFIG:DEBUG>:-fsanitize=leak>)
-            target_link_options(${TARGET_NAME} PRIVATE $<$<CONFIG:DEBUG>:-fsanitize=leak>)
-        endif ()
+        target_link_options(${TARGET_NAME} PRIVATE -fPIC)
 
         if (USEARCH_USE_OPENMP)
             target_link_libraries(${TARGET_NAME} PRIVATE OpenMP::OpenMP_CXX)
@@ -329,6 +288,8 @@ function (setup_target TARGET_NAME)
         )
     endif ()
 
+    usearch_apply_sanitizers(${TARGET_NAME})
+
     target_include_directories(${TARGET_NAME} PRIVATE ${USEARCH_HEADER_INCLUDES})
     set_target_properties(${TARGET_NAME} PROPERTIES CXX_STANDARD 17)
 
@@ -360,8 +321,6 @@ function (setup_target TARGET_NAME)
                    LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}"
     )
 
-    # On Linux and MacOS our primary shared libraries for C are called `libusearch_c.so` and `libusearch_c.dylib`, while
-    # on Windows the "lib" prefix might be missing by default, so let's ensure it's always there
     get_target_property(TARGET_TYPE ${TARGET_NAME} TYPE)
 
     if (TARGET_TYPE STREQUAL "SHARED_LIBRARY" OR TARGET_TYPE STREQUAL "STATIC_LIBRARY")
@@ -380,8 +339,7 @@ function (setup_target TARGET_NAME)
         target_compile_definitions(${TARGET_NAME} PRIVATE "NK_DYNAMIC_DISPATCH=1")
         target_link_libraries(${TARGET_NAME} PRIVATE nk_shared)
 
-        # Keep NumKong discoverable both in the build tree (`build/numkong`) and
-        # after packaging it next to `libusearch_c` in language bindings.
+        # Keep NumKong discoverable in the build tree (`build/numkong`).
         if (APPLE)
             set(_USEARCH_NUMKONG_RPATH "@loader_path;@loader_path/numkong")
         elseif (UNIX AND NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
@@ -429,26 +387,6 @@ endif ()
 # https://stackoverflow.com/questions/30250494/ctest-not-detecting-tests.
 enable_testing()
 
-if (${USEARCH_BUILD_TEST_CPP} OR ${USEARCH_BUILD_BENCH_CPP})
+if (${USEARCH_BUILD_TEST_CPP} OR ${USEARCH_BUILD_BENCH_CPP} OR ${USEARCH_BUILD_API} OR ${USEARCH_BUILD_FUZZ})
     add_subdirectory(cpp)
-endif ()
-
-if (${USEARCH_BUILD_WOLFRAM})
-    add_subdirectory(wolfram)
-endif ()
-
-if (${USEARCH_BUILD_WASM})
-    add_subdirectory(wasm)
-endif ()
-
-if (${USEARCH_BUILD_LIB_C} OR ${USEARCH_BUILD_TEST_C})
-    add_subdirectory(c)
-endif ()
-
-if (${USEARCH_BUILD_JNI})
-    add_subdirectory(java)
-endif ()
-
-if (${USEARCH_BUILD_SQLITE})
-    add_subdirectory(sqlite)
 endif ()

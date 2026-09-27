@@ -59,9 +59,9 @@ body:
     attributes:
       label: Which interface are you using?
       options:
-        - C++ implementation
-        - Python bindings
-        - Other bindings
+        - C++ / headers
+        - Build / CI
+        - Docs
     validations:
       required: true
   - type: input

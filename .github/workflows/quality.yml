@@ -1,0 +1,80 @@
+name: Quality matrix
+
+# Reusable quality gate — called from Pre-Release and Release.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  unit_asan:
+    name: ASan+UBSan+correctness
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang
+      CXX: clang++
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+    steps:
+      - uses: actions/checkout@v6
+      - run: git submodule update --init --recursive
+      - name: Build
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang libomp-dev
+          cmake -B build \
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+            -D USEARCH_BUILD_TEST_CPP=1 \
+            -D USEARCH_BUILD_BENCH_CPP=0 \
+            -D USEARCH_USE_NUMKONG=0 \
+            -D USEARCH_ENABLE_ASAN=ON \
+            -D USEARCH_ENABLE_UBSAN=ON \
+            -D USEARCH_SANITIZE_DEBUG=OFF
+          cmake --build build -j"$(nproc)"
+      - name: ctest
+        run: ctest --test-dir build --output-on-failure -L unit --timeout 900
+
+  unit_tsan:
+    name: TSan
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang
+      CXX: clang++
+      TSAN_OPTIONS: halt_on_error=1
+    steps:
+      - uses: actions/checkout@v6
+      - run: git submodule update --init --recursive
+      - name: Build
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang
+          cmake -B build \
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+            -D USEARCH_BUILD_TEST_CPP=1 \
+            -D USEARCH_USE_NUMKONG=0 \
+            -D USEARCH_ENABLE_TSAN=ON \
+            -D USEARCH_SANITIZE_DEBUG=OFF
+          cmake --build build -j"$(nproc)"
+      - name: ctest
+        run: ctest --test-dir build --output-on-failure -L unit --timeout 1200
+
+  fuzz_smoke:
+    name: libFuzzer smoke
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@v6
+      - run: git submodule update --init --recursive
+      - name: Build and fuzz
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang
+          cmake -B build \
+            -D USEARCH_BUILD_TEST_CPP=1 \
+            -D USEARCH_BUILD_FUZZ=ON \
+            -D USEARCH_SANITIZE_DEBUG=OFF
+          cmake --build build --target fuzz_index -j"$(nproc)"
+          build/fuzz_index fuzz/corpus -max_total_time=60 -timeout=10

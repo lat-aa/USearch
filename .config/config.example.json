@@ -1,0 +1,18 @@
+{
+  "gguf": ".config/models/Nanbeige4.1-3B-Instruct.Q4_K_M.gguf",
+  "ctx": 4096,
+  "gpu": -1,
+  "threads": 0,
+  "pooling": "lasttoken",
+  "listen": "0.0.0.0:8088",
+  "index": ".config/index.usearch",
+  "base": ".config/store.sqlite",
+  "knowledge": ".config/knowledge",
+  "rules": ".config/rules",
+  "workspace": ".",
+  "token": "",
+  "shadow": 4096,
+  "rate": 0,
+  "refill": 1.0,
+  "chat": { "temperature": 0.2, "max": 2048 }
+}

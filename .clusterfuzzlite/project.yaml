@@ -1,0 +1,13 @@
+# ClusterFuzzLite / OSS-Fuzz style project metadata
+homepage: "https://github.com/unum-cloud/USearch"
+language: c++
+primary_contacts:
+  - "maintainers"
+main_repo: "https://github.com/unum-cloud/USearch"
+fuzzing_engines:
+  - libfuzzer
+sanitizers:
+  - address
+  - undefined
+file:
+  - path: ../cpp/fuzz_index.cpp

@@ -1,0 +1,93 @@
+name: Nightly memory
+
+# Deeper memory tools that are too slow for every PR. Failures are hard gates.
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  msan:
+    name: Ubuntu (MSan)
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang
+      CXX: clang++
+      # Origin tracking; abort so ctest cannot soft-pass.
+      MSAN_OPTIONS: halt_on_error=1:abort_on_error=1:print_stats=0
+    steps:
+      - uses: actions/checkout@v6
+      - run: git submodule update --init --recursive
+      - name: Install Clang + libc++
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang libc++-dev libc++abi-dev
+      - name: Build with MemorySanitizer
+        run: |
+          # Prefer libc++ to reduce libstdc++ false positives under MSan.
+          cmake -B build_msan \
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+            -D USEARCH_BUILD_TEST_CPP=1 \
+            -D USEARCH_BUILD_BENCH_CPP=0 \
+            -D USEARCH_USE_NUMKONG=0 \
+            -D USEARCH_SANITIZE_DEBUG=OFF \
+            -D USEARCH_ENABLE_ASAN=OFF \
+            -D USEARCH_ENABLE_UBSAN=OFF \
+            -D USEARCH_ENABLE_TSAN=OFF \
+            -D CMAKE_CXX_FLAGS="-fsanitize=memory -fno-omit-frame-pointer -g -O1 -fsanitize-memory-track-origins=2 -stdlib=libc++" \
+            -D CMAKE_EXE_LINKER_FLAGS="-fsanitize=memory -stdlib=libc++"
+          cmake --build build_msan -j"$(nproc)"
+      - name: ctest under MSan
+        run: ctest --test-dir build_msan --output-on-failure -L unit --timeout 1200
+
+  valgrind:
+    name: Ubuntu (Valgrind)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - run: git submodule update --init --recursive
+      - name: Build without sanitizers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ valgrind
+          cmake -B build_vg \
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+            -D USEARCH_BUILD_TEST_CPP=1 \
+            -D USEARCH_BUILD_BENCH_CPP=0 \
+            -D USEARCH_USE_NUMKONG=0 \
+            -D USEARCH_SANITIZE_DEBUG=OFF
+          cmake --build build_vg -j"$(nproc)"
+      - name: Valgrind memcheck
+        run: |
+          valgrind --leak-check=full --show-leak-kinds=definite,possible \
+            --errors-for-leak-kinds=definite \
+            --error-exitcode=1 \
+            --suppressions="${GITHUB_WORKSPACE}/cmake/valgrind.supp" \
+            ./build_vg/test_cpp
+
+  fuzz_long:
+    name: libFuzzer (30m)
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@v6
+      - run: git submodule update --init --recursive
+      - name: Build fuzz_index
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang
+          cmake -B build_fuzz \
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+            -D USEARCH_BUILD_TEST_CPP=1 \
+            -D USEARCH_BUILD_FUZZ=ON \
+            -D USEARCH_BUILD_BENCH_CPP=0 \
+            -D USEARCH_USE_NUMKONG=0 \
+            -D USEARCH_SANITIZE_DEBUG=OFF
+          cmake --build build_fuzz --target fuzz_index -j"$(nproc)"
+      - name: Fuzz 30 minutes
+        run: build_fuzz/fuzz_index -max_total_time=1800 -timeout=10 -rss_limit_mb=4096

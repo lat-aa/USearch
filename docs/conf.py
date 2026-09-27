@@ -22,15 +22,9 @@ with open("_static/custom.js", "r+") as js:
 extensions = [
     "breathe",
     "m2r2",
-    "sphinx.ext.autodoc",
-    "sphinx_js",
-    "sphinx.ext.autosummary",
     "sphinx.ext.intersphinx",
-    "sphinx.ext.napoleon",
     "sphinxcontrib.jquery",
     "sphinxcontrib.googleanalytics",
-    # Sadly, javasphinx is not maintained anymore
-    # "javasphinx",
 ]
 
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "*.md"]
@@ -51,10 +45,3 @@ html_baseurl = "/docs/usearch/"
 
 breathe_projects = {"USearch": "../build/xml"}
 breathe_default_project = "USearch"
-
-# To switch to TypeScript, uncomment the following lines:
-#
-#   js_language = "typescript"
-#   js_source_path = "../javascript/usearch.ts"
-#   jsdoc_config_path = "../javascript/tsconfig-cjs.json"
-js_source_path = "../javascript/dist/cjs/usearch.js"

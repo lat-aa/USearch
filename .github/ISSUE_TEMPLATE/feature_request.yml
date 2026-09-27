@@ -32,9 +32,9 @@ body:
       label: Is your feature request specific to a certain interface?
       options:
         - It applies to everything
-        - C++ implementation
-        - Python bindings
-        - Other bindings
+        - C++ / headers
+        - Build / CI
+        - Docs
         - Other
     validations:
       required: true

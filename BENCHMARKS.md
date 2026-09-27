@@ -56,18 +56,17 @@ Also worth noting, 8-bit quantization results in almost no quantization loss and
 
 ## Utilities
 
-Within this repository you will find two commonly used utilities:
+Within this repository you will find:
 
-- `cpp/bench.cpp` the produces the `bench_cpp` binary for broad USearch benchmarks.
-- `python/bench.py` and `python/bench.ipynb` for interactive charts against FAISS.
+- `cpp/bench.cpp` — builds the `bench_cpp` binary for USearch benchmarks.
 
 ### C++ Benchmarking Utilities
 
-To achieve best highest results we suggest compiling locally for the target architecture.
+To achieve the best results we suggest compiling locally for the target architecture.
 
 ```sh
 git submodule update --init --recursive
-cmake -DUSEARCH_BUILD_BENCH_CPP=1 -DUSEARCH_BUILD_TEST_C=1 -DUSEARCH_USE_NUMKONG=1 -DUSEARCH_USE_OPENMP=1 -DCMAKE_BUILD_TYPE=RelWithDebInfo -B build_profile
+cmake -DUSEARCH_BUILD_BENCH_CPP=1 -DUSEARCH_USE_NUMKONG=1 -DUSEARCH_USE_OPENMP=1 -DCMAKE_BUILD_TYPE=RelWithDebInfo -B build_profile
 cmake --build build_profile --config RelWithDebInfo --parallel
 build_profile/bench_cpp --help
 ```
@@ -141,20 +140,7 @@ build_profile/bench_cpp \
 
 > Optional parameters include `connectivity`, `expansion_add`, `expansion_search`.
 
-For Python, jut open the Jupyter Notebook and start playing around.
-
-### Python Benchmarking Utilities
-
-Several benchmarking suites are available for Python: approximate search, exact search, and clustering.
-
-```sh
-python/scripts/bench.py --help
-python/scripts/bench_exact.py --help
-python/scripts/bench_cluster.py --help
-```
-
-These are intended as smoke tests and ad-hoc profiling helpers.
-Published recall-vs-throughput numbers should be reproduced with
+Published recall-vs-throughput numbers can also be reproduced with
 [RetriEval](https://github.com/ashvardanian/RetriEval), which covers
 the full `b1` / `i8` / `u8` / `e2m3` / `e3m2` / `e4m3` / `e5m2` / `f16`
 / `bf16` / `f32` / `f64` matrix on standard datasets.
@@ -228,14 +214,7 @@ mkdir -p datasets/cc_3M/ && \
         -O datasets/cc_3M/texts.fbin
 ```
 
-To benchmark cross-modal join:
-
-```bash
-python python/scripts/join.py \
-    --vectors-a datasets/cc_3M/texts.fbin \
-    --vectors-b datasets/cc_3M/images.fbin \
-    --metric cos --diagnostics
-```
+To benchmark cross-modal retrieval, use `bench_cpp` with the image and text matrices as vectors/queries (or write a small C++ driver around `index_dense_t::join`).
 
 ### Unum UForm Wiki
 
