@@ -65,7 +65,7 @@ jobs:
             -D USEARCH_BUILD_BENCH_CPP=1 \
             -D USEARCH_USE_OPENMP=1 \
             -D USEARCH_USE_NUMKONG=1 \
-            -D USEARCH_USE_JEMALLOC=1 \
+            -D USEARCH_USE_JEMALLOC=0 \
             -D USEARCH_SANITIZE_DEBUG=OFF
           cmake --build build_artifacts --config RelWithDebInfo
       - name: Test C++ (ctest)
@@ -301,10 +301,15 @@ jobs:
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          $dll = Get-ChildItem -Path $vs -Recurse -Filter "clang_rt.asan_dynamic-x86_64.dll" -ErrorAction SilentlyContinue |
+          # Prefer MSVC toolset ASan DLL (not the separate LLVM clang tree — wrong entrypoints).
+          $dll = Get-ChildItem -Path "$vs\VC\Tools\MSVC" -Recurse -Filter "clang_rt.asan_dynamic-x86_64.dll" -ErrorAction SilentlyContinue |
             Select-Object -First 1
-          if (-not $dll) { throw "MSVC ASan DLL not found under $vs" }
-          Write-Host "ASan DLL dir: $($dll.DirectoryName)"
+          if (-not $dll) {
+            $dll = Get-ChildItem -Path $vs -Recurse -Filter "clang_rt.asan_dynamic-x86_64.dll" -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match '\\MSVC\\' } | Select-Object -First 1
+          }
+          if (-not $dll) { throw "MSVC ASan DLL not found under $vs\VC\Tools\MSVC" }
+          Write-Host "ASan DLL: $($dll.FullName)"
           Add-Content -Path $env:GITHUB_PATH -Value $dll.DirectoryName
       - name: Build with ASan
         run: |
@@ -316,6 +321,14 @@ jobs:
             -D USEARCH_ENABLE_ASAN=ON `
             -D USEARCH_SANITIZE_DEBUG=OFF
           cmake --build build_asan --config RelWithDebInfo
+      - name: Stage ASan DLL beside test binaries
+        shell: pwsh
+        run: |
+          $dllDir = (Get-Content $env:GITHUB_PATH | Select-Object -Last 1)
+          Copy-Item "$dllDir\clang_rt.asan_dynamic-x86_64.dll" "build_asan\" -Force -ErrorAction SilentlyContinue
+          Get-ChildItem build_asan -Recurse -Filter "test_*.exe" | ForEach-Object {
+            Copy-Item "$dllDir\clang_rt.asan_dynamic-x86_64.dll" $_.DirectoryName -Force
+          }
       - name: Test
         run: ctest --test-dir build_asan --output-on-failure -C RelWithDebInfo -L unit --timeout 900
         env:
