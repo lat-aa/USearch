@@ -48,3 +48,20 @@ cmake --build build --config Release --target api -j"$(nproc)"
 - MCP：`http://127.0.0.1:8088/mcp`
 
 嵌入维度随 GGUF 的 `n_embd` 变化。若提示 `index dim mismatch`，删除 `index` / 重建向量库后再 upsert。
+
+## k3s（WSL）
+
+清单：`deploy/k3s/api.yaml`（hostPath 挂仓库 + `.local/api`，镜像 `alpine:3.20`）。`listen` 须为 `0.0.0.0:8088`。
+
+同一台机器上只能有一个 k3s 占用 `:6443`（mirrored 网络下 Alpine/Ubuntu 会抢端口）。优先用已正常的 Ubuntu k3s：
+
+```bash
+# Alpine 上编好后拷到共享目录
+cp /root/usearch-build/api /mnt/e/data/USearch/.local/api
+# Ubuntu WSL
+tr -d '\r' < deploy/k3s/apply.sh | sh
+```
+
+NodePort：`http://127.0.0.1:30088/v1` 、`/mcp`、`/alive`。
+
+可选全量镜像构建见仓库根 `Dockerfile`（需 docker + `USEARCH_K3S_IMAGE=1`）。

@@ -34,9 +34,14 @@
 #include <nlohmann/json.hpp>
 #include <usearch/index_dense.hpp>
 
+struct llama_model;
+struct llama_context;
+
 namespace api {
 
 using namespace unum::usearch;
+// glibc 的 ::error_t（bits/types/error_t.h）会与 usearch::error_t 冲突；钉死为本命名空间别名。
+using error_t = unum::usearch::error_t;
 using json = nlohmann::json;
 namespace fs = std::filesystem;
 using Dense = index_dense_gt<>;
@@ -117,9 +122,6 @@ struct Base {
     expected_gt<std::vector<Doc>> list();
 };
 
-struct llama_model;
-struct llama_context;
-
 struct Encoder {
     std::size_t dimensions = 0;
     bool modelReady = false;
@@ -130,8 +132,9 @@ struct Encoder {
     std::uint32_t ctx = 0;
     int gpu = 0;
     int threads = 0;
-    llama_model* model = nullptr;
-    llama_context* context = nullptr;
+    ::llama_model* model = nullptr;
+    ::llama_context* context = nullptr;
+    ::llama_context* chatCtx = nullptr;
     std::mutex mutex;
     Encoder() = default;
     ~Encoder();

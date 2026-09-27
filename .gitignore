@@ -6,6 +6,7 @@ datasets
 bin
 *.usearch
 .cache
+.local/
 .config/config.json
 .config/store.sqlite
 .config/store.sqlite-*

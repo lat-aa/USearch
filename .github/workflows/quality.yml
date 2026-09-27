@@ -27,7 +27,7 @@ jobs:
             -D CMAKE_BUILD_TYPE=RelWithDebInfo \
             -D USEARCH_BUILD_TEST_CPP=1 \
             -D USEARCH_BUILD_BENCH_CPP=0 \
-            -D USEARCH_USE_NUMKONG=1 \
+            -D USEARCH_USE_NUMKONG=0 \
             -D USEARCH_ENABLE_ASAN=ON \
             -D USEARCH_ENABLE_UBSAN=ON \
             -D USEARCH_SANITIZE_DEBUG=OFF

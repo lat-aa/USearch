@@ -90,6 +90,7 @@ int serve(Runtime& rt) {
     }
 
     httplib::Server svr;
+    svr.new_task_queue = [] { return new httplib::ThreadPool(1); };
     Bucket bucket(rt.config.rate, rt.config.refill);
     std::mutex bucketMutex;
 

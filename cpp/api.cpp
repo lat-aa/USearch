@@ -173,42 +173,53 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
 
         std::string modelName = body.value("model", rt.encoder.modelId);
         bool stream = body.value("stream", false);
+        std::uint32_t prevMax = rt.encoder.maxTokens;
+        if (body.contains("max_tokens") && body["max_tokens"].is_number_unsigned())
+            rt.encoder.maxTokens = body["max_tokens"].get<std::uint32_t>();
+        else if (body.contains("max_tokens") && body["max_tokens"].is_number_integer())
+            rt.encoder.maxTokens = static_cast<std::uint32_t>((std::max)(0, body["max_tokens"].get<int>()));
+        if (rt.encoder.maxTokens == 0)
+            rt.encoder.maxTokens = prevMax ? prevMax : 256;
+
         if (stream) {
             res.set_header("Cache-Control", "no-cache");
             res.set_header("Connection", "keep-alive");
-            res.set_chunked_content_provider("text/event-stream", [&rt, system, user, modelName](std::size_t,
-                                                                                                 httplib::DataSink& sink) {
-                auto emit = [&](json const& chunk) {
-                    std::string line = "data: " + chunk.dump() + "\n\n";
-                    sink.write(line.data(), line.size());
-                };
-                emit({{"id", "chat-1"},
-                      {"object", "chat.completion.chunk"},
-                      {"model", modelName},
-                      {"choices", json::array({{{"index", 0},
-                                                {"delta", {{"role", "assistant"}}},
-                                                {"finish_reason", nullptr}}})}});
-                (void)rt.encoder.chat(system, user, [&](std::string_view piece) {
+            res.set_chunked_content_provider(
+                "text/event-stream", [&rt, system, user, modelName, prevMax](std::size_t, httplib::DataSink& sink) {
+                    auto emit = [&](json const& chunk) {
+                        std::string line = "data: " + chunk.dump() + "\n\n";
+                        sink.write(line.data(), line.size());
+                    };
                     emit({{"id", "chat-1"},
                           {"object", "chat.completion.chunk"},
                           {"model", modelName},
                           {"choices", json::array({{{"index", 0},
-                                                    {"delta", {{"content", std::string(piece)}}},
+                                                    {"delta", {{"role", "assistant"}}},
                                                     {"finish_reason", nullptr}}})}});
+                    (void)rt.encoder.chat(system, user, [&](std::string_view piece) {
+                        emit({{"id", "chat-1"},
+                              {"object", "chat.completion.chunk"},
+                              {"model", modelName},
+                              {"choices", json::array({{{"index", 0},
+                                                        {"delta", {{"content", std::string(piece)}}},
+                                                        {"finish_reason", nullptr}}})}});
+                    });
+                    rt.encoder.maxTokens = prevMax;
+                    emit({{"id", "chat-1"},
+                          {"object", "chat.completion.chunk"},
+                          {"model", modelName},
+                          {"choices",
+                           json::array({{{"index", 0}, {"delta", json::object()}, {"finish_reason", "stop"}}})}});
+                    std::string done = "data: [DONE]\n\n";
+                    sink.write(done.data(), done.size());
+                    sink.done();
+                    return true;
                 });
-                emit({{"id", "chat-1"},
-                      {"object", "chat.completion.chunk"},
-                      {"model", modelName},
-                      {"choices", json::array({{{"index", 0}, {"delta", json::object()}, {"finish_reason", "stop"}}})}});
-                std::string done = "data: [DONE]\n\n";
-                sink.write(done.data(), done.size());
-                sink.done();
-                return true;
-            });
             return;
         }
 
         std::string text = rt.encoder.chat(system, user);
+        rt.encoder.maxTokens = prevMax;
         setJson(res, {{"id", "chat-1"},
                       {"object", "chat.completion"},
                       {"model", modelName},

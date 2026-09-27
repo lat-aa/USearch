@@ -74,6 +74,10 @@ std::vector<float> hashEmbed(std::string_view text, std::size_t dimensions) {
 }
 
 void Encoder::close() {
+    if (chatCtx) {
+        llama_free(chatCtx);
+        chatCtx = nullptr;
+    }
     if (context) {
         llama_free(context);
         context = nullptr;
@@ -90,9 +94,11 @@ Encoder::~Encoder() { close(); }
 Encoder::Encoder(Encoder&& other) noexcept
     : dimensions(other.dimensions), modelReady(other.modelReady), ggufPath(std::move(other.ggufPath)),
       modelId(std::move(other.modelId)), temperature(other.temperature), maxTokens(other.maxTokens),
-      ctx(other.ctx), gpu(other.gpu), threads(other.threads), model(other.model), context(other.context) {
+      ctx(other.ctx), gpu(other.gpu), threads(other.threads), model(other.model), context(other.context),
+      chatCtx(other.chatCtx) {
     other.model = nullptr;
     other.context = nullptr;
+    other.chatCtx = nullptr;
     other.modelReady = false;
 }
 
@@ -111,8 +117,10 @@ Encoder& Encoder::operator=(Encoder&& other) noexcept {
     threads = other.threads;
     model = other.model;
     context = other.context;
+    chatCtx = other.chatCtx;
     other.model = nullptr;
     other.context = nullptr;
+    other.chatCtx = nullptr;
     other.modelReady = false;
     return *this;
 }
@@ -144,8 +152,8 @@ error_t Encoder::open(fs::path const& gguf, std::uint32_t ctxSize, int gpuLayers
 
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = ctxSize ? ctxSize : 4096;
-    cparams.n_batch = cparams.n_ctx;
-    cparams.n_ubatch = cparams.n_ctx;
+    cparams.n_batch = 512;
+    cparams.n_ubatch = 512;
     cparams.n_threads = threads;
     cparams.n_threads_batch = threads;
     cparams.embeddings = true;
@@ -153,7 +161,16 @@ error_t Encoder::open(fs::path const& gguf, std::uint32_t ctxSize, int gpuLayers
     context = llama_init_from_model(model, cparams);
     if (!context) {
         close();
-        return "failed to create llama context";
+        return "failed to create llama embed context";
+    }
+
+    llama_context_params chatParams = cparams;
+    chatParams.embeddings = false;
+    chatParams.pooling_type = LLAMA_POOLING_TYPE_NONE;
+    chatCtx = llama_init_from_model(model, chatParams);
+    if (!chatCtx) {
+        close();
+        return "failed to create llama chat context";
     }
 
     dimensions = static_cast<std::size_t>(llama_model_n_embd(model));
@@ -186,9 +203,16 @@ std::vector<float> Encoder::embed(std::string_view text) {
         tokens.erase(tokens.begin(), tokens.end() - nCtx);
 
     clearKv(context);
-    llama_batch batch = llama_batch_get_one(tokens.data(), static_cast<int32_t>(tokens.size()));
-    if (llama_decode(context, batch) != 0)
-        return std::vector<float>(dimensions, 0.0f);
+    {
+        int32_t nBatch = static_cast<int32_t>(llama_n_batch(context));
+        for (std::size_t off = 0; off < tokens.size();) {
+            std::size_t n = (std::min)(tokens.size() - off, static_cast<std::size_t>(nBatch));
+            llama_batch batch = llama_batch_get_one(tokens.data() + off, static_cast<int32_t>(n));
+            if (llama_decode(context, batch) != 0)
+                return std::vector<float>(dimensions, 0.0f);
+            off += n;
+        }
+    }
 
     float const* emb = llama_get_embeddings_seq(context, 0);
     if (!emb)
@@ -209,7 +233,7 @@ std::string Encoder::chat(std::string_view system, std::string_view user) {
 std::string Encoder::chat(std::string_view system, std::string_view user,
                           std::function<void(std::string_view)> onDelta) {
     std::lock_guard<std::mutex> lock(mutex);
-    if (!modelReady || !model || !context)
+    if (!modelReady || !model || !chatCtx)
         return dryrunChat(system, user);
 
     std::string sysOwned(system);
@@ -220,62 +244,98 @@ std::string Encoder::chat(std::string_view system, std::string_view user,
     msgs.push_back({"user", userOwned.c_str()});
 
     char const* tmpl = llama_model_chat_template(model, nullptr);
-    std::vector<char> formatted(std::max<std::size_t>(sysOwned.size() + userOwned.size(), 1) * 2 + 1024);
-    int32_t newLen =
-        llama_chat_apply_template(tmpl, msgs.data(), msgs.size(), true, formatted.data(),
-                                  static_cast<int32_t>(formatted.size()));
-    if (newLen < 0)
-        return dryrunChat(system, user);
-    if (static_cast<std::size_t>(newLen) > formatted.size()) {
-        formatted.resize(static_cast<std::size_t>(newLen));
-        newLen = llama_chat_apply_template(tmpl, msgs.data(), msgs.size(), true, formatted.data(),
-                                           static_cast<int32_t>(formatted.size()));
-        if (newLen < 0)
-            return dryrunChat(system, user);
+    std::string prompt;
+    bool fromTmpl = false;
+    if (tmpl && tmpl[0]) {
+        std::vector<char> formatted(std::max<std::size_t>(sysOwned.size() + userOwned.size(), 1) * 2 + 1024);
+        int32_t newLen = llama_chat_apply_template(tmpl, msgs.data(), msgs.size(), true, formatted.data(),
+                                                   static_cast<int32_t>(formatted.size()));
+        if (newLen > 0) {
+            if (static_cast<std::size_t>(newLen) > formatted.size()) {
+                formatted.resize(static_cast<std::size_t>(newLen) + 1);
+                newLen = llama_chat_apply_template(tmpl, msgs.data(), msgs.size(), true, formatted.data(),
+                                                   static_cast<int32_t>(formatted.size()));
+            }
+            if (newLen > 0) {
+                prompt.assign(formatted.data(), static_cast<std::size_t>(newLen));
+                fromTmpl = true;
+            }
+        }
     }
-    std::string prompt(formatted.data(), static_cast<std::size_t>(newLen));
+    if (prompt.empty()) {
+        if (!sysOwned.empty()) {
+            prompt = sysOwned;
+            prompt.push_back('\n');
+        }
+        prompt += userOwned;
+    }
 
+    bool addSpecial = !fromTmpl;
     llama_vocab const* vocab = llama_model_get_vocab(model);
     std::vector<llama_token> tokens(prompt.size() + 32);
     int n = llama_tokenize(vocab, prompt.data(), static_cast<int32_t>(prompt.size()), tokens.data(),
-                          static_cast<int32_t>(tokens.size()), true, true);
+                          static_cast<int32_t>(tokens.size()), addSpecial, true);
     if (n < 0) {
         tokens.resize(static_cast<std::size_t>(-n));
         n = llama_tokenize(vocab, prompt.data(), static_cast<int32_t>(prompt.size()), tokens.data(),
-                          static_cast<int32_t>(tokens.size()), true, true);
+                          static_cast<int32_t>(tokens.size()), addSpecial, true);
     }
     if (n <= 0)
         return {};
     tokens.resize(static_cast<std::size_t>(n));
 
-    clearKv(context);
+    clearKv(chatCtx);
     llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
     llama_sampler* smpl = llama_sampler_chain_init(sparams);
-    llama_sampler_chain_add(smpl, llama_sampler_init_temp(temperature));
+    if (temperature > 0.0f)
+        llama_sampler_chain_add(smpl, llama_sampler_init_temp(temperature));
     llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
 
     std::string reply;
-    llama_batch batch = llama_batch_get_one(tokens.data(), static_cast<int32_t>(tokens.size()));
+    {
+        int32_t nBatch = static_cast<int32_t>(llama_n_batch(chatCtx));
+        for (std::size_t off = 0; off < tokens.size();) {
+            std::size_t nTok = (std::min)(tokens.size() - off, static_cast<std::size_t>(nBatch));
+            llama_batch batch = llama_batch_get_one(tokens.data() + off, static_cast<int32_t>(nTok));
+            if (llama_decode(chatCtx, batch) != 0) {
+                llama_sampler_free(smpl);
+                clearKv(chatCtx);
+                return {};
+            }
+            off += nTok;
+        }
+    }
+    llama_token id = 0;
     std::uint32_t produced = 0;
     while (produced < maxTokens) {
-        if (llama_decode(context, batch) != 0)
-            break;
-        llama_token id = llama_sampler_sample(smpl, context, -1);
+        id = llama_sampler_sample(smpl, chatCtx, -1);
+        llama_sampler_accept(smpl, id);
         if (llama_vocab_is_eog(vocab, id))
             break;
         char buf[256];
         int nPiece = llama_token_to_piece(vocab, id, buf, sizeof(buf), 0, true);
-        if (nPiece > 0) {
+        if (nPiece < 0) {
+            std::vector<char> big(static_cast<std::size_t>(-nPiece));
+            nPiece = llama_token_to_piece(vocab, id, big.data(), static_cast<int32_t>(big.size()), 0, true);
+            if (nPiece > 0) {
+                std::string_view piece(big.data(), static_cast<std::size_t>(nPiece));
+                reply.append(piece);
+                if (onDelta)
+                    onDelta(piece);
+            }
+        } else if (nPiece > 0) {
             std::string_view piece(buf, static_cast<std::size_t>(nPiece));
             reply.append(piece);
             if (onDelta)
                 onDelta(piece);
         }
-        batch = llama_batch_get_one(&id, 1);
+        llama_batch batch = llama_batch_get_one(&id, 1);
+        if (llama_decode(chatCtx, batch) != 0)
+            break;
         ++produced;
     }
     llama_sampler_free(smpl);
-    clearKv(context);
+    clearKv(chatCtx);
     return reply;
 }
 
