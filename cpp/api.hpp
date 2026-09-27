@@ -8,6 +8,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -297,6 +298,8 @@ std::vector<Rule> loadRules(fs::path const& dir);
 std::vector<Resolvedrule> resolveRules(std::vector<Rule> const& rules, Rulequery const& q);
 /** 语义分支优先用 Encoder 稠密向量，否则回退 hashEmbed / 词法。 */
 std::vector<Resolvedrule> resolveRules(Runtime& rt, Rulequery const& q);
+/** 复用已算好的 task 向量，避免门控路径上二次 embed。 */
+std::vector<Resolvedrule> resolveRules(Runtime& rt, Rulequery const& q, std::vector<float> const& qVec);
 /** 从 JSON 填 Rulequery：task|query、files、manual。 */
 Rulequery rulequeryFromJson(json const& body);
 bool globMatch(std::string_view pattern, std::string_view path);
@@ -474,9 +477,14 @@ struct Runtime {
     Encoder encoder;
     Store store;
     std::vector<Rule> rules;
+    /** 启动时算一次；规则热重载前不变，免去每请求拼正文指纹。 */
+    std::string policyFp;
     Decider decider;
     std::mutex l1Mutex;
     std::unordered_map<std::string, L1entry> l1;
+    /** Worker 空转等待；observe 入队后 notify，避免固定 400ms 轮询。 */
+    std::mutex workerMutex;
+    std::condition_variable workerCv;
     std::atomic<bool> workerStop {false};
     std::thread worker;
     Runtime() = default;

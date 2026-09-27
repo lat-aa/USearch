@@ -11,6 +11,7 @@
 #include <cstring>
 #include <sstream>
 #include <thread>
+#include <unordered_set>
 
 namespace api {
 namespace {
@@ -23,21 +24,32 @@ float clamp01(float x) {
     return x;
 }
 
-/** RRF：两路排序列表融合成 id→分（不把 Always/Glob 政策放进此融合）。 */
-std::unordered_map<std::string, float> rrfMerge(std::vector<std::string> const& a,
-                                                std::vector<std::string> const& b, int k = 60) {
-    std::unordered_map<std::string, float> out;
-    for (std::size_t i = 0; i < a.size(); ++i)
-        out[a[i]] += 1.0f / static_cast<float>(k + static_cast<int>(i) + 1);
-    for (std::size_t i = 0; i < b.size(); ++i)
-        out[b[i]] += 1.0f / static_cast<float>(k + static_cast<int>(i) + 1);
-    return out;
+/**
+ * kind 判定：无 kind 时按 memory/experience 缺省；禁止 value<string> 抛 type_error。
+ * 热路径上每条 hit 会调用多次，故避免临时 std::string。
+ */
+bool kindIs(Doc const& doc, char const* want) noexcept {
+    bool const wantMem = std::strcmp(want, "memory") == 0 || std::strcmp(want, "experience") == 0;
+    if (!doc.meta.is_object())
+        return wantMem;
+    auto it = doc.meta.find("kind");
+    if (it == doc.meta.end())
+        return wantMem;
+    if (std::string const* k = it->get_ptr<std::string const*>())
+        return *k == want;
+    return wantMem;
 }
 
-bool kindIs(Doc const& doc, char const* want) {
-    if (!doc.meta.is_object() || !doc.meta.contains("kind"))
-        return std::string(want) == "memory" || std::string(want) == "experience";
-    return doc.meta.value("kind", "") == want;
+/** meta 字符串字段；类型不对返回空 view，绝不抛。 */
+std::string_view metaStr(json const& meta, char const* key) noexcept {
+    if (!meta.is_object())
+        return {};
+    auto it = meta.find(key);
+    if (it == meta.end())
+        return {};
+    if (std::string const* s = it->get_ptr<std::string const*>())
+        return *s;
+    return {};
 }
 
 std::string extractJsonObject(std::string const& text) {
@@ -59,104 +71,95 @@ json parseGateModel(std::string const& raw) {
     }
 }
 
-/** 固定红线词表（字面量，非本仓库标识符）。位图第 i 位 = 第 i 条命中。 */
-struct Redtable {
-    static constexpr char const* tokens[] = {"model_ready", "model-ready", "save_observation",
-                                             "observation_queue"};
-    static constexpr std::size_t lengths[] = {11, 11, 16, 17};
-    static constexpr unsigned bits[] = {1u, 2u, 4u, 8u};
-    static constexpr std::size_t count = 4;
-    static constexpr unsigned all = 0xFu;
-};
-
 /**
  * 单遍扫描正文，用首字节过滤 + memcmp 确认，把 4 次独立 find 收成一次 O(n)。
- * 全命中即提前退出；门控热路径上 hits 不多，但每条记忆文本可能很长。
+ * 词表放函数内 static const，避免类作用域 constexpr 数组在 MSVC 上 ODR 取址踩空。
  */
-unsigned scanRed(std::string const& text) noexcept {
+unsigned scanRed(std::string_view text) noexcept {
+    // 字面量是禁用词本身，不是本仓库标识符
+    static char const* const tokens[] = {"model_ready", "model-ready", "save_observation",
+                                         "observation_queue"};
+    static std::size_t const lengths[] = {11, 11, 16, 17};
+    static unsigned const bits[] = {1u, 2u, 4u, 8u};
+    constexpr unsigned kAll = 0xFu;
+
     char const* data = text.data();
     std::size_t const n = text.size();
     unsigned mask = 0;
     for (std::size_t i = 0; i < n; ++i) {
         unsigned char const c = static_cast<unsigned char>(data[i]);
         if (c == 'm') {
-            if (!(mask & Redtable::bits[0]) && i + Redtable::lengths[0] <= n &&
-                std::memcmp(data + i, Redtable::tokens[0], Redtable::lengths[0]) == 0)
-                mask |= Redtable::bits[0];
-            if (!(mask & Redtable::bits[1]) && i + Redtable::lengths[1] <= n &&
-                std::memcmp(data + i, Redtable::tokens[1], Redtable::lengths[1]) == 0)
-                mask |= Redtable::bits[1];
+            if (!(mask & bits[0]) && i + lengths[0] <= n &&
+                std::memcmp(data + i, tokens[0], lengths[0]) == 0)
+                mask |= bits[0];
+            if (!(mask & bits[1]) && i + lengths[1] <= n &&
+                std::memcmp(data + i, tokens[1], lengths[1]) == 0)
+                mask |= bits[1];
         } else if (c == 's') {
-            if (!(mask & Redtable::bits[2]) && i + Redtable::lengths[2] <= n &&
-                std::memcmp(data + i, Redtable::tokens[2], Redtable::lengths[2]) == 0)
-                mask |= Redtable::bits[2];
+            if (!(mask & bits[2]) && i + lengths[2] <= n &&
+                std::memcmp(data + i, tokens[2], lengths[2]) == 0)
+                mask |= bits[2];
         } else if (c == 'o') {
-            if (!(mask & Redtable::bits[3]) && i + Redtable::lengths[3] <= n &&
-                std::memcmp(data + i, Redtable::tokens[3], Redtable::lengths[3]) == 0)
-                mask |= Redtable::bits[3];
+            if (!(mask & bits[3]) && i + lengths[3] <= n &&
+                std::memcmp(data + i, tokens[3], lengths[3]) == 0)
+                mask |= bits[3];
         }
-        if (mask == Redtable::all)
+        if (mask == kAll)
             break;
     }
     return mask;
 }
 
+/** meta.conflict 只认 bool；用 get_ptr 避免 value/get 抛 type_error（未捕获即 abort）。 */
+bool metaConflicted(json const& meta) noexcept {
+    if (!meta.is_object())
+        return false;
+    auto it = meta.find("conflict");
+    if (it == meta.end())
+        return false;
+    if (bool const* flag = it->get_ptr<bool const*>())
+        return *flag;
+    return false;
+}
+
 /**
- * 轻量冲突：硬政策（Always/Glob）与记忆正文/元数据撞车。
- *
- * 原实现是 O(|rules|·|hits|·|red|)：每条规则对每条记忆重复 find「禁止」与红线词。
- * 这里拆成两阶段——规则侧只扫一遍，文档侧每条记忆只扫一遍——再按需做小笛卡尔积输出，
- * 语义不变：红线词只对 body 含「禁止」的硬政策报警；meta.conflict 对所有硬政策报警。
+ * 轻量冲突：硬政策名指针 + 禁用词政策名指针 + task 正文 + 记忆命中。
+ * 调用方负责预筛，避免在此深拷贝 Rule；task 单独扫，免构造临时 Doc / 复制 hits。
  */
-json detectConflicts(std::vector<Resolvedrule> const& rules,
+json detectConflicts(std::vector<std::string const*> const& hard,
+                     std::vector<std::string const*> const& ban, std::string_view taskText,
                      std::vector<std::pair<Doc, float>> const& hits) {
-    // 指针指向 Resolvedrule 内已有的 name，避免拷贝字符串
-    std::vector<std::string const*> hard;
-    std::vector<std::string const*> ban;
-    hard.reserve(rules.size());
-    ban.reserve(rules.size());
-    for (auto const& r : rules) {
-        if (r.activation != Activation::Always && r.activation != Activation::Glob)
-            continue;
-        hard.push_back(&r.rule.name);
-        // 「禁止」只判定一次；原先嵌在 H×K 内，规则正文越长浪费越大
-        if (r.rule.body.find("禁止") != std::string::npos)
-            ban.push_back(&r.rule.name);
-    }
-    if (hard.empty() || hits.empty())
+    static char const* const whyRed[] = {
+        "banned token model_ready",
+        "banned token model-ready",
+        "banned token save_observation",
+        "banned token observation_queue",
+    };
+    constexpr std::size_t kRed = 4;
+    if (hard.empty())
         return json::array();
 
-    // 静态 why，避免热循环里反复拼 string
-    static std::string const whyRed[] = {
-        "memory contains banned token model_ready",
-        "memory contains banned token model-ready",
-        "memory contains banned token save_observation",
-        "memory contains banned token observation_queue",
-    };
-    static std::string const whyMeta = "memory meta.conflict";
-
     json conflicts = json::array();
-    // 上界：每条记忆最多 (ban·red + hard) 条；按上界 reserve，避免 push 时反复扩容
-    conflicts.get_ref<json::array_t&>().reserve(hits.size() * (ban.size() * Redtable::count + hard.size()));
-
-    for (auto const& hit : hits) {
-        Doc const& doc = hit.first;
-        bool const metaConflict = doc.meta.is_object() && doc.meta.value("conflict", false);
-        if (metaConflict) {
-            for (std::string const* name : hard)
-                conflicts.push_back({{"rule", *name}, {"why", whyMeta}});
-        }
-        if (ban.empty())
-            continue;
-        unsigned const mask = scanRed(doc.text);
-        if (mask == 0)
-            continue;
-        for (std::size_t i = 0; i < Redtable::count; ++i) {
-            if ((mask & Redtable::bits[i]) == 0)
+    auto emitRed = [&](unsigned mask) {
+        if (mask == 0 || ban.empty())
+            return;
+        for (std::size_t i = 0; i < kRed; ++i) {
+            if ((mask & (1u << static_cast<unsigned>(i))) == 0)
                 continue;
             for (std::string const* name : ban)
                 conflicts.push_back({{"rule", *name}, {"why", whyRed[i]}});
         }
+    };
+
+    // 任务原文也要过红线（Glob 未触发时仍能挡住禁用标识）
+    emitRed(scanRed(taskText));
+    for (auto const& hit : hits) {
+        Doc const& doc = hit.first;
+        if (metaConflicted(doc.meta)) {
+            for (std::string const* name : hard)
+                conflicts.push_back({{"rule", *name}, {"why", "memory meta.conflict"}});
+        }
+        emitRed(scanRed(doc.text));
     }
     return conflicts;
 }
@@ -188,40 +191,45 @@ json buildPack(Runtime& rt, std::string const& task, std::vector<std::pair<Doc, 
                std::vector<Resolvedrule> const& rules, Decision const& d, json const& modelPack) {
     Gateconfig const& g = rt.config.gate;
     json pack = json::array();
+    std::unordered_set<std::string> seen;
+    seen.reserve(16);
     std::size_t budget = g.packtok;
     std::size_t used = 0;
-    auto tryAdd = [&](std::string const& id, std::string const& span, float score, std::string const& why) {
+    // sectionsFor 与 compression 无关循环变量，提到循环外
+    int const baseSecs = rt.decider.sectionsFor(d.compression);
+    auto tryAdd = [&](std::string id, std::string span, float score, char const* why) {
+        if (!seen.insert(id).second)
+            return;
         std::size_t cost = estimate(span) + estimate(id) + 8;
         if (used + cost > budget && !pack.empty())
             return;
-        pack.push_back({{"id", id}, {"span", span}, {"score", score}, {"why", why}});
+        pack.push_back({{"id", std::move(id)},
+                        {"span", std::move(span)},
+                        {"score", score},
+                        {"why", why}});
         used += cost;
     };
     for (auto const& r : rules) {
         if (r.activation != Activation::Always && r.activation != Activation::Glob)
             continue;
-        int secs = ruleSections(r.activation, r.score, 1.0f, rt.decider.sectionsFor(d.compression));
+        int secs = ruleSections(r.activation, r.score, 1.0f, baseSecs);
         std::string body = compressSections(r.rule.body, task, static_cast<std::size_t>(secs));
-        tryAdd("rule:" + r.rule.name, body, 1.0f, "hard policy");
+        tryAdd("rule:" + r.rule.name, std::move(body), 1.0f, "hard policy");
     }
     for (auto const& [doc, score] : hits) {
         std::string span = compressSections(doc.text, task, 2);
         if (span.size() > 400)
-            span = span.substr(0, 400);
-        tryAdd(doc.id, span, score, "memory");
+            span.resize(400);
+        tryAdd(doc.id, std::move(span), score, "memory");
     }
     if (modelPack.is_array()) {
         for (auto const& m : modelPack) {
             if (!m.is_object())
                 continue;
             std::string id = m.value("id", "");
-            bool found = false;
-            for (auto const& p : pack)
-                if (p.value("id", "") == id)
-                    found = true;
-            if (found)
+            if (id.empty() || seen.count(id))
                 continue;
-            tryAdd(id, m.value("span", ""), 0.0f, m.value("why", "model"));
+            tryAdd(std::move(id), m.value("span", ""), 0.0f, "model");
         }
     }
     return {{"items", std::move(pack)},
@@ -231,19 +239,27 @@ json buildPack(Runtime& rt, std::string const& task, std::vector<std::pair<Doc, 
 
 json finalizeStatus(json model, float evidence, Gateconfig const& g, std::size_t minlen) {
     float self = 0.0f;
-    if (model.contains("self") && model["self"].is_number())
-        self = clamp01(model["self"].get<float>());
+    if (auto it = model.find("self"); it != model.end() && it->is_number())
+        self = clamp01(it->get<float>());
     float conf = clamp01(g.wevid * evidence + g.wself * self);
-    json conflicts = model.value("conflicts", json::array());
-    if (!conflicts.is_array())
-        conflicts = json::array();
-    json missing = model.value("missing", json::array());
-    std::string status = model.value("status", "pack");
-    std::string reply = model.value("reply", "");
+
+    json conflicts = json::array();
+    if (auto it = model.find("conflicts"); it != model.end() && it->is_array())
+        conflicts = *it;
+    json missing = json::array();
+    if (auto it = model.find("missing"); it != model.end() && it->is_array())
+        missing = *it;
+
+    std::string status = "pack";
+    if (auto it = model.find("status"); it != model.end() && it->is_string())
+        status = it->get<std::string>();
+    std::string reply;
+    if (auto it = model.find("reply"); it != model.end() && it->is_string())
+        reply = it->get_ref<std::string const&>();
 
     if (!conflicts.empty())
         status = (status == "refuse") ? "refuse" : "pack";
-    else if (missing.is_array() && !missing.empty())
+    else if (!missing.empty())
         status = "pack";
     else if (conf < g.threshold)
         status = "pack";
@@ -252,13 +268,31 @@ json finalizeStatus(json model, float evidence, Gateconfig const& g, std::size_t
     else if (status != "answered" && status != "refuse")
         status = "pack";
 
-    model["status"] = status;
+    model["status"] = std::move(status);
     model["answerConfidence"] = conf;
     model["evidence"] = evidence;
     model["self"] = self;
-    model["conflicts"] = conflicts;
+    model["conflicts"] = std::move(conflicts);
     return model;
 }
+
+/** 临时改写 Encoder 采样参数，作用域结束自动恢复（gate/worker 共用）。 */
+struct Encoderguard {
+    Encoder& enc;
+    float prevTemp;
+    std::uint32_t prevMax;
+    Encoderguard(Encoder& e, float temp, std::uint32_t maxTok)
+        : enc(e), prevTemp(e.temperature), prevMax(e.maxTokens) {
+        enc.temperature = temp;
+        enc.maxTokens = (std::min)(prevMax ? prevMax : maxTok, maxTok);
+    }
+    ~Encoderguard() {
+        enc.temperature = prevTemp;
+        enc.maxTokens = prevMax;
+    }
+    Encoderguard(Encoderguard const&) = delete;
+    Encoderguard& operator=(Encoderguard const&) = delete;
+};
 
 } // namespace
 
@@ -277,6 +311,14 @@ std::string policyFingerprint(std::vector<Rule> const& rules) {
     return buf;
 }
 
+/**
+ * 前置门控热路径优化要点：
+ * - 政策指纹用启动缓存 policyFp，免每请求拼规则正文
+ * - task 只 embed 一次；L2+记忆合并为一次 ANN，再分区
+ * - resolveRules 复用同一 qVec
+ * - 去掉对 memoryHits 无效的 RRF（sem 分不进 doc.id）
+ * - 冲突扫描只传 name 指针，不深拷贝 Rule / 不复制 hits
+ */
 json runGate(Runtime& rt, json const& args) {
     std::string task = args.value("task", "");
     if (task.empty())
@@ -285,8 +327,12 @@ json runGate(Runtime& rt, json const& args) {
         return {{"error", "task required"}};
 
     Gateconfig const& g = rt.config.gate;
-    std::string fp = policyFingerprint(rt.rules);
-    std::string l1key = std::to_string(fnv1a64(task)) + ":" + fp;
+    if (rt.policyFp.empty())
+        rt.policyFp = policyFingerprint(rt.rules);
+    std::string const& fp = rt.policyFp;
+    std::string l1key = std::to_string(fnv1a64(task));
+    l1key.push_back(':');
+    l1key.append(fp);
 
     {
         std::lock_guard<std::mutex> lock(rt.l1Mutex);
@@ -300,101 +346,98 @@ json runGate(Runtime& rt, json const& args) {
                     {"pack", json::object()}};
     }
 
-    // L2：语义缓存（kind=cache）且指纹匹配
-    {
-        auto q = rt.encoder.embed(task);
-        auto hits = rt.store.search(q, g.cachek);
-        for (auto const& [doc, score] : hits) {
-            if (!kindIs(doc, "cache"))
-                continue;
-            if (doc.meta.value("fingerprint", "") != fp)
-                continue;
-            float sim = asSim(score);
-            if (sim < g.l2)
-                continue;
-            return {{"status", "answered"},
-                    {"answerConfidence", sim},
-                    {"reply", doc.text},
-                    {"policyFingerprint", fp},
-                    {"cache", "L2"},
-                    {"pack", json::object()}};
-        }
-    }
-
+    // decide 不依赖 ANN，提前做以便一次 search 同时覆盖 L2 k 与记忆 k
     Decideinput din = decideinputFromJson(args);
     if (din.task.empty())
         din.task = task;
     Decision d = rt.decider.decide(din);
+    std::size_t const memK = (std::max)(rt.decider.topkFor(d.retrieval), std::size_t{8});
+    std::size_t const annK = (std::max)(g.cachek, memK) + g.cachek; // 留余量，降低 L2 被挤出 top-k 的概率
+
+    std::vector<float> qVec = rt.encoder.embed(task);
+    auto rawHits = rt.store.search(qVec, annK);
+
+    // L2：同一次 ANN 结果里找 kind=cache + 指纹
+    for (auto const& [doc, score] : rawHits) {
+        if (!kindIs(doc, "cache"))
+            continue;
+        if (metaStr(doc.meta, "fingerprint") != fp)
+            continue;
+        float sim = asSim(score);
+        if (sim < g.l2)
+            continue;
+        return {{"status", "answered"},
+                {"answerConfidence", sim},
+                {"reply", doc.text},
+                {"policyFingerprint", fp},
+                {"cache", "L2"},
+                {"pack", json::object()}};
+    }
 
     Rulequery rq = rulequeryFromJson(args);
     if (rq.task.empty())
         rq.task = task;
-    auto matched = resolveRules(rt, rq);
+    auto matched = resolveRules(rt, rq, qVec);
 
-    std::size_t k = rt.decider.topkFor(d.retrieval);
-    auto rawHits = rt.store.search(rt.encoder.embed(task), (std::max)(k, std::size_t{8}));
     std::vector<std::pair<Doc, float>> memoryHits;
+    memoryHits.reserve((std::min)(rawHits.size(), memK));
     for (auto& h : rawHits) {
+        if (memoryHits.size() >= memK)
+            break;
         if (kindIs(h.first, "cache"))
             continue;
-        // 默认无 kind 或 memory/experience 均视为记忆
-        if (kindIs(h.first, "memory") || kindIs(h.first, "experience") ||
-            !h.first.meta.contains("kind"))
+        // 无 kind 或缺省 memory/experience 均视为记忆（kindIs 已覆盖）
+        if (kindIs(h.first, "memory") || kindIs(h.first, "experience"))
             memoryHits.push_back(std::move(h));
     }
+    // ANN 已按距离排序；原先 RRF(semIds, memIds) 的 sem 分从不落到 doc.id，排序是空转，已删除。
 
-    std::vector<std::string> semIds;
-    std::vector<std::string> memIds;
-    for (auto const& r : matched)
-        if (r.activation == Activation::Semantic)
-            semIds.push_back("rule:" + r.rule.name);
-    for (auto const& [doc, score] : memoryHits) {
-        (void)score;
-        memIds.push_back(doc.id);
+    // 冲突：命中硬政策 + 全库含「禁止」/names 的规则名指针（不拷 Rule 正文）
+    std::vector<std::string const*> hard;
+    std::vector<std::string const*> ban;
+    hard.reserve(matched.size() + rt.rules.size());
+    ban.reserve(rt.rules.size());
+    auto hasName = [](std::vector<std::string const*> const& xs, std::string const& n) {
+        for (std::string const* p : xs)
+            if (p && *p == n)
+                return true;
+        return false;
+    };
+    for (auto const& r : matched) {
+        if (r.activation != Activation::Always && r.activation != Activation::Glob)
+            continue;
+        hard.push_back(&r.rule.name);
+        if (r.rule.body.find("禁止") != std::string::npos)
+            ban.push_back(&r.rule.name);
     }
-    auto fused = rrfMerge(semIds, memIds);
-    std::sort(memoryHits.begin(), memoryHits.end(), [&](auto const& a, auto const& b) {
-        return fused[a.first.id] > fused[b.first.id];
-    });
-
-    // 冲突预检同时扫已命中政策 + 全库含命名红线的规则（避免 Glob 未触发时漏检）。
-    std::vector<Resolvedrule> policyScan = matched;
     for (auto const& r : rt.rules) {
         if (!r.enabled)
             continue;
-        if (r.body.find("禁止") == std::string::npos && r.name != "names")
+        bool const bans = r.body.find("禁止") != std::string::npos;
+        if (!bans && r.name != "names")
             continue;
-        bool already = false;
-        for (auto const& m : matched)
-            if (m.rule.name == r.name)
-                already = true;
-        if (already)
+        if (hasName(hard, r.name))
             continue;
-        Resolvedrule extra;
-        extra.rule = r;
-        // detectConflicts 只认 Always/Glob；此处抬成 Always 仅用于冲突扫描，不改真实激活。
-        extra.activation = Activation::Always;
-        policyScan.push_back(std::move(extra));
+        hard.push_back(&r.name);
+        if (bans || r.name == "names")
+            ban.push_back(&r.name);
     }
-    std::vector<std::pair<Doc, float>> conflictHay = memoryHits;
-    {
-        Doc taskDoc;
-        taskDoc.id = "task";
-        taskDoc.text = task;
-        conflictHay.insert(conflictHay.begin(), {std::move(taskDoc), 1.0f});
-    }
-    json conflicts = detectConflicts(policyScan, conflictHay);
+
+    json conflicts = detectConflicts(hard, ban, task, memoryHits);
     float evidence = evidenceOf(memoryHits, matched);
 
     if (!conflicts.empty()) {
         json pack = buildPack(rt, task, memoryHits, matched, d, json::array());
-        (void)rt.store.base.auditPut("gate-" + l1key, "conflict", conflicts);
+        {
+            std::lock_guard<std::mutex> lock(rt.store.mutex);
+            (void)rt.store.base.auditPut("gate-" + l1key, "conflict", conflicts);
+        }
         return {{"status", "refuse"},
                 {"answerConfidence", 0.0},
                 {"evidence", evidence},
                 {"reply", ""},
-                {"conflicts", conflicts},
-                {"pack", pack},
+                {"conflicts", std::move(conflicts)},
+                {"pack", std::move(pack)},
                 {"policyFingerprint", fp},
                 {"cache", nullptr}};
     }
@@ -406,13 +449,12 @@ json runGate(Runtime& rt, json const& args) {
                 {"evidence", evidence},
                 {"reply", ""},
                 {"conflicts", json::array()},
-                {"pack", pack},
+                {"pack", std::move(pack)},
                 {"policyFingerprint", fp},
                 {"cache", nullptr},
                 {"reason", "insufficient evidence"}};
     }
 
-    // 政策裁剪体 + 记忆摘要 → Nanbeige Draft
     json rulesArr = json::array();
     float semSum = 0.0f;
     for (auto const& r : matched)
@@ -428,50 +470,60 @@ json runGate(Runtime& rt, json const& args) {
     json hitsArr = json::array();
     for (std::size_t i = 0; i < memoryHits.size() && i < 6; ++i) {
         auto const& [doc, score] = memoryHits[i];
-        std::string t = doc.text;
-        if (t.size() > 500)
-            t = t.substr(0, 500);
-        hitsArr.push_back({{"id", doc.id}, {"text", t}, {"score", score}});
+        std::string_view tv = doc.text;
+        if (tv.size() > 500)
+            tv = tv.substr(0, 500);
+        hitsArr.push_back({{"id", doc.id}, {"text", std::string(tv)}, {"score", score}});
     }
 
-    std::string system =
+    static char const* const kGateSys =
         "You are a local gate arbitrator. Output ONE JSON object only, no markdown fences. "
         "Keys: status (answered|pack|refuse), self (0..1), conflicts (array of {rule,why}), "
         "reply (full answer or empty), pack (array of {id,span,why}), missing (array of strings). "
         "If policy conflicts with memory, status=refuse or pack and list conflicts. "
         "Only use answered when evidence is sufficient and you can fully answer.";
-    std::string user = json {{"task", task}, {"rules", rulesArr}, {"hits", hitsArr}}.dump();
+    std::string user = json {{"task", task}, {"rules", std::move(rulesArr)}, {"hits", std::move(hitsArr)}}.dump();
 
-    float prevTemp = rt.encoder.temperature;
-    std::uint32_t prevMax = rt.encoder.maxTokens;
-    rt.encoder.temperature = 0.0f;
-    rt.encoder.maxTokens = (std::min)(rt.encoder.maxTokens, std::uint32_t{1024});
-    std::string raw = rt.encoder.chat(system, user);
-    json model = parseGateModel(raw);
-    model = finalizeStatus(model, evidence, g, g.minlen);
+    json model;
+    {
+        Encoderguard guard(rt.encoder, 0.0f, 1024);
+        std::string raw = rt.encoder.chat(kGateSys, user);
+        model = finalizeStatus(parseGateModel(raw), evidence, g, g.minlen);
 
-    // 边界置信：可选 Critique
-    int rounds = 0;
-    while (rounds < g.reflect) {
-        float conf = model.value("answerConfidence", 0.0f);
-        if (!(conf >= g.threshold - 0.15f && conf < g.threshold) || !model.value("conflicts", json::array()).empty())
-            break;
-        std::string critSys =
-            "Revise the previous gate JSON. Check hallucination, policy violations, missing info. "
-            "Output ONE JSON with the same schema.";
-        std::string critUser = model.dump();
-        raw = rt.encoder.chat(critSys, critUser);
-        model = parseGateModel(raw);
-        model = finalizeStatus(model, evidence, g, g.minlen);
-        ++rounds;
+        int rounds = 0;
+        while (rounds < g.reflect) {
+            float conf = 0.0f;
+            if (auto it = model.find("answerConfidence"); it != model.end() && it->is_number())
+                conf = it->get<float>();
+            bool hasConflict = false;
+            if (auto it = model.find("conflicts"); it != model.end() && it->is_array() && !it->empty())
+                hasConflict = true;
+            if (!(conf >= g.threshold - 0.15f && conf < g.threshold) || hasConflict)
+                break;
+            static char const* const kCritSys =
+                "Revise the previous gate JSON. Check hallucination, policy violations, missing info. "
+                "Output ONE JSON with the same schema.";
+            raw = rt.encoder.chat(kCritSys, model.dump());
+            model = finalizeStatus(parseGateModel(raw), evidence, g, g.minlen);
+            ++rounds;
+        }
+        model["reflect"] = rounds;
     }
 
-    rt.encoder.temperature = prevTemp;
-    rt.encoder.maxTokens = prevMax;
+    json modelPack = json::array();
+    if (auto it = model.find("pack"); it != model.end() && it->is_array())
+        modelPack = *it;
+    json pack = buildPack(rt, task, memoryHits, matched, d, modelPack);
 
-    json pack = buildPack(rt, task, memoryHits, matched, d, model.value("pack", json::array()));
-    std::string status = model.value("status", "pack");
-    std::string reply = model.value("reply", "");
+    std::string status = "pack";
+    if (auto it = model.find("status"); it != model.end() && it->is_string())
+        status = it->get_ref<std::string const&>();
+    std::string reply;
+    if (auto it = model.find("reply"); it != model.end() && it->is_string())
+        reply = it->get_ref<std::string const&>();
+    int rounds = 0;
+    if (auto it = model.find("reflect"); it != model.end() && it->is_number_integer())
+        rounds = it->get<int>();
 
     if (status == "answered" && reply.size() >= g.minlen) {
         {
@@ -480,7 +532,6 @@ json runGate(Runtime& rt, json const& args) {
                 rt.l1.clear();
             rt.l1[l1key] = L1entry {reply, fp};
         }
-        // 晋升 L2 cache（失败忽略，不阻断）
         Doc cacheDoc;
         cacheDoc.id = "cache-" + l1key;
         cacheDoc.text = reply;
@@ -489,14 +540,27 @@ json runGate(Runtime& rt, json const& args) {
         (void)rt.store.upsert(std::move(cacheDoc), vec);
     }
 
-    return {{"status", status},
-            {"answerConfidence", model.value("answerConfidence", 0.0)},
+    json conflictsOut = json::array();
+    if (auto it = model.find("conflicts"); it != model.end() && it->is_array())
+        conflictsOut = *it;
+    json missingOut = json::array();
+    if (auto it = model.find("missing"); it != model.end() && it->is_array())
+        missingOut = *it;
+    float answerConf = 0.0f;
+    if (auto it = model.find("answerConfidence"); it != model.end() && it->is_number())
+        answerConf = it->get<float>();
+    float self = 0.0f;
+    if (auto it = model.find("self"); it != model.end() && it->is_number())
+        self = it->get<float>();
+
+    return {{"status", std::move(status)},
+            {"answerConfidence", answerConf},
             {"evidence", evidence},
-            {"self", model.value("self", 0.0)},
-            {"reply", reply},
-            {"conflicts", model.value("conflicts", json::array())},
-            {"missing", model.value("missing", json::array())},
-            {"pack", pack},
+            {"self", self},
+            {"reply", std::move(reply)},
+            {"conflicts", std::move(conflictsOut)},
+            {"missing", std::move(missingOut)},
+            {"pack", std::move(pack)},
             {"policyFingerprint", fp},
             {"cache", nullptr},
             {"reflect", rounds}};
@@ -511,62 +575,121 @@ json runObserve(Runtime& rt, json const& args) {
         std::string seed = payload.dump();
         id = "obs-" + std::to_string(fnv1a64(seed));
     }
-    if (error_t err = rt.store.base.enqueue(id, payload); err) {
+    error_t err;
+    {
+        std::lock_guard<std::mutex> lock(rt.store.mutex);
+        err = rt.store.base.enqueue(id, payload);
+    }
+    if (err) {
         char const* msg = err.release();
         return {{"ok", false}, {"error", msg ? msg : "enqueue failed"}};
     }
+    // 入队即唤醒，避免 Worker 空转到满 400ms
+    rt.workerCv.notify_one();
     return {{"ok", true}, {"id", id}, {"status", "pending"}};
 }
 
+/**
+ * Worker 热路径：
+ * - condition_variable 替代盲目 sleep；有任务时 do-while 连抽到 empty
+ * - 静态 system 提示，Encoderguard 恢复采样参数
+ * - 蒸馏失败回退原文；mutex 合并 finish/audit
+ *
+ * 关于「死循环」：内层不是自旋 for(;;)。退出条件绑在 do-while(claimed)——
+ * claim 把 pending→running，finish 落到 done/fail，队列空则 claimed 为假并退出。
+ * 真正会「看起来挂住」的是 encoder.chat（同步阻塞），不是循环本身。
+ */
 void workerLoop(Runtime& rt) {
-    while (!rt.workerStop.load()) {
-        auto claimed = rt.store.base.claim();
+    static char const* const kSys =
+        "Distill the observation into a short durable memory note. "
+        "Output plain text only: first line title, then summary. "
+        "Do not invent policy rules. If content conflicts with coding standards, "
+        "prefix with CONFLICT:";
+
+    while (!rt.workerStop.load(std::memory_order_acquire)) {
+        expected_gt<Queuerow> claimed;
+        {
+            std::lock_guard<std::mutex> lock(rt.store.mutex);
+            claimed = rt.store.base.claim();
+        }
         if (!claimed) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(400));
+            std::unique_lock<std::mutex> lk(rt.workerMutex);
+            rt.workerCv.wait_for(lk, std::chrono::milliseconds(400),
+                                 [&] { return rt.workerStop.load(std::memory_order_acquire); });
             continue;
         }
-        Queuerow row = std::move(claimed.result);
-        try {
-            json const& p = row.payload;
-            std::string title = p.value("title", "observation");
-            std::string summary = p.value("summary", p.value("text", ""));
-            std::string outcome = p.value("outcome", "ok");
-            std::string system =
-                "Distill the observation into a short durable memory note. "
-                "Output plain text only: first line title, then summary. "
-                "Do not invent policy rules. If content conflicts with coding standards, "
-                "prefix with CONFLICT:";
-            std::string user = json {{"title", title}, {"summary", summary}, {"outcome", outcome}}.dump();
-            float prevTemp = rt.encoder.temperature;
-            rt.encoder.temperature = 0.0f;
-            std::string distilled = rt.encoder.chat(system, user);
-            rt.encoder.temperature = prevTemp;
-            bool conflict = distilled.find("CONFLICT") != std::string::npos;
-            Doc doc;
-            doc.id = "mem-" + row.id;
-            doc.text = distilled.empty() ? (title + "\n" + summary) : distilled;
-            doc.meta = {{"kind", "memory"},
-                        {"conflict", conflict},
-                        {"source", row.id},
-                        {"outcome", outcome}};
-            auto vec = rt.encoder.embed(doc.text);
-            if (error_t err = rt.store.upsert(std::move(doc), vec); err) {
+
+        // 有任务：处理 → 再 claim；empty 或 stop 时条件为假，结构上不可能空转
+        do {
+            Queuerow row = std::move(claimed.result);
+            try {
+                json const& p = row.payload;
+                std::string title = "observation";
+                if (auto it = p.find("title"); it != p.end() && it->is_string())
+                    title = it->get_ref<std::string const&>();
+                std::string summary;
+                if (auto it = p.find("summary"); it != p.end() && it->is_string())
+                    summary = it->get_ref<std::string const&>();
+                else if (auto it = p.find("text"); it != p.end() && it->is_string())
+                    summary = it->get_ref<std::string const&>();
+                std::string outcome = "ok";
+                if (auto it = p.find("outcome"); it != p.end() && it->is_string())
+                    outcome = it->get_ref<std::string const&>();
+
+                std::string user =
+                    json {{"title", title}, {"summary", summary}, {"outcome", outcome}}.dump();
+                std::string distilled;
+                try {
+                    Encoderguard guard(rt.encoder, 0.0f, 512);
+                    distilled = rt.encoder.chat(kSys, user);
+                } catch (...) {
+                    distilled.clear();
+                }
+                if (distilled.empty()) {
+                    distilled.reserve(title.size() + summary.size() + 1);
+                    distilled.assign(title);
+                    distilled.push_back('\n');
+                    distilled.append(summary);
+                }
+                bool const conflict = distilled.find("CONFLICT") != std::string::npos;
+
+                Doc doc;
+                doc.id = "mem-" + row.id;
+                doc.text = std::move(distilled);
+                doc.meta = {{"kind", "memory"},
+                            {"conflict", conflict},
+                            {"source", row.id},
+                            {"outcome", std::move(outcome)}};
+                auto vec = rt.encoder.embed(doc.text);
+                if (error_t err = rt.store.upsert(std::move(doc), vec); err) {
+                    std::lock_guard<std::mutex> lock(rt.store.mutex);
+                    (void)rt.store.base.finish(row.id, "fail");
+                } else {
+                    std::lock_guard<std::mutex> lock(rt.store.mutex);
+                    if (conflict)
+                        (void)rt.store.base.auditPut(row.id, "conflict", {{"id", row.id}});
+                    (void)rt.store.base.finish(row.id, "done");
+                }
+            } catch (...) {
+                std::lock_guard<std::mutex> lock(rt.store.mutex);
                 (void)rt.store.base.finish(row.id, "fail");
-                continue;
             }
-            if (conflict)
-                (void)rt.store.base.auditPut(row.id, "conflict", {{"id", row.id}});
-            (void)rt.store.base.finish(row.id, "done");
-        } catch (...) {
-            (void)rt.store.base.finish(row.id, "fail");
-        }
+
+            if (rt.workerStop.load(std::memory_order_acquire))
+                break;
+            {
+                std::lock_guard<std::mutex> lock(rt.store.mutex);
+                claimed = rt.store.base.claim();
+            }
+        } while (static_cast<bool>(claimed));
     }
 }
 
 Runtime::Runtime(Runtime&& other) noexcept
     : root(std::move(other.root)), config(std::move(other.config)), encoder(std::move(other.encoder)),
-      store(std::move(other.store)), rules(std::move(other.rules)), decider(std::move(other.decider)),
-      l1(std::move(other.l1)), workerStop(other.workerStop.load()), worker(std::move(other.worker)) {
+      store(std::move(other.store)), rules(std::move(other.rules)), policyFp(std::move(other.policyFp)),
+      decider(std::move(other.decider)), l1(std::move(other.l1)),
+      workerStop(other.workerStop.load()), worker(std::move(other.worker)) {
     other.workerStop.store(true);
 }
 
@@ -579,6 +702,7 @@ Runtime& Runtime::operator=(Runtime&& other) noexcept {
     encoder = std::move(other.encoder);
     store = std::move(other.store);
     rules = std::move(other.rules);
+    policyFp = std::move(other.policyFp);
     decider = std::move(other.decider);
     {
         std::lock_guard<std::mutex> lock(l1Mutex);
@@ -595,12 +719,13 @@ Runtime::~Runtime() { stopWorker(); }
 void Runtime::startWorker() {
     if (worker.joinable())
         return;
-    workerStop.store(false);
+    workerStop.store(false, std::memory_order_release);
     worker = std::thread([this] { workerLoop(*this); });
 }
 
 void Runtime::stopWorker() {
-    workerStop.store(true);
+    workerStop.store(true, std::memory_order_release);
+    workerCv.notify_all();
     if (worker.joinable())
         worker.join();
 }

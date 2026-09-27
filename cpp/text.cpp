@@ -461,14 +461,9 @@ std::vector<Resolvedrule> resolveRules(std::vector<Rule> const& rules, Rulequery
         rules, q, [&](Rule const& r) { return lexicalScore(taskLower, r); }, 3);
 }
 
-std::vector<Resolvedrule> resolveRules(Runtime& rt, Rulequery const& q) {
+std::vector<Resolvedrule> resolveRules(Runtime& rt, Rulequery const& q, std::vector<float> const& qVec) {
     std::string taskLower = asciiLower(q.task);
-    std::vector<float> qVec;
-    bool dense = false;
-    if (!q.task.empty()) {
-        qVec = rt.encoder.embed(q.task);
-        dense = !qVec.empty();
-    }
+    bool const dense = !qVec.empty();
     return resolveCore(
         rt.rules, q,
         [&](Rule const& r) -> float {
@@ -481,6 +476,13 @@ std::vector<Resolvedrule> resolveRules(Runtime& rt, Rulequery const& q) {
             return lexicalScore(taskLower, r);
         },
         3);
+}
+
+std::vector<Resolvedrule> resolveRules(Runtime& rt, Rulequery const& q) {
+    std::vector<float> qVec;
+    if (!q.task.empty())
+        qVec = rt.encoder.embed(q.task);
+    return resolveRules(rt, q, qVec);
 }
 
 Experience experienceFromJson(json const& j) {

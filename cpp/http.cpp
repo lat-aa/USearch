@@ -90,8 +90,6 @@ int serve(Runtime& rt) {
     }
 
     httplib::Server svr;
-    // 沉淀 Worker：领取 queue → Nanbeige 蒸馏 → 写 memory（用户路径不阻塞）。
-    rt.startWorker();
     // 默认任务队列；自定义 ThreadPool(1) 在 keep-alive 下易踩死锁/崩溃。
     Bucket bucket(rt.config.rate, rt.config.refill);
     std::mutex bucketMutex;
@@ -191,12 +189,15 @@ int serve(Runtime& rt) {
         setJson(res, out);
     });
 
-    std::printf("api 监听 http://%s:%d\n", host.c_str(), port);
-    if (!svr.listen(host, port)) {
-        std::fprintf(stderr, "api: 监听失败\n");
-        rt.stopWorker();
+    // 先 bind 再起 Worker，避免与 listen 抢启动期资源；失败则不入队消费。
+    if (!svr.bind_to_port(host.c_str(), port)) {
+        std::fprintf(stderr, "api: bind 失败 %s:%d\n", host.c_str(), port);
         return 1;
     }
+    rt.startWorker();
+    std::printf("api 监听 http://%s:%d\n", host.c_str(), port);
+    std::fflush(stdout);
+    svr.listen_after_bind();
     rt.stopWorker();
     return 0;
 }

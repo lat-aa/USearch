@@ -184,7 +184,13 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
         auto body = json::parse(req.body, nullptr, false);
         if (body.is_discarded())
             return setJson(res, {{"error", {{"message", "bad json"}}}}, 400);
-        setJson(res, runGate(rt, body));
+        try {
+            setJson(res, runGate(rt, body));
+        } catch (std::exception const& ex) {
+            setJson(res, {{"error", {{"message", ex.what()}}}}, 500);
+        } catch (...) {
+            setJson(res, {{"error", {{"message", "gate failed"}}}}, 500);
+        }
     });
 
     // 路由面：纯决策 + 按 compression 裁剪规则；不加载/不调用 LLM。
@@ -785,6 +791,8 @@ expected_gt<Runtime> Runtime::open(fs::path const& root) {
     } catch (...) {
         return out.failed("rules load failed");
     }
+    // 政策指纹只在启动算一次；门控热路径不再每次拼规则正文。
+    rt.policyFp = policyFingerprint(rt.rules);
     out.result = std::move(rt);
     return out;
 }
