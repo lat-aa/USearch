@@ -117,7 +117,19 @@ ctest --test-dir build_nk --output-on-failure -L "unit|numkong" --timeout 900
 
 ### 静态检查
 
-头文件分层（单单词文件名）：`usearch/{setup,util,sync,heap,config,stub,io,member,hnsw}.hpp`、`plugins/{kinds…exact}.hpp`、`dense/{config,meta,index,join}.hpp`；对外仍用聚合入口。CMake INTERFACE：`usearch`（完整）、`usearch_setup`（仅宏）、`plugins`、`dense`。改 `hnsw.hpp` 不必重编只链 `usearch_setup` 的目标。吞吐门禁：`test_perf` + `cpp/baseline.json`（见 `.github/workflows/performance.yml`）。
+头文件分层（单单词文件名）：`usearch/{setup,util,sync,heap,config,stub,io,member,hnsw}.hpp`、`plugins/{kinds…exact}.hpp`、`dense/{config,meta,index,join}.hpp`；对外仍用聚合入口。CMake INTERFACE：`usearch`（完整）、`usearch_setup`（仅宏）、`plugins`、`dense`。改 `hnsw.hpp` 不必重编只链 `usearch_setup` 的目标。
+
+吞吐门禁：`test_perf` + [`cpp/baseline.json`](cpp/baseline.json)（绝对地板 × `(1-tolerance)`）+ [`cpp/perfhist.jsonl`](cpp/perfhist.jsonl)（相对末行防漂移）。PR 走 `quality.yml` 的 `perf_gate`；周跑见 `.github/workflows/performance.yml`（写历史并出 SVG）。本地刷新地板：
+
+```sh
+cmake -B build -D CMAKE_BUILD_TYPE=Release -D USEARCH_BUILD_TEST_CPP=ON
+cmake --build build --target test_perf
+./build/test_perf   # 取 JSON 行，按机器余量下调写入 baseline.json 的 *_min
+python3 scripts/perfcheck.py --perf /tmp/perf.json --baseline cpp/baseline.json \
+  --hist cpp/perfhist.jsonl --svg /tmp/perftrend.svg --relative
+```
+
+`bench_cpp` 大数据集仍见 [`BENCHMARKS.md`](BENCHMARKS.md)；CI 只保证其可构建，不在 PR 跑全量。
 
 ```sh
 cppcheck --enable=warning,performance,portability --error-exitcode=1 --inline-suppr \
@@ -161,6 +173,9 @@ cmake --build build_artifacts --config Release
 NumKong 位于 `numkong/` 子模块。度量 / SIMD 相关修复请优先向上游贡献，再在本仓库更新子模块指针。
 
 ## 文档
+
+生产运维（删除率、`reclaim` 剧本、mmap）：[`docs/operations.md`](docs/operations.md)。  
+上游协作与暂缓项（含编译时间测量入口）：[`docs/upstream.md`](docs/upstream.md)。
 
 使用 Sphinx + Doxygen 为 C++ 头文件生成文档：
 

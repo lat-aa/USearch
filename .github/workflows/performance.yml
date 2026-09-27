@@ -1,10 +1,11 @@
-# 周跑 / 手动：test_perf QPS 对照 cpp/baseline.json 下限。
+# 周跑 / 手动 / 可被 quality 复用：test_perf 对照 baseline + 历史趋势。
 name: performance
 
 on:
   schedule:
     - cron: "0 6 * * 1"
   workflow_dispatch:
+  workflow_call:
 
 jobs:
   bench:
@@ -27,31 +28,26 @@ jobs:
         run: cmake --build build --target test_perf test_batch bench_cpp -j $(nproc)
       - name: Batch smoke
         run: ./build/test_batch
-      - name: Perf vs baseline
+      - name: Perf vs baseline and trend
         run: |
           set -euo pipefail
           ./build/test_perf | tee /tmp/perf.json
-          python3 - <<'PY'
-          import json, sys
-          lines = open("/tmp/perf.json").read().strip().splitlines()
-          got = json.loads(lines[-1])
-          base = json.load(open("cpp/baseline.json"))
-          tol = float(base.get("tolerance", 0.15))
-          floors = base["metrics"]
-          mapping = {
-              "add_qps": "add_qps_min",
-              "search_qps": "search_qps_min",
-              "batch_qps": "batch_qps_min",
-          }
-          failed = []
-          for gk, fk in mapping.items():
-              need = floors[fk] * (1.0 - tol)
-              val = float(got[gk])
-              print(f"{gk}={val:.1f} floor={need:.1f} (min={floors[fk]} tol={tol})")
-              if val < need:
-                  failed.append(gk)
-          if failed:
-              print("FAIL below floor:", ", ".join(failed), file=sys.stderr)
-              sys.exit(1)
-          print("perf vs baseline ok")
-          PY
+          python3 scripts/perfcheck.py \
+            --perf /tmp/perf.json \
+            --baseline cpp/baseline.json \
+            --hist cpp/perfhist.jsonl \
+            --svg /tmp/perftrend.svg \
+            --sha "${GITHUB_SHA}" \
+            --ref "${GITHUB_REF_NAME}" \
+            --append \
+            --relative
+          cat /tmp/perftrend.svg >> "$GITHUB_STEP_SUMMARY" || true
+      - name: Upload perf artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-metrics
+          path: |
+            /tmp/perf.json
+            /tmp/perftrend.svg
+            cpp/perfhist.jsonl

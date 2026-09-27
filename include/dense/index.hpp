@@ -1572,12 +1572,10 @@ class index_dense_gt {
     };
 
     /**
-     *  @brief Performs compaction on the index, pruning links to removed entries.
-     *  @param executor The executor parallel processing. Default ::dummy_executor_t single-threaded.
-     *  @param progress The progress tracker instance to use. Default ::dummy_progress_t reports nothing.
-     *  @return The ::compaction_result_t indicating the result of the compaction operation.
-     *          `result.pruned_edges` will contain the number of edges that were removed.
-     *          `result.error` will contain an error message if an error occurred during the compaction operation.
+     *  @brief 剪掉指向已删除节点的入边；不释放向量/图槽内存（与 `reclaim` 不同）。
+     *  @param executor 并行执行器；默认单线程。
+     *  @param progress 进度回调；默认无报告。
+     *  @return `pruned_edges` 为剪边次数；失败时 `error` 非空。
      */
     template <typename executor_at = dummy_executor_t, typename progress_at = dummy_progress_t>
     compaction_result_t isolate(executor_at&& executor = executor_at{}, progress_at&& progress = progress_at{}) {
@@ -1603,12 +1601,10 @@ class index_dense_gt {
     };
 
     /**
-     *  @brief Performs compaction on the index, pruning links to removed entries.
-     *  @param executor The executor parallel processing. Default ::dummy_executor_t single-threaded.
-     *  @param progress The progress tracker instance to use. Default ::dummy_progress_t reports nothing.
-     *  @return The ::compaction_result_t indicating the result of the compaction operation.
-     *          `result.pruned_edges` will contain the number of edges that were removed.
-     *          `result.error` will contain an error message if an error occurred during the compaction operation.
+     *  @brief 活节点槽位重排以改善局部性；会搬迁向量查找表，不是「只剪边」。
+     *  @param executor 并行执行器；默认单线程。
+     *  @param progress 进度回调；默认无报告。
+     *  @return 成功时 `error` 为空；内存不足时失败。
      */
     template <typename executor_at = dummy_executor_t, typename progress_at = dummy_progress_t>
     compaction_result_t compact(executor_at&& executor = executor_at{}, progress_at&& progress = progress_at{}) {
@@ -1636,7 +1632,8 @@ class index_dense_gt {
     /**
      *  删除后空间回收：收集未标记删除的向量，重建索引并原子替换。
      *  与 `compact()`（图槽重排）不同；与 `isolate()`（只剪边不释内存）不同。
-     *  建议：删除率 > 20% 时调用；会短暂占用约 2× 峰值内存。
+     *  建议：删除率 > 30%，或 `vectors_wasted/vectors_allocated > 0.25` 时调用（见 docs/operations.md）；
+     *  峰值约 2× 内存；不可变/`view` 索引会失败。
      */
     struct reclaim_result_t {
         error_t error{};

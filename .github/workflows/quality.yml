@@ -156,3 +156,35 @@ jobs:
             -D USEARCH_SANITIZE_DEBUG=OFF
           cmake --build build --target fuzz_index -j"$(nproc)"
           build/fuzz_index fuzz/corpus -max_total_time=60 -timeout=10
+
+  # PR 吞吐门禁：与 performance.yml 同地板；相对 cpp/perfhist.jsonl 末行防漂移
+  perf_gate:
+    name: Perf floor
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - run: git submodule update --init --recursive
+      - name: Build Release test_perf
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++
+          cmake -B build \
+            -D CMAKE_BUILD_TYPE=Release \
+            -D USEARCH_BUILD_TEST_CPP=ON \
+            -D USEARCH_BUILD_BENCH_CPP=OFF \
+            -D USEARCH_USE_NUMKONG=OFF
+          cmake --build build --target test_perf -j"$(nproc)"
+      - name: Floor + relative
+        run: |
+          set -euo pipefail
+          ./build/test_perf | tee /tmp/perf.json
+          python3 scripts/perfcheck.py \
+            --perf /tmp/perf.json \
+            --baseline cpp/baseline.json \
+            --hist cpp/perfhist.jsonl \
+            --svg /tmp/perftrend.svg \
+            --sha "${GITHUB_SHA}" \
+            --ref "${GITHUB_REF_NAME}" \
+            --relative
+          cat /tmp/perftrend.svg >> "$GITHUB_STEP_SUMMARY" || true

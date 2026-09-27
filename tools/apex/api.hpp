@@ -553,6 +553,21 @@ struct Runtime {
 
 /** 政策目录指纹：规则变更使 L1/L2 缓存失效。 */
 std::string policyFingerprint(std::vector<Rule> const& rules);
+
+/**
+ * gate 可注入 I/O：单测用桩，生产由 Runtime 的 Encoder/Store 填充。
+ * 禁止在桩里再进 llama；embed/chat/search/upsert/audit 均可替换。
+ */
+struct Gateports {
+    std::function<std::vector<float>(std::string_view)> embed;
+    std::function<std::string(std::string_view, std::string_view)> chat;
+    std::function<std::vector<std::pair<Doc, float>>(std::vector<float> const&, std::size_t)> search;
+    std::function<error_t(Doc, std::vector<float> const&)> upsert;
+    std::function<void(std::string const&, std::string const&, json const&)> audit;
+};
+
+/** 前置门控核心（可注入 ports）；生产 `runGate` 绑定 Runtime。 */
+json runGateCore(Runtime& rt, json const& args, Gateports& ports);
 /** 前置门控：L1/L2→政策∥记忆→RRF→Nanbeige 混合置信→answered|pack|refuse。 */
 json runGate(Runtime& rt, json const& args);
 /** observe 仅入队；Worker 后台蒸馏写 memory。 */

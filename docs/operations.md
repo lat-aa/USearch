@@ -50,6 +50,15 @@ bytes ≈ key + level_byte
 
 `reclaim` 峰值约 2× 内存；大索引建议维护窗口执行。避免在热路径上对全量做 O(n²) 式逐边修补——优先 `reclaim` 重建（live 槽并行重插）。
 
+### reclaim 运维剧本（有序）
+
+1. **预检**：确认索引为可写 `load`（非 `view`/immutable）；记 `size()`、`memory_stats()`、删除率。
+2. **备份**：`save` 全量快照到可回滚路径。
+3. **排水**：停写或切只读流量；并发查询在重建期可能看到旧图，勿假设在线无抖动。
+4. **执行**：调用 `reclaim()`；无 progress 回调，按规模预留墙钟时间与 2× RAM。
+5. **抽检**：`size()` 对齐 live 预期；抽样 `search` / Recall 与基线对比；`memory_stats` wasted 应下降。
+6. **失败**：`Can't reclaim an immutable index` → 改用可写副本；`live count mismatch` / unsupported scalar → 保留快照、查日志后离线导出 live 再 `make`。
+
 ## 备份
 
 - `save` / 序列化为**全量快照**；无内置增量 WAL。  

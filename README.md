@@ -97,6 +97,8 @@ index.load("index.usearch");  // 复制到内存
 index.view("index.usearch");  // 内存映射
 ```
 
+生产删除与空间回收（`isolate` / `compact` / `reclaim`、mmap 限制、运维剧本）见 [`docs/operations.md`](docs/operations.md)。
+
 ## 与 FAISS 对比（摘要）
 
 | | FAISS | USearch |

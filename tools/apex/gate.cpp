@@ -4,205 +4,58 @@
  */
 
 #include "api.hpp"
-#include "verdict.hpp"
+#include "helpers.hpp"
 
 #include <algorithm>
-#include <cmath>
 #include <cstdio>
-#include <cstring>
 #include <sstream>
 #include <thread>
-#include <unordered_set>
 
 namespace api {
 namespace {
 
-/**
- * kind 判定：无 kind 时按 memory/experience 缺省；禁止 value<string> 抛 type_error。
- * 热路径上每条 hit 会调用多次，故避免临时 std::string。
- */
-bool kindIs(Doc const& doc, char const* want) noexcept {
-    bool const wantMem = std::strcmp(want, "memory") == 0 || std::strcmp(want, "experience") == 0;
-    if (!doc.meta.is_object())
-        return wantMem;
-    auto it = doc.meta.find("kind");
-    if (it == doc.meta.end())
-        return wantMem;
-    if (std::string const* k = it->get_ptr<std::string const*>())
-        return *k == want;
-    return wantMem;
+/** Doc → Hitdoc（helpers 热路径视图）。 */
+Hitdoc toHit(Doc const& d) {
+    return Hitdoc {d.id, d.text, d.meta};
 }
 
-/** meta 字符串字段；类型不对返回空 view，绝不抛。 */
-std::string_view metaStr(json const& meta, char const* key) noexcept {
-    if (!meta.is_object())
-        return {};
-    auto it = meta.find(key);
-    if (it == meta.end())
-        return {};
-    if (std::string const* s = it->get_ptr<std::string const*>())
-        return *s;
-    return {};
+std::vector<std::pair<Hitdoc, float>> toHits(std::vector<std::pair<Doc, float>> const& xs) {
+    std::vector<std::pair<Hitdoc, float>> out;
+    out.reserve(xs.size());
+    for (auto const& h : xs)
+        out.emplace_back(toHit(h.first), h.second);
+    return out;
 }
 
-std::string extractJsonObject(std::string const& text) {
-    auto start = text.find('{');
-    auto end = text.rfind('}');
-    if (start == std::string::npos || end == std::string::npos || end <= start)
-        return {};
-    return text.substr(start, end - start + 1);
+std::vector<Rulehit> toRulehits(std::vector<Resolvedrule> const& xs) {
+    std::vector<Rulehit> out;
+    out.reserve(xs.size());
+    for (auto const& r : xs)
+        out.push_back(Rulehit {r.rule.name, r.rule.body, static_cast<std::uint8_t>(r.activation), r.score});
+    return out;
 }
 
-json parseGateModel(std::string const& raw) {
-    std::string slice = extractJsonObject(raw);
-    if (slice.empty())
-        return json::object();
-    try {
-        return json::parse(slice);
-    } catch (...) {
-        return json::object();
-    }
-}
-
-/** meta.conflict 只认 bool；用 get_ptr 避免 value/get 抛 type_error（未捕获即 abort）。 */
-bool metaConflicted(json const& meta) noexcept {
-    if (!meta.is_object())
-        return false;
-    auto it = meta.find("conflict");
-    if (it == meta.end())
-        return false;
-    if (bool const* flag = it->get_ptr<bool const*>())
-        return *flag;
-    return false;
-}
-
-/**
- * 轻量冲突：硬政策名指针 + 禁用词政策名指针 + task 正文 + 记忆命中。
- * 调用方负责预筛，避免在此深拷贝 Rule；task 单独扫，免构造临时 Doc / 复制 hits。
- */
-json detectConflicts(std::vector<std::string const*> const& hard,
-                     std::vector<std::string const*> const& ban, std::string_view taskText,
-                     std::vector<std::pair<Doc, float>> const& hits) {
-    // why 不写具体蛇形旧名，避免源码再传播违规标识；规则名来自 ban（通常含 names）。
-    constexpr char const* kWhyNames = "names: identifier must not use underscore or hyphen";
-    if (hard.empty())
-        return json::array();
-
-    json conflicts = json::array();
-    auto emitRed = [&](bool red) {
-        if (!red || ban.empty())
-            return;
-        for (std::string const* name : ban)
-            conflicts.push_back({{"rule", *name}, {"why", kWhyNames}});
-    };
-
-    // 任务原文也要过红线（Glob 未触发时仍能挡住违规标识）
-    emitRed(scanRed(taskText));
-    for (auto const& hit : hits) {
-        Doc const& doc = hit.first;
-        if (metaConflicted(doc.meta)) {
-            for (std::string const* name : hard)
-                conflicts.push_back({{"rule", *name}, {"why", "memory meta.conflict"}});
-        }
-        emitRed(scanRed(doc.text));
-    }
-    return conflicts;
-}
-
-float evidenceOf(std::vector<std::pair<Doc, float>> const& hits, std::vector<Resolvedrule> const& rules) {
-    float top = hits.empty() ? 0.0f : asSim(hits[0].second);
-    float cover = clamp01(static_cast<float>(hits.size()) / 4.0f);
-    float pol = 0.0f;
-    for (auto const& r : rules) {
-        if (r.activation == Activation::Always || r.activation == Activation::Glob)
-            pol = (std::max)(pol, 0.35f);
-        if (r.activation == Activation::Semantic)
-            pol = (std::max)(pol, clamp01(r.score));
-    }
-    return clamp01(0.5f * top + 0.25f * cover + 0.25f * pol);
+bool docKind(Doc const& doc, char const* want) noexcept {
+    // 限定 api::kindIs，避免与本函数同名递归/重载歧义
+    return api::kindIs(doc.meta, want);
 }
 
 json buildPack(Runtime& rt, std::string const& task, std::vector<std::pair<Doc, float>> const& hits,
                std::vector<Resolvedrule> const& rules, Decision const& d, json const& modelPack) {
-    Gateconfig const& g = rt.config.gate;
-    json pack = json::array();
-    std::unordered_set<std::string> seen;
-    seen.reserve(16);
-    std::size_t budget = g.packtok;
-    std::size_t used = 0;
-    // sectionsFor 与 compression 无关循环变量，提到循环外
-    int const baseSecs = rt.decider.sectionsFor(d.compression);
-    auto tryAdd = [&](std::string id, std::string span, float score, char const* why) {
-        if (!seen.insert(id).second)
-            return;
-        std::size_t cost = estimate(span) + estimate(id) + 8;
-        if (used + cost > budget && !pack.empty())
-            return;
-        pack.push_back({{"id", std::move(id)},
-                        {"span", std::move(span)},
-                        {"score", score},
-                        {"why", why}});
-        used += cost;
-    };
-    for (auto const& r : rules) {
-        if (r.activation != Activation::Always && r.activation != Activation::Glob)
-            continue;
-        int secs = ruleSections(r.activation, r.score, 1.0f, baseSecs);
-        std::string body = compressSections(r.rule.body, task, static_cast<std::size_t>(secs));
-        tryAdd("rule:" + r.rule.name, std::move(body), 1.0f, "hard policy");
-    }
-    for (auto const& [doc, score] : hits) {
-        std::string span = compressSections(doc.text, task, 2);
-        if (span.size() > 400)
-            span.resize(400);
-        tryAdd(doc.id, std::move(span), score, "memory");
-    }
-    if (modelPack.is_array()) {
-        for (auto const& m : modelPack) {
-            if (!m.is_object())
-                continue;
-            std::string id = m.value("id", "");
-            if (id.empty() || seen.count(id))
-                continue;
-            tryAdd(std::move(id), m.value("span", ""), 0.0f, "model");
-        }
-    }
-    return {{"items", std::move(pack)},
-            {"decision", {{"retrieval", retrievalName(d.retrieval)}, {"compression", d.compression}}},
-            {"tokens", used}};
+    Packcfg cfg;
+    cfg.packtok = rt.config.gate.packtok;
+    cfg.baseSecs = rt.decider.sectionsFor(d.compression);
+    json decisionSlice = {{"retrieval", retrievalName(d.retrieval)}, {"compression", d.compression}};
+    return api::buildPack(cfg, task, toHits(hits), toRulehits(rules), decisionSlice, modelPack);
 }
 
-json finalizeStatus(json model, float evidence, Gateconfig const& g, std::size_t minlen) {
-    float self = 0.0f;
-    if (auto it = model.find("self"); it != model.end() && it->is_number())
-        self = clamp01(it->get<float>());
-    float conf = mixConfidence(evidence, self, g.wevid, g.wself);
-
-    json conflicts = json::array();
-    if (auto it = model.find("conflicts"); it != model.end() && it->is_array())
-        conflicts = *it;
-    json missing = json::array();
-    if (auto it = model.find("missing"); it != model.end() && it->is_array())
-        missing = *it;
-
-    std::string status = "pack";
-    if (auto it = model.find("status"); it != model.end() && it->is_string())
-        status = it->get<std::string>();
-    std::string reply;
-    if (auto it = model.find("reply"); it != model.end() && it->is_string())
-        reply = it->get_ref<std::string const&>();
-
-    // modelStatus 单独拷贝，避免 verdictOf 返回指向 status 内部的指针后再赋值触发自引用。
-    std::string const modelStatus = status;
-    status = verdictOf(!conflicts.empty(), !missing.empty(), conf, g.threshold, modelStatus.c_str(),
-                       reply.size(), minlen);
-
-    model["status"] = std::move(status);
-    model["answerConfidence"] = conf;
-    model["evidence"] = evidence;
-    model["self"] = self;
-    model["conflicts"] = std::move(conflicts);
-    return model;
+json finalizeGate(json model, float evidence, Gateconfig const& g, std::size_t minlen) {
+    Gateweights w;
+    w.threshold = g.threshold;
+    w.wevid = g.wevid;
+    w.wself = g.wself;
+    w.minlen = minlen;
+    return api::finalizeStatus(std::move(model), evidence, w);
 }
 
 /** 临时改写 Encoder 采样参数，作用域结束自动恢复（gate/worker 共用）。 */
@@ -234,16 +87,11 @@ void Turnstats::rebuildPrompt(Decision const& d) {
             continue;
         rulesArr.push_back({{"name", id}, {"body", body}});
     }
-    json knowledge = {{"hits", json::array()},
-                      {"rules", std::move(rulesArr)},
-                      {"decision", d.toJson()}};
     bool hasGatePack = false;
     if (packRaw.is_object()) {
         auto items = packRaw.find("items");
-        if (items != packRaw.end() && items->is_array() && !items->empty()) {
-            knowledge["pack"] = packRaw;
+        if (items != packRaw.end() && items->is_array() && !items->empty())
             hasGatePack = true;
-        }
     }
     // 无真实 gate pack：省略 pack 键；计量归零（摘要行 gatePack 0）
     if (!hasGatePack) {
@@ -251,137 +99,17 @@ void Turnstats::rebuildPrompt(Decision const& d) {
         packtok = 0;
     }
     // prompt = 模型注入契约（JSON）；corpus = 聊天统计块人读摘要，见 rebuildCorpus
-    prompt = "Local knowledge JSON follows.\n" + knowledge.dump(2);
+    prompt = formatPrompt(rulesArr, d.toJson(), json::array(), hasGatePack ? &packRaw : nullptr);
     source = "rebuild";
 }
 
-namespace {
-
-/** 0..1 → 百分整数；非法则 -1（调用方跳过该字段）。 */
-int pct01(json const& j, char const* key) {
-    auto it = j.find(key);
-    if (it == j.end() || !it->is_number())
-        return -1;
-    float x = it->get<float>();
-    if (!(x >= 0.f) || !(x <= 1.f))
-        return -1;
-    return static_cast<int>(std::lround(x * 100.f));
-}
-
-/** 规则正文写入 corpus 前去掉 CR，避免 Windows 源文件在聊天里刷 `\r`。 */
-std::string bodyForCorpus(std::string_view body) {
-    std::string out;
-    out.reserve(body.size());
-    for (char c : body) {
-        if (c != '\r')
-            out.push_back(c);
-    }
-    while (!out.empty() && (out.back() == '\n' || out.back() == ' '))
-        out.pop_back();
-    return out;
-}
-
-} // namespace
-
 void Turnstats::rebuildCorpus() {
-    // 统计块只贴人读 markdown：禁止原样 dump knowledge JSON（转义与缩进会刷屏）
-    // 完整 JSON 仍在 turn.prompt，供 /v1 注入与工具校验。
+    // 人读 markdown 算法在 helpers::formatCorpus；此处只赋值
     if (prompt.empty()) {
         corpus.clear();
         return;
     }
-    constexpr char const* kPrefix = "Local knowledge JSON follows.";
-    json knowledge;
-    bool parsed = false;
-    if (prompt.rfind(kPrefix, 0) == 0) {
-        std::size_t i = std::strlen(kPrefix);
-        while (i < prompt.size() && (prompt[i] == '\n' || prompt[i] == '\r'))
-            ++i;
-        try {
-            knowledge = json::parse(prompt.substr(i));
-            parsed = knowledge.is_object();
-        } catch (...) {
-            parsed = false;
-        }
-    }
-
-    std::ostringstream oss;
-    oss << "## prompt\n";
-    if (!parsed) {
-        // 非标准 prompt：无法美化时才回退原文，避免丢信息
-        oss << prompt;
-        if (!prompt.empty() && prompt.back() != '\n')
-            oss << '\n';
-        corpus = oss.str();
-        return;
-    }
-
-    if (auto it = knowledge.find("decision"); it != knowledge.end() && it->is_object()) {
-        auto const& d = *it;
-        oss << "路由 " << d.value("model", "?") << " · " << d.value("depth", "?") << " · "
-            << d.value("retrieval", "?");
-        int const retainPct = pct01(d, "compression");
-        if (retainPct >= 0)
-            oss << " · 保留 " << retainPct << "%";
-        int const confPct = pct01(d, "confidence");
-        if (confPct >= 0)
-            oss << " · 置信 " << confPct << "%";
-        if (auto t = d.find("temperature"); t != d.end() && t->is_number())
-            oss << " · temp " << t->get<float>();
-        oss << '\n';
-        if (auto rs = d.find("reasons"); rs != d.end() && rs->is_array() && !rs->empty()) {
-            oss << "依据";
-            for (auto const& r : *rs) {
-                if (!r.is_string())
-                    continue;
-                oss << " · " << r.get_ref<std::string const&>();
-            }
-            oss << '\n';
-        }
-    }
-
-    std::size_t hitN = 0;
-    if (auto hits = knowledge.find("hits"); hits != knowledge.end() && hits->is_array())
-        hitN = hits->size();
-    oss << "hits " << (hitN == 0 ? "无" : std::to_string(hitN)) << '\n';
-
-    if (auto pack = knowledge.find("pack"); pack != knowledge.end() && pack->is_object()) {
-        std::size_t n = 0;
-        if (auto items = pack->find("items"); items != pack->end() && items->is_array())
-            n = items->size();
-        oss << "gatePack " << n << " 条\n";
-    }
-
-    if (auto rules = knowledge.find("rules"); rules != knowledge.end() && rules->is_array()) {
-        std::vector<std::string> names;
-        names.reserve(rules->size());
-        for (auto const& r : *rules) {
-            if (!r.is_object())
-                continue;
-            std::string name = r.value("name", r.value("id", ""));
-            if (!name.empty())
-                names.push_back(std::move(name));
-        }
-        oss << "规则";
-        if (names.empty()) {
-            oss << " 无\n";
-        } else {
-            for (std::size_t i = 0; i < names.size(); ++i)
-                oss << (i == 0 ? " " : " · ") << names[i];
-            oss << '\n';
-            for (auto const& r : *rules) {
-                if (!r.is_object())
-                    continue;
-                std::string name = r.value("name", r.value("id", ""));
-                std::string body = r.value("body", "");
-                if (name.empty() || body.empty())
-                    continue;
-                oss << '\n' << "### " << name << '\n' << bodyForCorpus(body) << '\n';
-            }
-        }
-    }
-
-    corpus = oss.str();
+    corpus = formatCorpus(prompt);
 }
 
 json Turnstats::toJson() const {
@@ -571,6 +299,20 @@ std::string policyFingerprint(std::vector<Rule> const& rules) {
  * - 冲突扫描只传 name 指针，不深拷贝 Rule / 不复制 hits
  */
 json runGate(Runtime& rt, json const& args) {
+    // 生产路径：ports 绑到本进程 Encoder/Store；单测走 runGateCore 注入桩
+    Gateports ports;
+    ports.embed = [&](std::string_view t) { return rt.encoder.embed(t); };
+    ports.chat = [&](std::string_view sys, std::string_view user) { return rt.encoder.chat(sys, user); };
+    ports.search = [&](std::vector<float> const& q, std::size_t k) { return rt.store.search(q, k); };
+    ports.upsert = [&](Doc doc, std::vector<float> const& v) { return rt.store.upsert(std::move(doc), v); };
+    ports.audit = [&](std::string const& id, std::string const& kind, json const& detail) {
+        std::lock_guard<std::mutex> lock(rt.store.mutex);
+        (void)rt.store.base.auditPut(id, kind, detail);
+    };
+    return runGateCore(rt, args, ports);
+}
+
+json runGateCore(Runtime& rt, json const& args, Gateports& ports) {
     std::string task = args.value("task", "");
     if (task.empty())
         task = args.value("query", "");
@@ -609,12 +351,12 @@ json runGate(Runtime& rt, json const& args) {
     std::size_t const memK = (std::max)(rt.decider.topkFor(d.retrieval), std::size_t{8});
     std::size_t const annK = (std::max)(g.cachek, memK) + g.cachek; // 留余量，降低 L2 被挤出 top-k 的概率
 
-    std::vector<float> qVec = rt.encoder.embed(task);
-    auto rawHits = rt.store.search(qVec, annK);
+    std::vector<float> qVec = ports.embed ? ports.embed(task) : std::vector<float> {};
+    auto rawHits = ports.search ? ports.search(qVec, annK) : std::vector<std::pair<Doc, float>> {};
 
     // L2：同一次 ANN 结果里找 kind=cache + 指纹
     for (auto const& [doc, score] : rawHits) {
-        if (!kindIs(doc, "cache"))
+        if (!docKind(doc, "cache"))
             continue;
         if (metaStr(doc.meta, "fingerprint") != fp)
             continue;
@@ -643,10 +385,10 @@ json runGate(Runtime& rt, json const& args) {
     for (auto& h : rawHits) {
         if (memoryHits.size() >= memK)
             break;
-        if (kindIs(h.first, "cache"))
+        if (docKind(h.first, "cache"))
             continue;
         // 无 kind 或缺省 memory/experience 均视为记忆（kindIs 已覆盖）
-        if (kindIs(h.first, "memory") || kindIs(h.first, "experience"))
+        if (docKind(h.first, "memory") || docKind(h.first, "experience"))
             memoryHits.push_back(std::move(h));
     }
     // ANN 已按距离排序；原先 RRF(semIds, memIds) 的 sem 分从不落到 doc.id，排序是空转，已删除。
@@ -682,15 +424,13 @@ json runGate(Runtime& rt, json const& args) {
             ban.push_back(&r.name);
     }
 
-    json conflicts = detectConflicts(hard, ban, task, memoryHits);
-    float evidence = evidenceOf(memoryHits, matched);
+    json conflicts = detectConflicts(hard, ban, task, toHits(memoryHits));
+    float evidence = evidenceOf(toHits(memoryHits), toRulehits(matched));
 
     if (!conflicts.empty()) {
         json pack = buildPack(rt, task, memoryHits, matched, d, json::array());
-        {
-            std::lock_guard<std::mutex> lock(rt.store.mutex);
-            (void)rt.store.base.auditPut("gate-" + l1key, "conflict", conflicts);
-        }
+        if (ports.audit)
+            ports.audit("gate-" + l1key, "conflict", conflicts);
         json out = {{"status", "refuse"},
                     {"answerConfidence", 0.0},
                     {"evidence", evidence},
@@ -750,10 +490,14 @@ json runGate(Runtime& rt, json const& args) {
     json model;
     int localChats = 0;
     {
-        Encoderguard guard(rt.encoder, 0.0f, 1024);
-        std::string raw = rt.encoder.chat(kGateSys, user);
+        // 无 Encoder 时仍走 ports.chat；单测桩不必碰 temperature
+        float prevTemp = rt.encoder.temperature;
+        std::uint32_t prevMax = rt.encoder.maxTokens;
+        rt.encoder.temperature = 0.0f;
+        rt.encoder.maxTokens = (std::min)(prevMax ? prevMax : 1024u, 1024u);
+        std::string raw = ports.chat ? ports.chat(kGateSys, user) : std::string {};
         ++localChats;
-        model = finalizeStatus(parseGateModel(raw), evidence, g, g.minlen);
+        model = finalizeGate(parseGateModel(raw), evidence, g, g.minlen);
 
         int rounds = 0;
         while (rounds < g.reflect) {
@@ -768,12 +512,14 @@ json runGate(Runtime& rt, json const& args) {
             static char const* const kCritSys =
                 "Revise the previous gate JSON. Check hallucination, policy violations, missing info. "
                 "Output ONE JSON with the same schema.";
-            raw = rt.encoder.chat(kCritSys, model.dump());
+            raw = ports.chat ? ports.chat(kCritSys, model.dump()) : std::string {};
             ++localChats;
-            model = finalizeStatus(parseGateModel(raw), evidence, g, g.minlen);
+            model = finalizeGate(parseGateModel(raw), evidence, g, g.minlen);
             ++rounds;
         }
         model["reflect"] = rounds;
+        rt.encoder.temperature = prevTemp;
+        rt.encoder.maxTokens = prevMax;
     }
 
     json modelPack = json::array();
@@ -802,8 +548,9 @@ json runGate(Runtime& rt, json const& args) {
         cacheDoc.id = "cache-" + l1key;
         cacheDoc.text = reply;
         cacheDoc.meta = {{"kind", "cache"}, {"fingerprint", fp}};
-        auto vec = rt.encoder.embed(task + "\n" + reply);
-        (void)rt.store.upsert(std::move(cacheDoc), vec);
+        auto vec = ports.embed ? ports.embed(task + "\n" + reply) : std::vector<float> {};
+        if (ports.upsert)
+            (void)ports.upsert(std::move(cacheDoc), vec);
     }
 
     json conflictsOut = json::array();

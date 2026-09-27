@@ -23,8 +23,10 @@ git diff -- include/usearch          # 审本地补丁是否被冲掉
 
 ## 暂缓项（须先测量再立项）
 
-- 显式模板实例化 / `extern template`（与 header-only 卖点冲突）
+- **C++20 modules / 显式模板实例化**（与 header-only + INTERFACE `cxx_std_11` 冲突；头文件分层已落地）
 - gate 热路径换 yyjson/simdjson（先 profile）
+
+编译时间若再立项：先对 `api` / `test_cpp` / `bench_cpp` 跑 `-ftime-report`（Clang/GCC）或 MSVC `/d2cgsummary`，用 `ninja -d stats` 核对；**禁止**在无基线数据时直接上 modules 或 `extern template`。
 
 `dense::reclaim` 与图 `compact()` 语义不同：前者重建只保留 live；见 `docs/operations.md`。
 
