@@ -37,7 +37,7 @@ Codex 实模：`.codex/hooks.json` 的 `PreToolUse` 把本轮 `model` 写入 `co
 2. `rules`（无文件则 `files=[]`、`manual=[]`；统计轮优先 `body=none`；默认吃 `decide.compression`）
 3. `decide`（档位 / 检索 / 保留上下文比例；`decide.confidence` ≠ 门控 `answerConfidence`）
 4. `cost` — **每轮必调**；`actual_model` 优先 hook（Codex=`codex-config`，Cursor=`cursor-state`），否则请求头 / 显式 `reported`；禁止沿用上轮旧名、禁止编造、禁止本机读库脚本
-5. 跑 `scripts/stats.sh`：本轮**有调 `/v1`** 时 `-ViaV1 true` 且 `-CostModel` 对齐上游 `model`；**未调 `/v1`** 时 `-ViaV1 false`，🧭 = 本轮 `cost.actual_model`
+5. 跑 `scripts/stats.sh`：本轮**有调 `/v1`** 时 `-ViaV1 true` 且 `-CostModel` 对齐上游 `model`；**未调 `/v1`** 时 `-ViaV1 false`，🧭 = 本轮 `cost.actual_model`；从 `cost.turn` 抄 gate/saved/corpus
 6. 任务成功后调 `observe`（或 `save`）仅入队，不做重活
 
 禁止以「太简单」跳过。失败则整链重试一次；仍失败写**工具名 + 错误原文**。禁止谎称已调用或「工具返回空」。
@@ -57,25 +57,44 @@ Codex 实模：`.codex/hooks.json` 的 `PreToolUse` 把本轮 `model` 写入 `co
   -ActualModel "<本轮 cost.actual_model，必填>" \
   -ActualModelSource "<reported|cursor-state|codex-config|unknown>" \
   -Nanbeige "<cost.stack.nanbeige>" \
-  -Usearch "<cost.stack.usearch>" \
-  -Sqlite "<cost.stack.sqlite>"
+  -USearch "<cost.stack.usearch>" \
+  -Sqlite "<cost.stack.sqlite>" \
+  -Gate "<cost.turn.gate>" -Cache "<cost.turn.cache>" \
+  -Saved "<cost.turn.saved>" -Local "<cost.turn.local>" \
+  -Queued "<cost.turn.queued 逗号拼接>" -Distill "<cost.turn.distill 逗号拼接>" \
+  -Retain "<cost.turn.retain>" \
+  -CtxNaive "<cost.turn.naive>" -CtxPicked "<cost.turn.picked>" -CtxKept "<cost.turn.kept>" \
+  -PackTok "<cost.turn.packtok>" -PackN "<cost.turn.packn>" \
+  -CorpusFile "<把 cost.turn.corpus 落入的临时文件路径>"
 ```
 
 - 数字与栈动作一律来自工具；禁止编造
+- `cost.turn` / `cost.stack` **必须抄字段**；缺 `turn.saved` 勿写「省 0 次」；缺 `corpus` 第 7 块写未上报
 - `compression` = 上下文**保留**比例（`1.0` 全保留），禁止写成「压缩率」
 - `decide.model` 只是建议档（weak/standard/strong），≠ 上游 id、≠ 客户端实模
 - 禁止自绘表格 / 进度条 / ASCII 边框
 - 用户需动手的事写在统计块**之前**
+- 第 7 块必须贴 `cost.turn.corpus` 全文（经 `-CorpusFile`），禁止只报 token、禁止截断
+- `turn.rules[]` / `turn.pack[]` 每项必有 `id` + `body`（完整正文）；`corpus` 同文，格式为 `### id` 下一行 `body` 再接全文；禁止只有 `body` 无正文、禁止 `(none)`
 
-目标六行（预设 `a`）：
+目标七行（预设 `a`；前六行句式冻结，只追加 turn 字段；📦 下可多行全文）：
 
 ```text
 ⚡ 规则 **m**/**t** 命中 · token **n → o** · **省 p%**
-🔖 决策 Nanbeige4.1 … · USearch … · SQLite …
+🔖 决策 Nanbeige4.1 … · USearch … · SQLite … · 入队 … / 蒸馏 …
 🧭 路由 … · … · 保留上下文 …% · 置信 …%
-💰 费用 **¥…** · …
-🏷️ 命中规则 … · 省量 筛选 **…** ＋ 裁剪 **…**
+💰 费用 **¥…** · … · 主 LLM 省 **N** 次 · 本地 chat **M**
+🏷️ 命中规则 … · 省量 筛选 **…** ＋ 裁剪 **…** · gate=… · cache=…
 💡 依据 … · …
+📦 上下文 保留 r% · 全量 … · 命中 … · 注入 … · pack …tok×… 条
+## rules
+### default
+body
+（规则完整正文…）
+## pack
+### default
+body
+（同上或 gate pack 正文…）
 ```
 
 ## 远端工作区

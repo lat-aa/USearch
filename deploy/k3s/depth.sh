@@ -125,7 +125,17 @@ echo "$cost" | python3 -c "
 import sys,json
 t=json.loads(json.load(sys.stdin)['result']['content'][0]['text'])
 assert t['actual_model']=='Grok 4.6' and 'stack' in t
-" && pass "mcp cost stack" || bad "mcp cost stack" "fail"
+assert 'turn' in t and 'gate' in t['turn']
+# 调过 rules（cost 内建）后 corpus 须含 ## rules
+tr=t['turn']
+c=tr.get('corpus') or ''
+assert c and '## rules' in c and '## pack' in c
+assert '(none)' not in c
+assert tr.get('rules') and tr['rules'][0].get('body')
+assert tr.get('pack') and tr['pack'][0].get('body')
+assert '\nbody\n' in c  # 字段名行；其后须有正文（上一断言已保证）
+assert tr.get('kept') == t.get('optimized_tokens')
+" && pass "mcp cost stack+turn.corpus" || bad "mcp cost stack" "fail"
 
 nocost=$(curl -fsS --max-time 20 "${MCP[@]}" \
   -d '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"cost","arguments":{"task":"x"}}}' \
@@ -224,12 +234,38 @@ assert t.get('ok') is True and t.get('status')=='pending' and t.get('id')
 sleep 3
 # Worker 异步；不强制 done，仅确认入队 API
 
+# gate → cost：turn.gate 存在；answered 时 saved==1
+gturn=$(curl -fsS --max-time 120 "${MCP[@]}" \
+  -d '{"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"name":"gate","arguments":{"task":"how to name a C++ flag without underscore","files":[]}}}' \
+  "$USE/mcp")
+gstatus=$(echo "$gturn" | python3 -c "import sys,json;t=json.loads(json.load(sys.stdin)['result']['content'][0]['text']);print(t.get('status',''))")
+costg=$(curl -fsS --max-time 60 "${MCP[@]}" \
+  -H "X-Apex-Actual-Model: depth-gate" -H "X-Apex-Actual-Model-Source: reported" \
+  -d '{"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"cost","arguments":{"task":"how to name a C++ flag without underscore","files":[],"manual":[]}}}' \
+  "$USE/mcp")
+echo "$costg" | python3 -c "
+import sys,json
+t=json.loads(json.load(sys.stdin)['result']['content'][0]['text'])
+tr=t.get('turn') or {}
+assert tr.get('gate') in ('answered','pack','refuse','none'), tr
+if tr.get('gate')=='answered':
+  assert tr.get('saved')==1, tr
+c=tr.get('corpus') or ''
+assert c and '## rules' in c and '## pack' in c
+assert '(none)' not in c
+assert tr.get('rules') and tr['rules'][0].get('body')
+assert tr.get('pack') and tr['pack'][0].get('body')
+" && pass "cost.turn after gate saved/corpus" || bad "cost.turn gate" "status=$gstatus"
+
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)"
 STACK_JSON=$(echo "$hdr" | python3 -c "import sys,json;t=json.loads(json.load(sys.stdin)['result']['content'][0]['text']);print(json.dumps(t))" )
 python3 - <<PY "$STACK_JSON" "$ROOT"
-import json,sys,subprocess
+import json,sys,subprocess,tempfile,os
 c=json.loads(sys.argv[1]); root=sys.argv[2]
-st=c["stack"]; d=c["decision"]
+st=c["stack"]; d=c["decision"]; tr=c.get("turn") or {}
+corpus=tr.get("corpus") or ""
+fd, path = tempfile.mkstemp(prefix="apex-corpus-", suffix=".txt")
+os.write(fd, corpus.encode("utf-8")); os.close(fd)
 cmd=["bash",root+"/scripts/stats.sh",
 "-Total",str(c["totalRules"]),"-Matched",str(c["matched"]),
 "-Naive",str(c["naive_tokens"]),"-Optimized",str(c["optimized_tokens"]),
@@ -242,12 +278,27 @@ cmd=["bash",root+"/scripts/stats.sh",
 "-CacheHit","false","-Peak","false","-ViaV1","false",
 "-CostModel",str(c["model"]),"-ActualModel",str(c["actual_model"]),
 "-ActualModelSource",str(c["actual_model_source"]),
-"-Nanbeige",st["nanbeige"],"-Usearch",st["usearch"],"-Sqlite",st["sqlite"]]
+"-Nanbeige",st["nanbeige"],"-USearch",st["usearch"],"-Sqlite",st["sqlite"],
+"-Gate",str(tr.get("gate") or ""),"-Cache",str(tr.get("cache") or ""),
+"-Retain",str(tr.get("retain") if tr.get("retain") is not None else d["compression"]),
+"-CtxNaive",str(tr.get("naive") if tr.get("naive") is not None else c["naive_tokens"]),
+"-CtxPicked",str(tr.get("picked") if tr.get("picked") is not None else c["selected_tokens"]),
+"-CtxKept",str(tr.get("kept") if tr.get("kept") is not None else c["optimized_tokens"]),
+"-PackTok",str(tr.get("packtok") if tr.get("packtok") is not None else ""),
+"-PackN",str(tr.get("packn") if tr.get("packn") is not None else ""),
+"-CorpusFile",path]
+if "saved" in tr:
+  cmd += ["-Saved",str(tr["saved"])]
+if "local" in tr:
+  cmd += ["-Local",str(tr["local"])]
 out=subprocess.check_output(cmd,text=True)
+os.unlink(path)
 print(out)
 assert "🔖 决策 Nanbeige4.1" in out
+assert "📦 上下文" in out
+assert "## rules" in out or "## pack" in out or "未上报" in out
 PY
-pass "stats.sh six-line"
+pass "stats.sh seven-line+corpus"
 
 echo
 echo "======== SUMMARY pass=$ok fail=$fail ========"

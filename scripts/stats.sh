@@ -1,7 +1,7 @@
 #!/bin/sh
-# 将 apex（rules / decide / cost）结果渲染成固定六行报告。
+# 将 apex（rules / decide / cost）结果渲染成固定七行报告（第 7 块可含多行全文）。
 # 数字与栈动作须来自工具；Compression = 保留上下文比例。
-# Agent 统计块。用法见 AGENTS.md。
+# 前六行句式冻结；只追加 turn 实测字段。用法见 AGENTS.md。
 set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 
@@ -17,6 +17,10 @@ ViaV1=0
 CacheHit=0; Peak=0
 EstimateBias=-1
 Nanbeige=; Usearch=; Sqlite=
+# turn 实测：空=未上报（禁止默认 0 冒充）
+Gate=; Cache=; Saved=; Local=; Queued=; Distill=
+Retain=; CtxNaive=; CtxPicked=; CtxKept=; PackTok=; PackN=
+CorpusFile=
 
 # 读 flag 后一参；缺省为空（Windows 常把 -ActualModel '' 吃掉）
 while [ $# -gt 0 ]; do
@@ -52,8 +56,21 @@ while [ $# -gt 0 ]; do
     -Peak|--peak) Peak=$val ;;
     -EstimateBias|--estimate-bias) EstimateBias=$val ;;
     -Nanbeige|--nanbeige) Nanbeige=$val ;;
-    -Usearch|--usearch) Usearch=$val ;;
+    -USearch|--usearch) USearch=$val ;;
     -Sqlite|--sqlite) Sqlite=$val ;;
+    -Gate|--gate) Gate=$val ;;
+    -Cache|--cache) Cache=$val ;;
+    -Saved|--saved) Saved=$val ;;
+    -Local|--local) Local=$val ;;
+    -Queued|--queued) Queued=$val ;;
+    -Distill|--distill) Distill=$val ;;
+    -Retain|--retain) Retain=$val ;;
+    -CtxNaive|--ctx-naive) CtxNaive=$val ;;
+    -CtxPicked|--ctx-picked) CtxPicked=$val ;;
+    -CtxKept|--ctx-kept) CtxKept=$val ;;
+    -PackTok|--pack-tok) PackTok=$val ;;
+    -PackN|--pack-n) PackN=$val ;;
+    -CorpusFile|--corpus-file) CorpusFile=$val ;;
     *) echo "unknown arg: $key" >&2; exit 2 ;;
   esac
 done
@@ -88,6 +105,12 @@ if [ "$Selected" -gt 0 ] 2>/dev/null; then
 fi
 confPct=$(awk -v c="$Confidence" 'BEGIN{printf "%d", c*100+0.5}')
 retainPct=$(awk -v c="$Compression" 'BEGIN{printf "%d", c*100+0.5}')
+# 📦 摘要优先用 turn.retain；否则回退 Compression
+if [ -n "$Retain" ]; then
+  ctxRetainPct=$(awk -v c="$Retain" 'BEGIN{printf "%d", c*100+0.5}')
+else
+  ctxRetainPct=$retainPct
+fi
 
 modelCn=$Model
 case "$Model" in weak) modelCn=轻量 ;; standard) modelCn=标准 ;; strong) modelCn=增强 ;; esac
@@ -102,24 +125,36 @@ IdsFmt=$(printf '%s' "$Ids" | tr ',' ' ' | awk '{for(i=1;i<=NF;i++) if($i!=""){p
 
 # 栈动作缺省：禁止瞎编；未传则显示「未上报」
 [ -n "$Nanbeige" ] || Nanbeige=未上报
-[ -n "$Usearch" ] || Usearch=未上报
+[ -n "$USearch" ] || USearch=未上报
 [ -n "$Sqlite" ] || Sqlite=未上报
+
+# 🔖 追加入队/蒸馏（有才写）
+stackExtra=
+if [ -n "$Distill" ]; then
+  DistillFmt=$(printf '%s' "$Distill" | tr ',' ' ' | awk '{for(i=1;i<=NF;i++) if($i!=""){printf "%s%s",(n++?"·":""),$i}}')
+  stackExtra="$stackExtra · 蒸馏 $DistillFmt"
+fi
+if [ -n "$Queued" ]; then
+  QueuedFmt=$(printf '%s' "$Queued" | tr ',' ' ' | awk '{for(i=1;i<=NF;i++) if($i!=""){printf "%s%s",(n++?"·":""),$i}}')
+  stackExtra="$stackExtra · 入队 $QueuedFmt"
+fi
 
 if [ "$Style" = plain ]; then
   printf 'totalRules = %s\nmatched = %s\nmatchedIds = %s\nnaiveTokens = %s\nselectedTokens = %s\noptimizedTokens = %s\nsavedTokens = %s (selection %s + trim %s)\nsavedPercent = %s\n' \
     "$Total" "$Matched" "$(printf '%s' "$Ids" | tr ' ' ',')" "$Naive" "$Selected" "$Optimized" "$saved" "$pickSaved" "$trimSaved" "$savedPct"
-  printf 'stack = Nanbeige4.1 %s · USearch %s · SQLite %s\n' "$Nanbeige" "$Usearch" "$Sqlite"
+  printf 'stack = Nanbeige4.1 %s · USearch %s · SQLite %s\n' "$Nanbeige" "$USearch" "$Sqlite"
   printf 'decision = model=%s depth=%s retrieval=%s confidence=%s contextRetention=%s\nreason = %s\n' \
     "$Model" "$Depth" "$Retrieval" "$Confidence" "$Compression" "$Reason"
   printf 'cost = naive:%s optimized:%s saved:%s output:%s total:%s CNY (%s; %s; %s)\n' \
     "$NaiveCost" "$OptimizedCost" "$SavedCost" "$OutputCost" "$TotalCost" "$CostModel" "$cacheCn" "$peakCn"
+  printf 'gate = %s cache = %s saved = %s local = %s\n' "${Gate:-未上报}" "${Cache:-未上报}" "${Saved:-未上报}" "${Local:-未上报}"
   exit 0
 fi
 
 case "$IconPreset" in
-  b) ic_stat=📈; ic_stack=🔖; ic_route=🧭; ic_cost=💰; ic_hit=📌; ic_why=ℹ️ ;;
-  c) ic_stat=🎯; ic_stack=🔖; ic_route=🧭; ic_cost=💰; ic_hit=📎; ic_why=📝 ;;
-  *) ic_stat=⚡; ic_stack=🔖; ic_route=🧭; ic_cost=💰; ic_hit=🏷️; ic_why=💡 ;;
+  b) ic_stat=📈; ic_stack=🔖; ic_route=🧭; ic_cost=💰; ic_hit=📌; ic_why=ℹ️; ic_ctx=📦 ;;
+  c) ic_stat=🎯; ic_stack=🔖; ic_route=🧭; ic_cost=💰; ic_hit=📎; ic_why=📝; ic_ctx=📦 ;;
+  *) ic_stat=⚡; ic_stack=🔖; ic_route=🧭; ic_cost=💰; ic_hit=🏷️; ic_why=💡; ic_ctx=📦 ;;
 esac
 
 routeName=
@@ -167,11 +202,27 @@ else
   priceCn="未调/v1"
 fi
 
-# Markdown 聊天会吞单换行：行尾两空格强制硬换行，六行各自成行。
+# 💰 / 🏷️ 仅在 turn 明确上报时追加
+costExtra=
+if [ -n "$Saved" ]; then
+  costExtra="$costExtra · 主 LLM 省 **${Saved}** 次"
+fi
+if [ -n "$Local" ]; then
+  costExtra="$costExtra · 本地 chat **${Local}**"
+fi
+hitExtra=
+if [ -n "$Gate" ]; then
+  hitExtra="$hitExtra · gate=${Gate}"
+fi
+if [ -n "$Cache" ]; then
+  hitExtra="$hitExtra · cache=${Cache}"
+fi
+
+# Markdown 聊天会吞单换行：行尾两空格强制硬换行
 printf '%s 规则 **%s**/**%s** 命中 · token **%s → %s** · **省 %s%%**  \n' \
   "$ic_stat" "$Matched" "$Total" "$Naive" "$Optimized" "$savedPct"
-printf '%s 决策 Nanbeige4.1 %s · USearch %s · SQLite %s  \n' \
-  "$ic_stack" "$Nanbeige" "$Usearch" "$Sqlite"
+printf '%s 决策 Nanbeige4.1 %s · USearch %s · SQLite %s%s  \n' \
+  "$ic_stack" "$Nanbeige" "$USearch" "$Sqlite" "$stackExtra"
 if [ -n "$routeName" ] && [ -n "$modelCn" ]; then
   printf '%s 路由 %s（%s） · %s · %s · 保留上下文 %s%% · 置信 %s%%  \n' \
     "$ic_route" "$routeName" "$modelCn" "$depthCn" "$retCn" "$retainPct" "$confPct"
@@ -182,9 +233,36 @@ else
   printf '%s 路由 %s · %s · %s · 保留上下文 %s%% · 置信 %s%%  \n' \
     "$ic_route" "$modelCn" "$depthCn" "$retCn" "$retainPct" "$confPct"
 fi
-printf '%s 费用 **¥%s** · %s · %s · %s · 输出 ¥%s  \n' \
-  "$ic_cost" "$totalFmt" "$priceCn" "$cacheCn" "$peakCn" "$outFmt"
-printf '%s 命中规则 %s · 省量 筛选 **%s** ＋ 裁剪 **%s**  \n' \
-  "$ic_hit" "$IdsFmt" "$pickSaved" "$trimSaved"
+printf '%s 费用 **¥%s** · %s · %s · %s · 输出 ¥%s%s  \n' \
+  "$ic_cost" "$totalFmt" "$priceCn" "$cacheCn" "$peakCn" "$outFmt" "$costExtra"
+printf '%s 命中规则 %s · 省量 筛选 **%s** ＋ 裁剪 **%s**%s  \n' \
+  "$ic_hit" "$IdsFmt" "$pickSaved" "$trimSaved" "$hitExtra"
 printf '%s 依据 %s · %s  \n' \
   "$ic_why" "$reasonCn" "$biasCn"
+
+# 第 7 块：摘要 + corpus 全文（禁止截断）
+fmtOrUnknown() {
+  if [ -n "$1" ]; then printf '%s' "$1"; else printf '未上报'; fi
+}
+naiveCtx=$(fmtOrUnknown "$CtxNaive")
+pickedCtx=$(fmtOrUnknown "$CtxPicked")
+keptCtx=$(fmtOrUnknown "$CtxKept")
+if [ -n "$PackTok" ] && [ -n "$PackN" ]; then
+  packCtx="${PackTok}tok×${PackN} 条"
+elif [ -n "$PackN" ]; then
+  packCtx="${PackN} 条"
+else
+  packCtx=未上报
+fi
+printf '%s 上下文 保留 %s%% · 全量 %s · 命中 %s · 注入 %s · pack %s  \n' \
+  "$ic_ctx" "$ctxRetainPct" "$naiveCtx" "$pickedCtx" "$keptCtx" "$packCtx"
+if [ -n "$CorpusFile" ] && [ -f "$CorpusFile" ]; then
+  # 原样贴全文；不加省略号
+  cat "$CorpusFile"
+  # 若文件末无换行，补一个，避免粘上下一轮输出
+  if [ "$(tail -c1 "$CorpusFile" | wc -l)" -eq 0 ]; then
+    printf '\n'
+  fi
+else
+  printf '未上报\n'
+fi

@@ -14,6 +14,8 @@ namespace {
 /** 规则统计信封：对齐 apex.mdc / stats.sh（totalRules、token 三档、entries[].id）。 */
 json rulesEnvelope(Runtime& rt, Rulequery const& rq, float compression) {
     auto matched = resolveRules(rt, rq);
+    // 同步全文进 turn，供 cost.turn.corpus 的 ## rules（完整 body，非裁剪后）
+    noteRules(rt, matched);
     std::size_t total = 0;
     std::size_t naive = 0;
     for (auto const& r : rt.rules) {
@@ -109,29 +111,52 @@ bool resolveActual(json const& args, Mcpclient const& client, std::string& actua
 }
 
 /**
- * 本轮栈职责（给 🔖 行）：按就绪态 + decide.retrieval 陈述「会做什么」，
- * 不假装 cost 路径已跑完整 chat；L0 明确跳过 ANN/回填。
+ * 本轮栈职责（给 🔖 行）：只陈述 turn 实测，禁止用 decide.retrieval 预测冒充 ANN/回填。
  */
-json stackOf(Runtime& rt, Decision const& d) {
+json stackOf(Runtime& rt, Decision const& /*d*/) {
+    std::lock_guard<std::mutex> lock(rt.turn.mutex);
     std::string nanbeige;
-    if (rt.encoder.modelReady)
-        nanbeige = "语义规则嵌入 dim=" + std::to_string(rt.encoder.dimensions);
-    else
-        nanbeige = "hash 回退 dim=" + std::to_string(rt.encoder.dimensions ? rt.encoder.dimensions : 1024);
-
     std::string usearch;
     std::string sqlite;
-    std::size_t k = rt.decider.topkFor(d.retrieval);
-    std::size_t nDocs = rt.store.docs.size();
-    if (d.retrieval == Retrieval::L0) {
+
+    if (rt.turn.sawGate) {
+        if (rt.turn.cache == "L1")
+            nanbeige = "门控 L1 直答";
+        else if (rt.turn.cache == "L2")
+            nanbeige = "门控 L2 直答";
+        else if (rt.turn.gate == "answered")
+            nanbeige = "门控直答";
+        else if (rt.turn.gate == "refuse")
+            nanbeige = "门控 refuse";
+        else
+            nanbeige = "门控 pack";
+        if (rt.turn.local > 0)
+            nanbeige += " chat=" + std::to_string(rt.turn.local);
+
+        if (rt.turn.didAnn)
+            usearch = "ANN k=" + std::to_string(rt.turn.annK ? rt.turn.annK : 0);
+        else
+            usearch = "跳过";
+
+        if (rt.turn.packn > 0)
+            sqlite = "回填 pack n=" + std::to_string(rt.turn.packn);
+        else if (rt.turn.cache == "L2")
+            sqlite = "回填 cache";
+        else
+            sqlite = "待命";
+    } else if (rt.turn.sawRules) {
+        if (rt.encoder.modelReady)
+            nanbeige = "语义规则嵌入 dim=" + std::to_string(rt.encoder.dimensions);
+        else
+            nanbeige =
+                "hash 回退 dim=" + std::to_string(rt.encoder.dimensions ? rt.encoder.dimensions : 1024);
         usearch = "跳过";
         sqlite = "待命";
-    } else if (d.retrieval == Retrieval::L1) {
-        usearch = "轻检索 k=" + std::to_string(k);
-        sqlite = nDocs ? ("回填正文 docs=" + std::to_string(nDocs)) : "库空";
     } else {
-        usearch = "ANN k=" + std::to_string(k);
-        sqlite = nDocs ? ("回填正文 docs=" + std::to_string(nDocs)) : "库空";
+        // 本轮未跑 gate/rules：如实待命，不用 decide 预测 ANN
+        nanbeige = rt.encoder.modelReady ? "待命" : "hash 回退";
+        usearch = "跳过";
+        sqlite = "待命";
     }
     return {{"nanbeige", nanbeige}, {"usearch", usearch}, {"sqlite", sqlite}};
 }
@@ -182,8 +207,8 @@ json toolDefs() {
         tool("gate", "前置门控：L1/L2+政策∥记忆+RRF+Nanbeige 混合置信→answered|pack|refuse"),
         tool("observe", "沉淀仅入队（设计别称 save_observation）；Worker 后台蒸馏写 memory"),
         tool("cost",
-             "按规则 token + decide 档位估算费用（CNY）；actual_model 由 Cursor/Codex hook 或"
-             "请求头 X-Apex-Actual-Model 注入（cursor-state / codex-config）"),
+             "按规则 token + decide 档位估算费用（CNY）；返回 stack（实测）与 turn（gate/saved/"
+             "corpus 全文）；actual_model 由 hook 或 X-Apex-Actual-Model 注入"),
         tool("resolve-rules", "rules 的 Codex 别名"),
         tool("list-rules", "catalog 的 Codex 别名"),
         tool("get-rule", "rule 的 Codex 别名"),
@@ -308,10 +333,7 @@ json callTool(Runtime& rt, std::string const& name, json const& args, Mcpclient 
             std::string source;
             if (!resolveActual(args, client, actual, source))
                 return textResult("actual_model required (hook/header/arg)", true);
-            bool cacheHit = false;
             bool peak = false;
-            if (args.contains("cache_hit") && args["cache_hit"].is_boolean())
-                cacheHit = args["cache_hit"].get<bool>();
             if (args.contains("peak") && args["peak"].is_boolean())
                 peak = args["peak"].get<bool>();
             std::uint64_t outTok = 0;
@@ -340,6 +362,22 @@ json callTool(Runtime& rt, std::string const& name, json const& args, Mcpclient 
             if (rq.task.empty())
                 rq.task = in.task;
             json stats = rulesEnvelope(rt, rq, d.compression);
+
+            // 门控缓存命中才给计价折扣；禁止 Agent 口传 cache_hit 冒充
+            bool cacheHit = false;
+            json turnJson;
+            {
+                std::lock_guard<std::mutex> lock(rt.turn.mutex);
+                rt.turn.retain = d.compression;
+                rt.turn.naive = stats.value("naiveTokens", 0);
+                rt.turn.picked = stats.value("selectedTokens", 0);
+                rt.turn.kept = stats.value("optimizedTokens", 0);
+                rt.turn.rebuildCorpus();
+                if (rt.turn.cache == "L1" || rt.turn.cache == "L2")
+                    cacheHit = true;
+                turnJson = rt.turn.toJson();
+            }
+
             std::string priced = priceModelFrom(d, args.value("model", ""));
             double inRate = 0, outRate = 0;
             priceRates(priced, cacheHit, peak, inRate, outRate);
@@ -365,7 +403,8 @@ json callTool(Runtime& rt, std::string const& name, json const& args, Mcpclient 
                         {"totalRules", stats["totalRules"]},
                         {"matched", stats["matched"]},
                         {"decision", d.toJson()},
-                        {"stack", stackOf(rt, d)}};
+                        {"stack", stackOf(rt, d)},
+                        {"turn", std::move(turnJson)}};
             return textResult(out.dump(2));
         }
         if (tool == "shell")

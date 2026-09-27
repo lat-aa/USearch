@@ -471,6 +471,44 @@ struct L1entry {
     std::string fingerprint;
 };
 
+/**
+ * 本轮实测计数（进程内）。
+ * 供 `cost.turn` / 🔖 叙事；缺测字段在 toJson 中省略，禁止用 0 冒充未上报。
+ * 含 mutex，不可整体移动——Runtime 移动时丢弃本轮统计即可。
+ */
+struct Turnstats {
+    std::mutex mutex;
+    std::string gate = "none";  ///< answered|pack|refuse|none
+    std::string cache = "none"; ///< L1|L2|miss|none
+    bool hasSaved = false;      ///< 未调 gate 时 toJson 省略 saved
+    int saved = 0;              ///< 省主 LLM 次数
+    int local = 0;              ///< 本轮 Nanbeige chat 次数
+    std::vector<std::string> queued;
+    std::vector<std::string> distill;
+    std::string fingerprint;
+    float retain = 0;
+    std::size_t naive = 0;
+    std::size_t picked = 0;
+    std::size_t kept = 0;
+    std::size_t packtok = 0;
+    std::size_t packn = 0;
+    float answer = 0;
+    bool hasAnswer = false;
+    bool sawRules = false;
+    bool sawGate = false;
+    bool didAnn = false;
+    std::size_t annK = 0;
+    /** 命中规则全文 / pack 条目正文，供拼 corpus。 */
+    std::vector<std::pair<std::string, std::string>> ruleText;
+    std::vector<std::pair<std::string, std::string>> packText;
+    std::string corpus;
+
+    /** 调用方须已持有 mutex。按契约拼 ## rules / ## pack。 */
+    void rebuildCorpus();
+    /** 调用方须已持有 mutex。 */
+    json toJson() const;
+};
+
 struct Runtime {
     fs::path root;
     Config config;
@@ -482,6 +520,8 @@ struct Runtime {
     Decider decider;
     std::mutex l1Mutex;
     std::unordered_map<std::string, L1entry> l1;
+    /** 本轮 gate/rules/observe/worker 实测；cost 读出。 */
+    Turnstats turn;
     /** Worker 空转等待；observe 入队后 notify，避免固定 400ms 轮询。 */
     std::mutex workerMutex;
     std::condition_variable workerCv;
@@ -508,6 +548,14 @@ json runGate(Runtime& rt, json const& args);
 /** observe 仅入队；Worker 后台蒸馏写 memory。 */
 json runObserve(Runtime& rt, json const& args);
 void workerLoop(Runtime& rt);
+/** 把本轮命中规则全文记入 turn（供 corpus ## rules）。 */
+void noteRules(Runtime& rt, std::vector<Resolvedrule> const& matched);
+/** 把 gate 结局记入 turn；localChats=本路径 Nanbeige chat 次数。 */
+void noteGate(Runtime& rt, json const& result, bool didAnn, std::size_t annK, int localChats);
+/** observe 入队 id。 */
+void noteQueued(Runtime& rt, std::string const& id);
+/** Worker 落盘 memory id；didChat 表示跑过本地蒸馏 chat。 */
+void noteDistill(Runtime& rt, std::string const& id, bool didChat);
 
 /** 解析 route/decide 请求体；键名：task|query、files、latency、hints。 */
 Decideinput decideinputFromJson(json const& body);

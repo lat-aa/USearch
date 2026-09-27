@@ -296,6 +296,185 @@ struct Encoderguard {
 
 } // namespace
 
+void Turnstats::rebuildCorpus() {
+    // 未调 rules 且未调 gate → 不拼 corpus（cost 侧省略字段）
+    if (!sawRules && !sawGate) {
+        corpus.clear();
+        return;
+    }
+    // pack 空时回退为命中规则全文——禁止 (none)/空占位；规则段同理不得写假正文
+    auto const& packSrc = !packText.empty() ? packText : ruleText;
+    if (ruleText.empty() && packSrc.empty()) {
+        corpus.clear();
+        return;
+    }
+    // 每条固定 `### id` + 行 `body` + 全文：body 是字段名，下一行起才是正文（禁止只写 body 无内容）
+    auto appendSection = [](std::ostringstream& oss, char const* title,
+                            std::vector<std::pair<std::string, std::string>> const& items) {
+        oss << title << '\n';
+        for (auto const& [id, text] : items) {
+            if (text.empty())
+                continue;
+            oss << "### " << id << "\nbody\n" << text;
+            if (text.back() != '\n')
+                oss << '\n';
+        }
+    };
+    std::ostringstream oss;
+    appendSection(oss, "## rules", ruleText);
+    oss << '\n';
+    appendSection(oss, "## pack", packSrc);
+    // 回退计入 pack 计量，避免摘要写 0×0 而正文却有规则
+    if (packText.empty() && !ruleText.empty()) {
+        packn = ruleText.size();
+        if (packtok == 0) {
+            std::size_t tok = 0;
+            for (auto const& [id, body] : ruleText)
+                tok += estimate(id) + estimate(body) + 8;
+            packtok = tok;
+        }
+    }
+    corpus = oss.str();
+}
+
+json Turnstats::toJson() const {
+    json out = {{"gate", gate},
+                {"cache", cache},
+                {"local", local},
+                {"queued", queued},
+                {"distill", distill},
+                {"fingerprint", fingerprint},
+                {"retain", retain},
+                {"naive", naive},
+                {"picked", picked},
+                {"kept", kept},
+                {"packtok", packtok},
+                {"packn", packn}};
+    // 未调 gate 禁止用 0 冒充「已测省 0 次」
+    if (hasSaved)
+        out["saved"] = saved;
+    if (hasAnswer)
+        out["answer"] = answer;
+    // 结构化 body：与 corpus 同源，Agent/验收可直接读 turn.rules[].body
+    if (sawRules || sawGate) {
+        auto toArr = [](std::vector<std::pair<std::string, std::string>> const& xs) {
+            json arr = json::array();
+            for (auto const& [id, body] : xs) {
+                if (body.empty())
+                    continue;
+                arr.push_back({{"id", id}, {"body", body}});
+            }
+            return arr;
+        };
+        out["rules"] = toArr(ruleText);
+        out["pack"] = toArr(!packText.empty() ? packText : ruleText);
+        out["corpus"] = corpus;
+    }
+    return out;
+}
+
+void noteRules(Runtime& rt, std::vector<Resolvedrule> const& matched) {
+    std::vector<std::pair<std::string, std::string>> texts;
+    texts.reserve(matched.size());
+    for (auto const& r : matched) {
+        // 只要完整 body；空规则不进 corpus（避免 ### id 下空白/占位）
+        if (r.rule.body.empty())
+            continue;
+        texts.emplace_back(r.rule.name, r.rule.body);
+    }
+    std::sort(texts.begin(), texts.end(),
+              [](auto const& a, auto const& b) { return a.first < b.first; });
+    std::lock_guard<std::mutex> lock(rt.turn.mutex);
+    rt.turn.sawRules = true;
+    rt.turn.ruleText = std::move(texts);
+    rt.turn.rebuildCorpus();
+}
+
+void noteGate(Runtime& rt, json const& result, bool didAnn, std::size_t annK, int localChats) {
+    std::string status = "pack";
+    if (auto it = result.find("status"); it != result.end() && it->is_string())
+        status = it->get_ref<std::string const&>();
+    std::string cache = "miss";
+    if (auto it = result.find("cache"); it != result.end()) {
+        if (it->is_string())
+            cache = it->get_ref<std::string const&>();
+        else if (it->is_null())
+            cache = "miss";
+    }
+    std::string fp;
+    if (auto it = result.find("policyFingerprint"); it != result.end() && it->is_string())
+        fp = it->get_ref<std::string const&>();
+    float answer = 0;
+    bool hasAnswer = false;
+    if (auto it = result.find("answerConfidence"); it != result.end() && it->is_number()) {
+        answer = it->get<float>();
+        hasAnswer = true;
+    }
+    // pack.items[].span 即注入正文；跳过空 span，禁止把空条目写进 corpus
+    std::vector<std::pair<std::string, std::string>> packItems;
+    std::size_t packtok = 0;
+    std::size_t packn = 0;
+    if (auto it = result.find("pack"); it != result.end() && it->is_object()) {
+        if (auto tok = it->find("tokens"); tok != it->end() && tok->is_number_unsigned())
+            packtok = tok->get<std::size_t>();
+        else if (auto tok = it->find("tokens"); tok != it->end() && tok->is_number_integer())
+            packtok = static_cast<std::size_t>((std::max)(0, tok->get<int>()));
+        if (auto items = it->find("items"); items != it->end() && items->is_array()) {
+            packItems.reserve(items->size());
+            for (auto const& item : *items) {
+                if (!item.is_object())
+                    continue;
+                std::string id = item.value("id", "");
+                std::string span = item.value("span", "");
+                if (span.empty())
+                    span = item.value("text", "");
+                if (span.empty())
+                    continue;
+                packItems.emplace_back(std::move(id), std::move(span));
+            }
+            packn = packItems.size();
+        }
+    }
+    int saved = 0;
+    if (status == "answered" || cache == "L1" || cache == "L2")
+        saved = 1;
+
+    std::lock_guard<std::mutex> lock(rt.turn.mutex);
+    rt.turn.sawGate = true;
+    rt.turn.gate = std::move(status);
+    rt.turn.cache = std::move(cache);
+    rt.turn.hasSaved = true;
+    rt.turn.saved = saved;
+    rt.turn.local += localChats;
+    rt.turn.fingerprint = std::move(fp);
+    rt.turn.packtok = packtok;
+    rt.turn.packn = packn;
+    rt.turn.packText = std::move(packItems);
+    rt.turn.didAnn = didAnn;
+    rt.turn.annK = annK;
+    if (hasAnswer) {
+        rt.turn.answer = answer;
+        rt.turn.hasAnswer = true;
+    }
+    rt.turn.rebuildCorpus();
+}
+
+void noteQueued(Runtime& rt, std::string const& id) {
+    if (id.empty())
+        return;
+    std::lock_guard<std::mutex> lock(rt.turn.mutex);
+    rt.turn.queued.push_back(id);
+}
+
+void noteDistill(Runtime& rt, std::string const& id, bool didChat) {
+    if (id.empty())
+        return;
+    std::lock_guard<std::mutex> lock(rt.turn.mutex);
+    rt.turn.distill.push_back(id);
+    if (didChat)
+        ++rt.turn.local;
+}
+
 std::string policyFingerprint(std::vector<Rule> const& rules) {
     std::ostringstream os;
     for (auto const& r : rules) {
@@ -337,13 +516,17 @@ json runGate(Runtime& rt, json const& args) {
     {
         std::lock_guard<std::mutex> lock(rt.l1Mutex);
         auto it = rt.l1.find(l1key);
-        if (it != rt.l1.end() && it->second.fingerprint == fp)
-            return {{"status", "answered"},
-                    {"answerConfidence", 1.0},
-                    {"reply", it->second.reply},
-                    {"policyFingerprint", fp},
-                    {"cache", "L1"},
-                    {"pack", json::object()}};
+        if (it != rt.l1.end() && it->second.fingerprint == fp) {
+            json out = {{"status", "answered"},
+                        {"answerConfidence", 1.0},
+                        {"reply", it->second.reply},
+                        {"policyFingerprint", fp},
+                        {"cache", "L1"},
+                        {"pack", json::object()}};
+            // L1 未跑 ANN / chat
+            noteGate(rt, out, false, 0, 0);
+            return out;
+        }
     }
 
     // decide 不依赖 ANN，提前做以便一次 search 同时覆盖 L2 k 与记忆 k
@@ -366,18 +549,22 @@ json runGate(Runtime& rt, json const& args) {
         float sim = asSim(score);
         if (sim < g.l2)
             continue;
-        return {{"status", "answered"},
-                {"answerConfidence", sim},
-                {"reply", doc.text},
-                {"policyFingerprint", fp},
-                {"cache", "L2"},
-                {"pack", json::object()}};
+        json out = {{"status", "answered"},
+                    {"answerConfidence", sim},
+                    {"reply", doc.text},
+                    {"policyFingerprint", fp},
+                    {"cache", "L2"},
+                    {"pack", json::object()}};
+        noteGate(rt, out, true, annK, 0);
+        return out;
     }
 
     Rulequery rq = rulequeryFromJson(args);
     if (rq.task.empty())
         rq.task = task;
     auto matched = resolveRules(rt, rq, qVec);
+    // 门控路径也写入规则全文，保证 cost.turn.corpus 的 ## rules 可独立于 MCP rules
+    noteRules(rt, matched);
 
     std::vector<std::pair<Doc, float>> memoryHits;
     memoryHits.reserve((std::min)(rawHits.size(), memK));
@@ -432,27 +619,31 @@ json runGate(Runtime& rt, json const& args) {
             std::lock_guard<std::mutex> lock(rt.store.mutex);
             (void)rt.store.base.auditPut("gate-" + l1key, "conflict", conflicts);
         }
-        return {{"status", "refuse"},
-                {"answerConfidence", 0.0},
-                {"evidence", evidence},
-                {"reply", ""},
-                {"conflicts", std::move(conflicts)},
-                {"pack", std::move(pack)},
-                {"policyFingerprint", fp},
-                {"cache", nullptr}};
+        json out = {{"status", "refuse"},
+                    {"answerConfidence", 0.0},
+                    {"evidence", evidence},
+                    {"reply", ""},
+                    {"conflicts", std::move(conflicts)},
+                    {"pack", std::move(pack)},
+                    {"policyFingerprint", fp},
+                    {"cache", nullptr}};
+        noteGate(rt, out, true, annK, 0);
+        return out;
     }
 
     if (evidence < g.minevid && memoryHits.empty()) {
         json pack = buildPack(rt, task, memoryHits, matched, d, json::array());
-        return {{"status", "pack"},
-                {"answerConfidence", 0.0},
-                {"evidence", evidence},
-                {"reply", ""},
-                {"conflicts", json::array()},
-                {"pack", std::move(pack)},
-                {"policyFingerprint", fp},
-                {"cache", nullptr},
-                {"reason", "insufficient evidence"}};
+        json out = {{"status", "pack"},
+                    {"answerConfidence", 0.0},
+                    {"evidence", evidence},
+                    {"reply", ""},
+                    {"conflicts", json::array()},
+                    {"pack", std::move(pack)},
+                    {"policyFingerprint", fp},
+                    {"cache", nullptr},
+                    {"reason", "insufficient evidence"}};
+        noteGate(rt, out, true, annK, 0);
+        return out;
     }
 
     json rulesArr = json::array();
@@ -485,9 +676,11 @@ json runGate(Runtime& rt, json const& args) {
     std::string user = json {{"task", task}, {"rules", std::move(rulesArr)}, {"hits", std::move(hitsArr)}}.dump();
 
     json model;
+    int localChats = 0;
     {
         Encoderguard guard(rt.encoder, 0.0f, 1024);
         std::string raw = rt.encoder.chat(kGateSys, user);
+        ++localChats;
         model = finalizeStatus(parseGateModel(raw), evidence, g, g.minlen);
 
         int rounds = 0;
@@ -504,6 +697,7 @@ json runGate(Runtime& rt, json const& args) {
                 "Revise the previous gate JSON. Check hallucination, policy violations, missing info. "
                 "Output ONE JSON with the same schema.";
             raw = rt.encoder.chat(kCritSys, model.dump());
+            ++localChats;
             model = finalizeStatus(parseGateModel(raw), evidence, g, g.minlen);
             ++rounds;
         }
@@ -553,17 +747,19 @@ json runGate(Runtime& rt, json const& args) {
     if (auto it = model.find("self"); it != model.end() && it->is_number())
         self = it->get<float>();
 
-    return {{"status", std::move(status)},
-            {"answerConfidence", answerConf},
-            {"evidence", evidence},
-            {"self", self},
-            {"reply", std::move(reply)},
-            {"conflicts", std::move(conflictsOut)},
-            {"missing", std::move(missingOut)},
-            {"pack", std::move(pack)},
-            {"policyFingerprint", fp},
-            {"cache", nullptr},
-            {"reflect", rounds}};
+    json out = {{"status", std::move(status)},
+                {"answerConfidence", answerConf},
+                {"evidence", evidence},
+                {"self", self},
+                {"reply", std::move(reply)},
+                {"conflicts", std::move(conflictsOut)},
+                {"missing", std::move(missingOut)},
+                {"pack", std::move(pack)},
+                {"policyFingerprint", fp},
+                {"cache", nullptr},
+                {"reflect", rounds}};
+    noteGate(rt, out, true, annK, localChats);
+    return out;
 }
 
 json runObserve(Runtime& rt, json const& args) {
@@ -585,6 +781,7 @@ json runObserve(Runtime& rt, json const& args) {
         return {{"ok", false}, {"error", msg ? msg : "enqueue failed"}};
     }
     // 入队即唤醒，避免 Worker 空转到满 400ms
+    noteQueued(rt, id);
     rt.workerCv.notify_one();
     return {{"ok", true}, {"id", id}, {"status", "pending"}};
 }
@@ -639,9 +836,11 @@ void workerLoop(Runtime& rt) {
                 std::string user =
                     json {{"title", title}, {"summary", summary}, {"outcome", outcome}}.dump();
                 std::string distilled;
+                bool didChat = false;
                 try {
                     Encoderguard guard(rt.encoder, 0.0f, 512);
                     distilled = rt.encoder.chat(kSys, user);
+                    didChat = !distilled.empty();
                 } catch (...) {
                     distilled.clear();
                 }
@@ -653,8 +852,9 @@ void workerLoop(Runtime& rt) {
                 }
                 bool const conflict = distilled.find("CONFLICT") != std::string::npos;
 
+                std::string const memId = "mem-" + row.id;
                 Doc doc;
-                doc.id = "mem-" + row.id;
+                doc.id = memId;
                 doc.text = std::move(distilled);
                 doc.meta = {{"kind", "memory"},
                             {"conflict", conflict},
@@ -665,6 +865,7 @@ void workerLoop(Runtime& rt) {
                     std::lock_guard<std::mutex> lock(rt.store.mutex);
                     (void)rt.store.base.finish(row.id, "fail");
                 } else {
+                    noteDistill(rt, memId, didChat);
                     std::lock_guard<std::mutex> lock(rt.store.mutex);
                     if (conflict)
                         (void)rt.store.base.auditPut(row.id, "conflict", {{"id", row.id}});

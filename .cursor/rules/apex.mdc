@@ -37,16 +37,17 @@ alwaysApply: true
   - **`compression` = 保留上下文**比例（`1.0` 全保留），**禁止**写成「压缩率」
   - `decide.model` 只是**建议档**，≠ 当前会话真实模型
 - **`cost`**：**每轮必调**；`actual_model` 优先 hook/`cursor-state`，否则头或显式 `reported` + `actual_model_source`
-  - 必读：`*_cost`、`cache_hit`、`peak`、`actual_model`、`actual_model_source`、`model`（计价/上游档）、`stack.{nanbeige,usearch,sqlite}`
+  - 必读：`*_cost`、`cache_hit`、`peak`、`actual_model`、`actual_model_source`、`model`（计价/上游档）、`stack.{nanbeige,usearch,sqlite}`、`turn`（gate/saved/local/queued/distill/corpus…）
   - `decide.model` = 建议档；`cost.model` = 计价或 `/v1` 上游档；`actual_model` = 客户端侧名（可与上游不同）
-  - 🔖 行用 `stack`：Nanbeige / USearch / SQLite 本轮职责（来自 cost，禁止口编）
+  - 🔖 行用 `stack`（turn 实测，禁止口编）；💰/🏷️/📦 从 `turn` 抄，缺字段勿冒充 0
+  - 第 7 块必须贴 `turn.corpus` 全文（`-CorpusFile`），禁止只报 token；禁止 `(none)`/`body` 占位
 - **诚信底线**：统计块每一个数字必须来自工具返回，禁止口算或杜撰
 
 ### 统计块
 
 1. 用 `scripts/stats.sh`（默认 `-Style clear`）渲染。
-2. **stdout 原样**贴在回复**最末**（六行使：⚡ 🔖 🧭 💰 🏷️ 💡）。
-3. **禁止**自绘表格 / 进度条 / ASCII 边框（CJK+emoji 双宽会错位）。
+2. **stdout 原样**贴在回复**最末**（七块：⚡ 🔖 🧭 💰 🏷️ 💡 📦；📦 下可多行全文）。
+3. **禁止**自绘表格 / 进度条 / ASCII 边框（CJK+emoji 双宽会错位）；**禁止**把前六行改成电报式缩写。
 4. 用户需动手的事写在统计块**之前**；块内保持短句。
 
 ### 工作区与降级
