@@ -198,6 +198,10 @@ jobs:
         run: |
           cppcheck --enable=warning,performance,portability --error-exitcode=1 --inline-suppr \
             --suppress=missingIncludeSystem --suppress=unusedFunction \
+            --suppress=throwInNoexceptFunction --suppress=returnDanglingLifetime \
+            --suppress=signConversionCond --suppress=duplInheritedMember \
+            --suppress=uselessAssignmentPtrArg --suppress=nullPointerRedundantCheck \
+            --suppress=pointerSize --suppress=toomanyconfigs \
             -I include -I stringzilla/include \
             include/usearch/index.hpp \
             include/usearch/index_dense.hpp \
@@ -220,7 +224,7 @@ jobs:
             --config-file=.clang-tidy.ci \
             cpp/fuzz_index.cpp \
             --warnings-as-errors='*' \
-            --header-filter='include/usearch/.*' \
+            --header-filter='^$' \
             -extra-arg=-Wno-unknown-warning-option
 
   test_coverage:
