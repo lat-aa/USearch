@@ -196,12 +196,12 @@ jobs:
           sudo apt-get install -y clang-tidy cppcheck cmake clang
       - name: cppcheck
         run: |
-          cppcheck --enable=warning,performance,portability --error-exitcode=1 --inline-suppr \
+          # warning-only：performance/portability 对 header-only 模板噪声过大。
+          cppcheck --enable=warning --error-exitcode=1 --inline-suppr \
             --suppress=missingIncludeSystem --suppress=unusedFunction \
             --suppress=throwInNoexceptFunction --suppress=returnDanglingLifetime \
-            --suppress=signConversionCond --suppress=duplInheritedMember \
-            --suppress=uselessAssignmentPtrArg --suppress=nullPointerRedundantCheck \
-            --suppress=pointerSize --suppress=toomanyconfigs \
+            --suppress=duplInheritedMember --suppress=toomanyconfigs \
+            --suppress=unmatchedSuppression \
             -I include -I stringzilla/include \
             include/usearch/index.hpp \
             include/usearch/index_dense.hpp \
