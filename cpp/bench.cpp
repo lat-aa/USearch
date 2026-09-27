@@ -1,11 +1,14 @@
 /**
- *  @brief A benchmark for the construction speed of the USearch index
- *  and the resulting quantization (recall) of the Approximate Nearest Neighbors
- *  Search queries.
+ *  @file   cpp/bench.cpp
+ *  @brief  USearch 索引构建吞吐与 ANN 检索召回基准。
+ *
+ *  本文件只做「可复现对比」：mmap 数据集 →（可选）建索引 → 批量检索 → Recall@k；
+ *  不负责生产服务路径。量化度量走 `metric_punned_t`（可含 NumKong）。
  */
 
 #if defined(WIN32) || defined(_WIN32) || defined(__WIN32__) || defined(__NT__)
-#define NOMINMAX // define this macro to prevent the definition of min/max macros in Windows.h
+// 先禁 Windows.h 的 min/max 宏，避免与 std::min/max 冲突。
+#define NOMINMAX
 #define _USE_MATH_DEFINES
 
 #include <Windows.h>
@@ -16,32 +19,32 @@
 #define STDERR_FILENO HANDLE(2)
 #else
 #if defined(__linux__)
-#include <execinfo.h> // `backtrace`
+#include <execinfo.h> // backtrace / 崩溃栈
 #endif
-#include <fcntl.h>    // `open`
-#include <stdlib.h>   // `getenv`
-#include <sys/mman.h> // `mmap`
+#include <fcntl.h>    // open
+#include <stdlib.h>   // getenv
+#include <sys/mman.h> // mmap：零拷贝读 .fbin 等矩阵文件
 #include <unistd.h>
 #endif
 
-#include <sys/stat.h> // `stat`
+#include <sys/stat.h> // fstat：拿到 mmap 长度
 
 #include <csignal>
 #include <cstdio>
 
-#include <algorithm>     // ?
-#include <iostream>      // `std::cerr`
-#include <numeric>       // `std::iota`
-#include <stdexcept>     // `std::invalid_argument`
-#include <string>        // `std::to_string`
-#include <thread>        // `std::thread::hardware_concurrency()`
-#include <unordered_map> // `std::unordered_map`
-#include <variant>       // `std::monostate`
-#include <vector>        // `std::vector`
+#include <algorithm>
+#include <iostream>
+#include <numeric> // iota：自检索时把「向量 i 的真邻」建成 {i}
+#include <stdexcept>
+#include <string>
+#include <thread>
+#include <unordered_map>
+#include <variant>
+#include <vector>
 
-#include <clipp.h> // Command Line Interface
+#include <clipp.h> // CLI 解析
 #if USEARCH_USE_OPENMP
-#include <omp.h> // `omp_set_num_threads()`
+#include <omp.h>
 #endif
 
 #include <usearch/index_dense.hpp>
@@ -52,6 +55,7 @@ using namespace unum;
 using compressed_slot_t = std::uint32_t;
 using float_span_t = span_gt<float const>;
 
+/// 线性扫描找首个相等元素的偏移；未找到返回 `end - begin`（与 STL 距离语义对齐）。
 template <typename element_at>
 std::size_t offset_of(element_at const* begin, element_at const* end, element_at v) noexcept {
     auto iterator = begin;
@@ -65,6 +69,10 @@ template <typename element_at> bool contains(element_at const* begin, element_at
     return offset_of(begin, end, v) != static_cast<std::size_t>(end - begin);
 }
 
+/**
+ *  磁盘矩阵的 mmap 视图：文件头 `rows:u32, cols:u32`，其后 row-major 标量。
+ *  对齐 32 字节仅为减少误用栈上拷贝时的对齐踩踏；生命周期与映射绑定，禁止默认拷贝依赖。
+ */
 template <typename scalar_at> //
 struct alignas(32) persisted_matrix_gt {
     using scalar_t = scalar_at;
@@ -76,9 +84,10 @@ struct alignas(32) persisted_matrix_gt {
 
     persisted_matrix_gt() {}
 
+    /// 空路径 → 空矩阵（自检索场景可不提供 queries/neighbors）。
     persisted_matrix_gt(char const* path) noexcept(false) {
         if (!path || !std::strlen(path))
-            return; // Empty path results in default-constructed matrix
+            return;
 #if defined(USEARCH_DEFINED_WINDOWS)
 
         HANDLE file_handle =
@@ -114,6 +123,7 @@ struct alignas(32) persisted_matrix_gt {
         if (fstat(file_descriptor, &stat_vectors) == -1)
             throw std::invalid_argument("Couldn't obtain file stats");
         raw_length = stat_vectors.st_size;
+        // MAP_PRIVATE：基准只读，避免写回污染数据集文件。
         auto* result = mmap(NULL, raw_length, PROT_READ, MAP_PRIVATE, file_descriptor, 0);
         if (result == MAP_FAILED)
             throw std::invalid_argument("Couldn't memory-map the file");
@@ -139,9 +149,10 @@ struct alignas(32) persisted_matrix_gt {
 };
 
 /**
- *  @brief  A view of a large dataset in external memory, that may or may not contain
- *          ground-truth queries and their optimal search results. In the second case,
- *          self-recall is measured.
+ *  外部数据集视图：可带 queries + ground-truth neighbors；缺省时做「自检索」
+ *  （query=库内向量，真邻={自身}），用于无 GT 文件时仍能估 recall。
+ *
+ *  `vectors_to_skip` / `vectors_to_take` 切切片，避免改原始 .fbin。
  */
 template <typename scalar_at, typename vector_id_at> //
 struct persisted_dataset_gt {
@@ -159,6 +170,7 @@ struct persisted_dataset_gt {
                          std::size_t vectors_to_take = 0) noexcept(false)
         : vectors_(path_vectors), queries_(), neighborhoods_(), vector_ids_(), vectors_to_skip_(vectors_to_skip),
           vectors_to_take_(vectors_to_take) {
+        // 自检索：第 i 条查询的唯一真邻是 i 本身。
         neighborhoods_iota_.resize(vectors_.rows);
         std::iota(neighborhoods_iota_.begin(), neighborhoods_iota_.end(), 0);
     }
@@ -180,7 +192,7 @@ struct persisted_dataset_gt {
         : vectors_(path_vectors), queries_(path_queries), neighborhoods_(path_neighbors), vector_ids_(),
           neighborhoods_iota_(), vectors_to_skip_(vectors_to_skip), vectors_to_take_(vectors_to_take) {
 
-        // Handle self-search case (no queries/neighbors)
+        // 仅提供库向量、未给 query/GT：退化为自检索。
         if (!queries_.scalars && !neighborhoods_.scalars) {
             neighborhoods_iota_.resize(vectors_.rows);
             std::iota(neighborhoods_iota_.begin(), neighborhoods_iota_.end(), 0);
@@ -191,7 +203,7 @@ struct persisted_dataset_gt {
                 throw std::invalid_argument("Number of ground-truth neighborhoods doesn't match number of queries");
         }
 
-        // Load IDs file if provided
+        // 可选外部 ID：键空间非 [0,n) 时，召回比较必须用业务 ID 而非槽位下标。
         if (path_ids && std::strlen(path_ids)) {
             persisted_matrix_gt<std::int32_t> ids_matrix(path_ids);
             if (ids_matrix.rows != vectors_.rows)
@@ -199,14 +211,12 @@ struct persisted_dataset_gt {
             if (ids_matrix.cols != 1)
                 throw std::invalid_argument("Vector IDs file should have exactly 1 column");
 
-            // Convert and copy IDs into memory
             vector_ids_.resize(ids_matrix.rows);
             for (std::size_t i = 0; i < ids_matrix.rows; ++i)
                 vector_ids_[i] = static_cast<default_key_t>(*ids_matrix.row(i));
         }
 
-        // When custom IDs are loaded and self-search is active, populate
-        // neighborhoods_iota_ with the actual IDs so recall comparison works.
+        // 自检索 + 自定义 ID：iota 真邻改为业务 ID，否则 recall 会拿下标去比 ID。
         if (has_vector_ids() && !queries_.scalars && !neighborhoods_.scalars) {
             for (std::size_t i = 0; i < neighborhoods_iota_.size(); ++i)
                 neighborhoods_iota_[i] = static_cast<compressed_slot_t>(vector_ids_[i]);
@@ -222,6 +232,7 @@ struct persisted_dataset_gt {
 
     std::size_t dimensions() const noexcept { return vectors_.cols; }
     std::size_t queries_count() const noexcept { return search_itself() ? vectors_count() : queries_.rows; }
+    /// 自检索时邻域宽度固定为 1（只验证「能否找回自己」）。
     std::size_t neighborhood_size() const noexcept { return search_itself() ? 1 : neighborhoods_.cols; }
     scalar_t const* vector(std::size_t i) const noexcept { return vectors_.row(i + vectors_to_skip_); }
     scalar_t const* query(std::size_t i) const noexcept {
@@ -236,6 +247,7 @@ struct persisted_dataset_gt {
     matrix_slice_gt<scalar_t const> vectors_view() const noexcept { return {vector(0), vectors_count(), dimensions()}; }
 };
 
+/// 堆上合成数据集；当前入口未用，保留作无磁盘文件的烟雾基准。
 template <typename scalar_at, typename vector_id_at> //
 struct in_memory_dataset_gt {
     using scalar_t = scalar_at;
@@ -278,6 +290,10 @@ char const* getenv_or(char const* name, char const* default_) { return getenv(na
 
 using timestamp_t = std::chrono::time_point<std::chrono::high_resolution_clock>;
 
+/**
+ *  进度条：按步长节流打印，避免 OpenMP 热路径上每条向量都刷屏。
+ *  吞吐用「自上次打印以来」的局部速率，避免全程平均掩盖尾部变慢。
+ */
 struct running_stats_printer_t {
     std::size_t total{};
     std::atomic<std::size_t> progress{};
@@ -333,6 +349,7 @@ struct running_stats_printer_t {
     }
 };
 
+/// 并行插入；仅 thread 0 刷进度，避免多线程争用 stdout。
 template <typename index_at, typename vector_id_at, typename scalar_at>
 void index_many(index_at& index, std::size_t n, vector_id_at const* ids, scalar_at const* vectors, std::size_t dims) {
 
@@ -352,10 +369,10 @@ void index_many(index_at& index, std::size_t n, vector_id_at const* ids, scalar_
             printer.refresh();
     }
 
-    // Refresh once again to show 100% completion
     printer.print();
 }
 
+/// 并行检索；结果按 query 分块写入调用方缓冲（wanted 对齐）。
 template <typename index_at, typename vector_id_at, typename scalar_at, typename distance_at>
 void search_many( //
     index_at& index, std::size_t n, scalar_at const* vectors, std::size_t dims, std::size_t wanted, vector_id_at* ids,
@@ -379,10 +396,13 @@ void search_many( //
             printer.refresh();
     }
 
-    // Refresh once again to show 100% completion
     printer.print();
 }
 
+/**
+ *  单次基准回合：可选建库 → 搜 → Recall@1 / Recall@k；
+ *  `bench_join==false` 时额外跑双图 join（与 CLI `--join` 极性历史相反，改名需同步调用方）。
+ */
 template <typename dataset_at, typename index_at> //
 static void single_shot(dataset_at& dataset, index_at& index, bool construct = true, bool bench_join = false) {
     using distance_t = typename index_at::distance_t;
@@ -390,7 +410,6 @@ static void single_shot(dataset_at& dataset, index_at& index, bool construct = t
     std::printf("\n");
     std::printf("------------\n");
     if (construct) {
-        // Perform insertions, evaluate speed
         std::vector<default_key_t> ids(dataset.vectors_count());
         for (std::size_t i = 0; i < dataset.vectors_count(); ++i)
             ids[i] = static_cast<default_key_t>(dataset.vector_id(i));
@@ -400,13 +419,12 @@ static void single_shot(dataset_at& dataset, index_at& index, bool construct = t
     std::size_t mem = index.memory_usage();
     std::printf("Memory usage: %.2f GB\n", mem / (1024.0 * 1024.0 * 1024.0));
 
-    // Perform search, evaluate speed
     std::vector<default_key_t> found_neighbors(dataset.queries_count() * dataset.neighborhood_size());
     std::vector<distance_t> found_distances(dataset.queries_count() * dataset.neighborhood_size());
     search_many(index, dataset.queries_count(), dataset.query(0), dataset.dimensions(), dataset.neighborhood_size(),
                 found_neighbors.data(), found_distances.data());
 
-    // Evaluate search quality
+    // Recall@1：真邻首位是否命中；Recall：真邻首位是否落在返回集合内（允许排序漂移）。
     std::size_t recall_at_1 = 0, recall_full = 0;
     for (std::size_t i = 0; i != dataset.queries_count(); ++i) {
         auto expected = dataset.neighborhood(i);
@@ -419,7 +437,7 @@ static void single_shot(dataset_at& dataset, index_at& index, bool construct = t
     std::printf("Recall %.2f %%\n", recall_full * 100.f / dataset.queries_count());
 
     if (!bench_join) {
-        // Perform joins using maps to support non-contiguous IDs
+        // 用 map 而非数组：键空间可能不稠密（自定义 ID）。
         std::unordered_map<default_key_t, default_key_t> man_to_woman;
         std::unordered_map<default_key_t, default_key_t> woman_to_man;
         std::size_t join_attempts = 0;
@@ -437,11 +455,10 @@ static void single_shot(dataset_at& dataset, index_at& index, bool construct = t
                     printer.print(progress, total);
                 return true;
             });
-        // Refresh once again to show 100% completion
         printer.print();
         join_attempts = result.visited_members;
 
-        // Evaluate join quality
+        // 同构 copy 上的 join：理想匹配应是 id→id；偏离反映近似图误差。
         std::size_t recall_join = 0;
         for (auto const& [man, woman] : man_to_woman)
             recall_join += (man == woman);
@@ -455,18 +472,17 @@ static void single_shot(dataset_at& dataset, index_at& index, bool construct = t
     std::printf("\n");
 }
 
+/// SIGSEGV 时尽量打印栈；失败则直接 exit，避免二次崩溃掩盖现场。
 void handler(int sig) {
     void* array[10];
     size_t size;
 
-    // get void*'s for all entries on the stack
 #if defined(USEARCH_DEFINED_WINDOWS)
     size = CaptureStackBackTrace(0, 10, array, NULL);
 #elif defined(USEARCH_DEFINED_LINUX)
     size = backtrace(array, 10);
 #endif // WINDOWS
 
-    // print out all the frames to stderr
     fprintf(stderr, "Error: signal %d:\n", sig);
 
 #if defined(USEARCH_DEFINED_WINDOWS)
@@ -521,6 +537,7 @@ struct args_t {
     std::string dtype_str = "f32";
     std::string metric_str = "ip";
 
+    /// 解析失败时回退 ip，避免基准因拼写错误直接中止。
     metric_kind_t metric() const noexcept {
         auto parsed = metric_from_name(metric_str.c_str(), metric_str.size());
         if (!parsed)
@@ -536,6 +553,7 @@ struct args_t {
     }
 };
 
+/// 量化 + 动态度量（可走 NumKong）；先内存基准，可选再 view 磁盘镜像对比。
 template <typename index_at, typename dataset_at> //
 void run_punned(dataset_at& dataset, args_t const& args, index_dense_config_t config, index_limits_t limits) {
 
@@ -558,6 +576,7 @@ void run_punned(dataset_at& dataset, args_t const& args, index_dense_config_t co
         return;
     std::printf("Will benchmark an on-disk view\n");
 
+    // fork+view：度量配置与内存索引一致，隔离「页缓存 / 懒加载」对检索吞吐的影响。
     index_at index_view = index.fork();
     index_view.view(args.path_output.c_str());
     single_shot(dataset, index_view, false, args.join);
@@ -594,6 +613,7 @@ template <typename dataset_scalar_at> void bench_with_args(args_t const& args) {
 
     index_dense_config_t config(args.connectivity, args.expansion_add, args.expansion_search);
     index_limits_t limits;
+    // 构建与检索共用线程上限，避免一边抢核导致吞吐抖动。
     limits.threads_add = limits.threads_search = args.threads;
     limits.members = dataset.vectors_count();
 
@@ -604,6 +624,7 @@ template <typename dataset_scalar_at> void bench_with_args(args_t const& args) {
 
     if (args.big)
 #ifdef USEARCH_64BIT_ENV
+        // 邻接槽位压缩到 40 bit，支持 >4B 图；仅 64 位进程安全。
         run_punned<index_dense_gt<default_key_t, uint40_t>>(dataset, args, config, limits);
 #else
         std::printf("Error: Don't use 40 bit identifiers in 32bit environment\n");
@@ -614,7 +635,7 @@ template <typename dataset_scalar_at> void bench_with_args(args_t const& args) {
 
 int main(int argc, char** argv) {
 
-    // Print backtrace if something goes wrong.
+    // 尽早挂 SIGSEGV，避免 OpenMP/SIMD 路径崩溃时无栈可查。
     signal(SIGSEGV, handler);
 
     using namespace clipp;
@@ -653,9 +674,7 @@ int main(int argc, char** argv) {
     }
 
 #if USEARCH_USE_OPENMP
-    // Instead of relying on `multithreaded` from "index_dense.hpp" we will use OpenMP
-    // to better estimate statistics between tasks batches, without having to recreate
-    // the threads.
+    // 不用 index_dense 内置线程池：跨 batch 复用 OpenMP，吞吐统计更稳。
     omp_set_dynamic(true);
     omp_set_num_threads(static_cast<int>(args.threads));
     std::printf("- OpenMP threads: %d\n", omp_get_max_threads());
@@ -668,6 +687,7 @@ int main(int argc, char** argv) {
     std::printf("-- Query vectors path: %s\n", args.path_queries.c_str());
     std::printf("-- Ground truth neighbors path: %s\n", args.path_neighbors.c_str());
 
+    // 后缀决定元素类型；与 `--dtype`（索引量化）正交——库文件类型 ≠ 索引标量类型。
     auto ends_with = [](std::string_view stack, std::string_view needle) -> bool {
         if (needle.empty())
             return false;
