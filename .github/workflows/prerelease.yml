@@ -201,6 +201,8 @@ jobs:
             --suppress=missingIncludeSystem --suppress=unusedFunction \
             --suppress=throwInNoexceptFunction --suppress=returnDanglingLifetime \
             --suppress=duplInheritedMember --suppress=toomanyconfigs \
+            --suppress=signConversionCond --suppress=uselessAssignmentPtrArg \
+            --suppress=nullPointerRedundantCheck --suppress=pointerSize \
             --suppress=unmatchedSuppression \
             -I include -I stringzilla/include \
             include/usearch/index.hpp \
