@@ -836,6 +836,8 @@ void workerLoop(Runtime& rt) {
             claimed = rt.store.base.claim();
         }
         if (!claimed) {
+            // claim 空队列用 error="empty"；error_t 析构会 raise，必须先 release。
+            (void)claimed.error.release();
             std::unique_lock<std::mutex> lk(rt.workerMutex);
             rt.workerCv.wait_for(lk, std::chrono::milliseconds(400),
                                  [&] { return rt.workerStop.load(std::memory_order_acquire); });
@@ -909,6 +911,8 @@ void workerLoop(Runtime& rt) {
                 claimed = rt.store.base.claim();
             }
         } while (static_cast<bool>(claimed));
+        // 循环因 empty 结束：吞掉非致命错误，避免 ~error_t 抛到线程顶层 terminate
+        (void)claimed.error.release();
     }
 }
 

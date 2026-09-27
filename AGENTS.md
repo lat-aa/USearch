@@ -11,6 +11,20 @@
 
 鉴权：`Authorization: Bearer sk-default`（与 `.config/config.toml` 的 `token` 对齐）。
 
+## 三端模拟自测（MCP + /v1）
+
+本地复现 Cursor / Codex / ChatGPT 行为（不启 IDE）：
+
+| 层 | 命令 |
+|----|------|
+| L0 MCP 协议 | `API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_mcp.sh` |
+| L1 `/v1` 网关 | `API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_v1.sh` |
+| L2 Apex 回合 | `API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_apex.sh` |
+| L3 Hooks | `node scripts/test_hooks.js` |
+| L4 nightly | `API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_nightly.sh` |
+
+部署后 Ingress 探测仍用 `deploy/k3s/depth.sh`。矩阵说明见 [`.config/README.md`](.config/README.md)。
+
 ## 三平面（冻结）
 
 | 平面 | 选模 | `model` / 🧭 |

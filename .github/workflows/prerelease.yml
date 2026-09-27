@@ -405,5 +405,14 @@ jobs:
           cmake --build build_api --target api -j$(nproc)
       - name: Smoke HTTP/MCP
         run: |
-          chmod +x scripts/smoke_api.sh
+          chmod +x scripts/smoke_api.sh scripts/smoke_mcp.sh scripts/smoke_v1.sh scripts/smoke_common.sh
           API_BIN="$PWD/build_api/api" ./scripts/smoke_api.sh
+      - name: Smoke MCP L0 (protocol/auth/SSE)
+        run: |
+          API_BIN="$PWD/build_api/api" TOKEN=sk-default PORT=8089 ./scripts/smoke_mcp.sh
+      - name: Smoke /v1 LLM gateway L1
+        run: |
+          API_BIN="$PWD/build_api/api" TOKEN=sk-default PORT=8090 ./scripts/smoke_v1.sh
+      - name: Hook unit (presync + injectmodel)
+        run: |
+          node scripts/test_hooks.js

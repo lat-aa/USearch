@@ -1,6 +1,9 @@
 #!/bin/bash
 # 部署后深度场景覆盖：鉴权 / MCP /v1 / stack / 别名 / SSE / 向量 CRUD
 # Usage: BASE=http://api.ya.com bash deploy/k3s/depth.sh
+#
+# 本地 loopback 全量自测请用 scripts/smoke_{mcp,v1,apex}.sh + smoke_nightly.sh；
+# 本脚本保留 k3s Ingress/NodePort 探测与部署验收。
 set -euo pipefail
 TOKEN="${TOKEN:-sk-default}"
 BASE="${BASE:-http://api.ya.com}"

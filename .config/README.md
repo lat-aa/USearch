@@ -57,6 +57,33 @@ NumKong 单元门禁（与 CI `quality.yml` / Ubuntu GCC 对齐）：见 `CONTRI
 - 路由决策：`POST /v1/route` 与 MCP 工具 `decide`（级联：model/depth/retrieval/compression/temperature）
 - 决策配置：`[decide]`（参数全显式，缺键启动失败）+ `.config/decide/config.toml`
 
+## 三端模拟自测（MCP + /v1）
+
+本仓 `api` 对外两套面：Streamable HTTP MCP（`/mcp`）与 OpenAI 兼容网关（`/v1/*`）。用 curl/Node 复现 Cursor / Codex / ChatGPT 语义；真客户端仅人工抽检。
+
+| 层 | 脚本 | 覆盖 | CI |
+|----|------|------|-----|
+| L0 | `scripts/smoke_mcp.sh` | MCP 握手 / Auth / GET·POST SSE / `tools/list`（含 Codex 别名） | prerelease |
+| L1 | `scripts/smoke_v1.sh` | `/v1` models·embed·memory·route·rules·gate·chat·responses·流式·负向 | prerelease（无 GGUF 时生成类 SKIP） |
+| L2 | `scripts/smoke_apex.sh` | rules→decide→cost→gate→observe→aliases→`stats.sh` | nightly |
+| L3 | `scripts/test_hooks.js` | `presync.js` + `injectmodel.js`（Cursor/Codex/Claude stdin；默认 `APEX_GATE_FIXTURE` 夹具） | prerelease |
+| L4 | `scripts/smoke_nightly.sh` | L1 cache / conflict / Worker / 短路与长流式 | nightly |
+| 部署 | `deploy/k3s/depth.sh` | Ingress/NodePort 探测（不替代本地 smoke） | 手工 |
+
+一键本地（需已编 `api`）：
+
+```bash
+cmake -B build -DUSEARCH_BUILD_API=ON -DUSEARCH_BUILD_TEST_CPP=OFF -DUSEARCH_BUILD_BENCH_CPP=OFF -DUSEARCH_USE_NUMKONG=ON
+cmake --build build --target api -j"$(nproc)"
+API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_mcp.sh
+API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_v1.sh
+API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_apex.sh
+node scripts/test_hooks.js
+API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_nightly.sh
+```
+
+最小路径（无 token）仍可用 `scripts/smoke_api.sh`。共用起停逻辑见 `scripts/smoke_common.sh`。
+
 ```bash
 curl -s http://127.0.0.1:8088/v1/route -H 'content-type: application/json' \
   -d '{"task":"refactor auth for concurrency","files":["a.cpp"],"hints":["quality"]}'

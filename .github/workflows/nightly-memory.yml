@@ -91,3 +91,33 @@ jobs:
           cmake --build build_fuzz --target fuzz_index -j"$(nproc)"
       - name: Fuzz 30 minutes
         run: build_fuzz/fuzz_index -max_total_time=1800 -timeout=10 -rss_limit_mb=4096
+
+  # Apex 回合 + gate/Worker/流式长路径；无 GGUF 时生成类用例 SKIP_NO_GGUF。
+  api_apex_nightly:
+    name: API apex + L4 nightly
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@v6
+      - run: git submodule update --init --recursive
+      - name: Build api
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang libomp-dev python3 curl
+          cmake -B build_api \
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+            -D USEARCH_BUILD_TEST_CPP=0 \
+            -D USEARCH_BUILD_BENCH_CPP=0 \
+            -D USEARCH_BUILD_API=ON \
+            -D USEARCH_USE_NUMKONG=1 \
+            -D USEARCH_SANITIZE_DEBUG=OFF
+          cmake --build build_api --target api -j"$(nproc)"
+      - name: Smoke apex L2
+        run: |
+          chmod +x scripts/smoke_common.sh scripts/smoke_apex.sh scripts/smoke_nightly.sh scripts/stats.sh
+          API_BIN="$PWD/build_api/api" TOKEN=sk-default PORT=18088 ./scripts/smoke_apex.sh
+      - name: Smoke L4 nightly
+        run: |
+          API_BIN="$PWD/build_api/api" TOKEN=sk-default PORT=18089 ./scripts/smoke_nightly.sh

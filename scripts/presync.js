@@ -36,6 +36,21 @@ function extractPrompt(raw) {
 }
 
 function postGate(base, token, task) {
+  // 单测夹具：APEX_GATE_FIXTURE=pack|answered|refuse|error 或 JSON 对象字符串，跳过真实 HTTP。
+  const fixture = process.env.APEX_GATE_FIXTURE;
+  if (fixture) {
+    if (fixture === 'error') return Promise.reject(new Error('fixture error'));
+    if (fixture === 'pack') return Promise.resolve({ status: 'pack', pack: { hits: [], note: 'fixture' }, answerConfidence: 0.4 });
+    if (fixture === 'answered')
+      return Promise.resolve({ status: 'answered', reply: 'hook-answered', answerConfidence: 0.99 });
+    if (fixture === 'refuse')
+      return Promise.resolve({ status: 'refuse', conflicts: ['policy'], answerConfidence: 0.1 });
+    try {
+      return Promise.resolve(JSON.parse(fixture));
+    } catch (e) {
+      return Promise.reject(new Error('bad APEX_GATE_FIXTURE'));
+    }
+  }
   const url = new URL('/v1/gate', base.endsWith('/') ? base : base + '/');
   const body = JSON.stringify({ task });
   const lib = url.protocol === 'https:' ? https : http;
