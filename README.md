@@ -108,6 +108,73 @@ index.view("index.usearch");  // 内存映射
 
 完整数据与方法见 [BENCHMARKS.md](BENCHMARKS.md) 与 [Intel 博文][faster-than-faiss]。
 
+## 流程
+
+政策 SoT 在 `.config/rules`（经 MCP `rules`/`gate` 投递）；SQLite 存记忆正文与 `queue`；USearch 做 ANN。工具名：`gate`、`observe`（设计别称 save_observation）、表名 `queue`。
+
+```text
+用户输入
+  ↓
+【客户端】Codex / Claude / Cursor
+  ↓
+Hook(presync)  —— 主 LLM 之前
+  Cursor : beforeSubmitPrompt → HTTP gate
+  Codex  : UserPromptSubmit   → HTTP gate（或直连 /v1 时由网关内 gate）
+  Claude : UserPromptSubmit   → mcp_tool gate（首选）或 HTTP gate
+  ↓
+MCP gate（服务端统一管线）
+  ├─ L1 精确缓存（键 = hash(task)+policyFingerprint）→ 命中
+  ├─ L2 语义缓存（USearch meta.kind=cache + 指纹校验）→ 命中
+  │     └─→ status=answered → 见「短路出口」
+  └─ 未命中 → 并行：
+        ├─ 记忆：USearch(kind=memory) → SQLite 回填正文
+        └─ 政策：.config/rules → resolveRules（Always/Glob 硬附加；
+              Semantic 参与排序）+ SQLite 仅作冲突/禁用审计
+              ↓
+        RRF（仅 Semantic 政策序 ⊕ 记忆序；Always/Glob 不进 RRF）
+              ↓
+        Nanbeige 门控（temperature=0；混合置信）
+          answerConfidence = 0.45*evidence + 0.55*self
+          conflicts 非空 → 禁止 answered（fail-closed）
+          ├─ answered（≥threshold 如 0.85 且无冲突且 reply 非空）
+          │    └─→ 短路出口
+          ├─ pack（置信不足 / 信息不足）
+          │    └─→ 确定性压缩证据包（token 预算）+ 可选模型 pack[]
+          └─ refuse（政策冲突）→ 展示原因，不装可答
+
+短路出口（省主 LLM）：
+  Cursor : continue=false，user_message=reply
+  Codex  : decision=block + reason=reply；或 /v1 本地流式结束
+  Claude : continue=false + stopReason=reply（或 block+reason）
+
+pack 出口（主 LLM 仍跑）：
+  Claude/Codex : additionalContext ← pack JSON
+  Cursor       : 放行回合 + apex 强制首工具 gate 取同一 pack
+  ↓
+主 LLM
+  Cursor → 云端（不走本机 /v1）
+  Codex  → 可选本机 /v1 网关，或厂商直连
+  Claude → 厂商 API（pack 已注入）
+  ↓
+本地工具循环（含 apex：rules→decide→cost…）
+  ↓
+任务结束 → 模型调用 MCP observe（仅入队）
+  （可选 Stop hook 提醒模型调用，不代替入队）
+  ↓
+SQLite 表 queue（status=pending）→ 立即返回成功
+  ↓
+后台 Worker
+  ├─ 原子领取
+  ├─ Nanbeige 强蒸馏
+  ├─ 冲突检测；冲突则 meta.conflict，不晋升 L2
+  ├─ 写 SQLite 记忆（SoT，meta.kind=memory）
+  └─ 写 USearch 索引（失败可重试）
+  ↓
+用户早已看到结果；沉淀在后台完成
+```
+
+
+
 ## 集成
 
 作为嵌入式 ANN 引擎（C++）用于 ClickHouse、DuckDB、ScyllaDB、TiDB/TiFlash、YugaByte、MemGraph，以及 Google UniSim 等研究栈。

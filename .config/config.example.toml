@@ -41,3 +41,15 @@ keepmid = 0.7
 keephigh = 1.0
 topk = [2, 4, 8, 16]  # L0..L3 检索 k
 lexicon = ".config/decide/config.toml"
+
+# 前置门控 gate：混合置信 + L1/L2；键名单单词
+[gate]
+threshold = 0.85   # answerConfidence 直答阈值
+l2 = 0.92          # L2 语义缓存最低相似度
+cachek = 4         # L2 检索 k
+reflect = 1        # 边界置信时最多额外反思轮数 0|1|2
+minevid = 0.55     # 进入 Nanbeige Draft 的最低证据分
+wevid = 0.45       # 混合置信：证据权重
+wself = 0.55       # 混合置信：模型自报权重
+packtok = 800      # pack 证据包 token 预算（estimate）
+minlen = 8         # answered 时 reply 最短字符数

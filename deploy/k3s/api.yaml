@@ -3,8 +3,7 @@ kind: Namespace
 metadata:
   name: usearch
 ---
-# Prebuilt Alpine musl api via hostPath (.local/api + .local/lib). No apk at runtime.
-# listen must be 0.0.0.0:8088 in .config/config.toml.
+# Ubuntu glibc api via hostPath (.local/api + .local/lib). listen 0.0.0.0:8088.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -24,9 +23,10 @@ spec:
     spec:
       containers:
         - name: api
-          image: alpine:3.20
+          image: ubuntu:26.04
           imagePullPolicy: IfNotPresent
-          command: ["/opt/usearch/api", "serve"]
+          # ulimit -c 0: do not write core.* into hostPath workingDir (/app = repo root)
+          command: ["/bin/bash", "-lc", "ulimit -c 0; exec /opt/usearch/api serve"]
           workingDir: /app
           ports:
             - name: http
@@ -86,3 +86,23 @@ spec:
       port: 8088
       targetPort: http
       nodePort: 30088
+---
+# Host api.ya.com via Traefik :80. Covers /v1 and /mcp.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api
+  namespace: usearch
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: api.ya.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api
+                port:
+                  number: 8088

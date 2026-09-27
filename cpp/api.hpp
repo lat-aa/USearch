@@ -6,6 +6,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -14,6 +15,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -88,6 +90,28 @@ struct Decideconfig {
     std::string lexicon; ///< 词表路径（默认 `.config/decide/config.toml`，含 complex / medium）
 };
 
+/** 前置门控参数（全部来自 `config.gate`；缺键启动失败）。 */
+struct Gateconfig {
+    float threshold = 0;  ///< answerConfidence 直答阈值
+    float l2 = 0;         ///< L2 语义缓存最低相似度
+    std::size_t cachek = 0;
+    int reflect = 0; ///< 0|1|2 额外反思轮
+    float minevid = 0;
+    float wevid = 0;
+    float wself = 0;
+    std::size_t packtok = 0;
+    std::size_t minlen = 0;
+};
+
+/** observe 入队行（SQLite queue；不做重活）。 */
+struct Queuerow {
+    std::string id;
+    json payload = json::object();
+    std::string status; ///< pending|running|done|fail
+    std::int64_t created = 0;
+    std::int64_t updated = 0;
+};
+
 /** 进程级只读快照。全部字段由 `.config/config.toml` 提供，无产品默认值。 */
 struct Config {
     std::string gguf;
@@ -104,6 +128,7 @@ struct Config {
     std::string token;
     Chat chat {};
     Decideconfig decide {};
+    Gateconfig gate {};
     std::size_t shadow = 0;
     std::uint32_t rate = 0;
     double refill = 0.0;
@@ -158,6 +183,12 @@ struct Base {
     error_t put(Doc const& doc, std::uint64_t key);
     error_t del(std::string const& id);
     expected_gt<std::vector<Doc>> list();
+    /** 入队 pending；立即返回（沉淀重活在 Worker）。 */
+    error_t enqueue(std::string const& id, json const& payload);
+    /** 原子领取一条 pending→running；无任务则 failed。 */
+    expected_gt<Queuerow> claim();
+    error_t finish(std::string const& id, std::string const& status);
+    error_t auditPut(std::string const& id, std::string const& kind, json const& detail);
 };
 
 struct Encoder {
@@ -431,6 +462,12 @@ struct Decider {
 
 expected_gt<Lexicon> loadLexicon(fs::path const& path);
 
+/** L1 精确缓存条目（进程内；键含政策指纹）。 */
+struct L1entry {
+    std::string reply;
+    std::string fingerprint;
+};
+
 struct Runtime {
     fs::path root;
     Config config;
@@ -438,25 +475,46 @@ struct Runtime {
     Store store;
     std::vector<Rule> rules;
     Decider decider;
+    std::mutex l1Mutex;
+    std::unordered_map<std::string, L1entry> l1;
+    std::atomic<bool> workerStop {false};
+    std::thread worker;
     Runtime() = default;
     Runtime(Runtime const&) = delete;
     Runtime& operator=(Runtime const&) = delete;
-    Runtime(Runtime&&) noexcept = default;
-    Runtime& operator=(Runtime&&) noexcept = default;
+    Runtime(Runtime&& other) noexcept;
+    Runtime& operator=(Runtime&& other) noexcept;
+    ~Runtime();
     static expected_gt<Runtime> open(fs::path const& root);
     fs::path workspace() const;
     std::string shell(std::string const& command) const;
     expected_gt<json> saveExperience(Experience const& exp);
+    void startWorker();
+    void stopWorker();
 };
+
+/** 政策目录指纹：规则变更使 L1/L2 缓存失效。 */
+std::string policyFingerprint(std::vector<Rule> const& rules);
+/** 前置门控：L1/L2→政策∥记忆→RRF→Nanbeige 混合置信→answered|pack|refuse。 */
+json runGate(Runtime& rt, json const& args);
+/** observe 仅入队；Worker 后台蒸馏写 memory。 */
+json runObserve(Runtime& rt, json const& args);
+void workerLoop(Runtime& rt);
 
 /** 解析 route/decide 请求体；键名：task|query、files、latency、hints。 */
 Decideinput decideinputFromJson(json const& body);
 /** 解析单个 hint 字符串；未知值勿调用（由 decideinputFromJson 白名单过滤）。 */
 Hint parseHint(std::string const& s);
 
+/** MCP 请求附带的客户端元数据（来自 HTTP 头；缺省时字段为空）。 */
+struct Mcpclient {
+    std::string actualModel;       ///< X-Apex-Actual-Model
+    std::string actualModelSource; ///< X-Apex-Actual-Model-Source
+};
+
 json toolDefs();
-json callTool(Runtime& rt, std::string const& name, json const& args);
-json mcpHandle(Runtime& rt, json const& req);
+json callTool(Runtime& rt, std::string const& name, json const& args, Mcpclient const& client = {});
+json mcpHandle(Runtime& rt, json const& req, Mcpclient const& client = {});
 void mountOpenai(httplib::Server& svr, Runtime& rt,
                  std::function<bool(httplib::Request const&, httplib::Response&)> gate);
 int serve(Runtime& rt);

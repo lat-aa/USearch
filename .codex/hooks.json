@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node scripts/presync.js",
+            "statusMessage": "apex gate presync"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "cost|mcp__.*__cost",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node scripts/injectmodel.js",
+            "statusMessage": "inject actual_model"
+          }
+        ]
+      }
+    ]
+  }
+}

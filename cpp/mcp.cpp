@@ -5,7 +5,138 @@
 
 #include "api.hpp"
 
+#include <cmath>
+#include <cstdint>
+
 namespace api {
+namespace {
+
+/** 规则统计信封：对齐 apex.mdc / stats.sh（totalRules、token 三档、entries[].id）。 */
+json rulesEnvelope(Runtime& rt, Rulequery const& rq, float compression) {
+    auto matched = resolveRules(rt, rq);
+    std::size_t total = 0;
+    std::size_t naive = 0;
+    for (auto const& r : rt.rules) {
+        if (!r.enabled)
+            continue;
+        ++total;
+        naive += estimate(r.body) + estimate(r.description) + estimate(r.name);
+    }
+    std::size_t selected = 0;
+    float semSum = 0.0f;
+    for (auto const& r : matched) {
+        selected += estimate(r.rule.body) + estimate(r.rule.description) + estimate(r.rule.name);
+        if (r.activation == Activation::Semantic)
+            semSum += (std::max)(r.score, 0.0f);
+    }
+    int base = rt.decider.sectionsFor(compression);
+    std::size_t optimized = 0;
+    json entries = json::array();
+    for (auto const& r : matched) {
+        int sections = ruleSections(r.activation, r.score, semSum, base);
+        std::string body = compressSections(r.rule.body, rq.task, static_cast<std::size_t>(sections));
+        optimized += estimate(body) + estimate(r.rule.description) + estimate(r.rule.name);
+        json item = r.toJson();
+        item["id"] = r.rule.name;
+        item["body"] = std::move(body);
+        entries.push_back(std::move(item));
+    }
+    return {{"totalRules", total},
+            {"matched", matched.size()},
+            {"naiveTokens", naive},
+            {"selectedTokens", selected},
+            {"optimizedTokens", optimized},
+            {"entries", std::move(entries)}};
+}
+
+double roundMoney(double x) {
+    return std::round(x * 1e6) / 1e6;
+}
+
+/** DeepSeek 档位单价（元 / 百万 token）；cache_hit 按输入价 ×0.1；peak 全价 ×2。 */
+void priceRates(std::string const& model, bool cacheHit, bool peak, double& inPerM, double& outPerM) {
+    if (model.find("pro") != std::string::npos) {
+        inPerM = 2.0;
+        outPerM = 8.0;
+    } else {
+        inPerM = 0.14;
+        outPerM = 0.28;
+    }
+    if (cacheHit)
+        inPerM *= 0.1;
+    if (peak) {
+        inPerM *= 2.0;
+        outPerM *= 2.0;
+    }
+}
+
+std::string priceModelFrom(Decision const& d, std::string const& want) {
+    if (want == "pro" || want == "deepseek-v4-pro")
+        return "deepseek-v4-pro";
+    if (want == "flash" || want == "deepseek-flash")
+        return "deepseek-flash";
+    if (!want.empty())
+        return want;
+    // 空 model：按 decide 档位映射默认上游价目表名（非客户端实模）。
+    if (d.model == Model::Strong)
+        return "deepseek-v4-pro";
+    return "deepseek-flash";
+}
+
+/**
+ * 解析本轮客户端实模：cursor-state（hook 注入）> HTTP 头 > Agent reported。
+ * 禁止在此处编造选择器名；全空则返回 false。
+ */
+bool resolveActual(json const& args, Mcpclient const& client, std::string& actual, std::string& source) {
+    auto argModel = args.value("actual_model", "");
+    auto argSource = args.value("actual_model_source", "");
+    if (!argModel.empty() && (argSource == "cursor-state" || argSource == "codex-config")) {
+        actual = std::move(argModel);
+        source = argSource;
+        return true;
+    }
+    if (!client.actualModel.empty()) {
+        actual = client.actualModel;
+        source = !client.actualModelSource.empty() ? client.actualModelSource : "reported";
+        return true;
+    }
+    if (!argModel.empty()) {
+        actual = std::move(argModel);
+        source = !argSource.empty() ? argSource : "reported";
+        return true;
+    }
+    return false;
+}
+
+/**
+ * 本轮栈职责（给 🔖 行）：按就绪态 + decide.retrieval 陈述「会做什么」，
+ * 不假装 cost 路径已跑完整 chat；L0 明确跳过 ANN/回填。
+ */
+json stackOf(Runtime& rt, Decision const& d) {
+    std::string nanbeige;
+    if (rt.encoder.modelReady)
+        nanbeige = "语义规则嵌入 dim=" + std::to_string(rt.encoder.dimensions);
+    else
+        nanbeige = "hash 回退 dim=" + std::to_string(rt.encoder.dimensions ? rt.encoder.dimensions : 1024);
+
+    std::string usearch;
+    std::string sqlite;
+    std::size_t k = rt.decider.topkFor(d.retrieval);
+    std::size_t nDocs = rt.store.docs.size();
+    if (d.retrieval == Retrieval::L0) {
+        usearch = "跳过";
+        sqlite = "待命";
+    } else if (d.retrieval == Retrieval::L1) {
+        usearch = "轻检索 k=" + std::to_string(k);
+        sqlite = nDocs ? ("回填正文 docs=" + std::to_string(nDocs)) : "库空";
+    } else {
+        usearch = "ANN k=" + std::to_string(k);
+        sqlite = nDocs ? ("回填正文 docs=" + std::to_string(nDocs)) : "库空";
+    }
+    return {{"nanbeige", nanbeige}, {"usearch", usearch}, {"sqlite", sqlite}};
+}
+
+} // namespace
 
 json toolDefs() {
     auto tool = [](char const* name, char const* description) {
@@ -28,13 +159,19 @@ json toolDefs() {
             {"latency", {{"type", "integer"}}},
             {"hints", {{"type", "array"}, {"items", {{"type", "string"}}}}},
             {"manual", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+            {"actual_model", {{"type", "string"}}},
+            {"actual_model_source", {{"type", "string"}}},
+            {"model", {{"type", "string"}}},
+            {"cache_hit", {{"type", "boolean"}}},
+            {"peak", {{"type", "boolean"}}},
+            {"output_tokens", {{"type", "integer"}}},
         };
         return json {{"name", name},
                      {"description", description},
                      {"inputSchema", {{"type", "object"}, {"properties", props}}}};
     };
     return json::array({
-        tool("rules", "按 task/files/manual 解析规则（always/glob/semantic/manual）"),
+        tool("rules", "按 task/files/manual 解析规则；返回 totalRules/matched/token 三档与 entries[].id"),
         tool("catalog", "列出规则名、简述与激活元数据"),
         tool("rule", "按名取单条规则"),
         tool("search", "按文本做向量检索"),
@@ -42,30 +179,52 @@ json toolDefs() {
         tool("delete", "按 id 删除文档"),
         tool("recall", "嵌入后检索（search 的一站式别名）"),
         tool("decide", "路由：模型档/深度/检索/压缩/温度；回答前调用（确定性 Features→Decision）"),
+        tool("gate", "前置门控：L1/L2+政策∥记忆+RRF+Nanbeige 混合置信→answered|pack|refuse"),
+        tool("observe", "沉淀仅入队（设计别称 save_observation）；Worker 后台蒸馏写 memory"),
+        tool("cost",
+             "按规则 token + decide 档位估算费用（CNY）；actual_model 由 Cursor/Codex hook 或"
+             "请求头 X-Apex-Actual-Model 注入（cursor-state / codex-config）"),
+        tool("resolve-rules", "rules 的 Codex 别名"),
+        tool("list-rules", "catalog 的 Codex 别名"),
+        tool("get-rule", "rule 的 Codex 别名"),
         tool("shell", "在 workspace 执行 shell"),
         tool("test", "运行项目测试"),
         tool("status", "git status"),
         tool("commit", "git commit"),
-        tool("save", "落盘 Markdown 经验并写入向量库"),
+        tool("save", "经验入队（同 observe）；兼容旧名"),
     });
 }
 
-json callTool(Runtime& rt, std::string const& name, json const& args) {
+json callTool(Runtime& rt, std::string const& name, json const& args, Mcpclient const& client) {
     auto textResult = [](std::string const& text, bool error = false) {
         return json {{"content", json::array({{{"type", "text"}, {"text", text}}})}, {"isError", error}};
     };
     try {
-        if (name == "rules") {
+        // Codex 旧配置仍调 resolve-rules / list-rules / get-rule；与 Cursor 共用同一实现。
+        std::string tool = name;
+        if (tool == "resolve-rules")
+            tool = "rules";
+        else if (tool == "list-rules")
+            tool = "catalog";
+        else if (tool == "get-rule")
+            tool = "rule";
+        if (tool == "rules") {
             Rulequery rq = rulequeryFromJson(args);
             if (rq.task.empty())
                 rq.task = args.value("query", "");
-            auto matched = resolveRules(rt, rq);
-            json arr = json::array();
-            for (auto const& r : matched)
-                arr.push_back(r.toJson());
-            return textResult(arr.dump(2));
+            // 默认走 decide.compression；显式 compression 可覆盖；无 task 时全保留。
+            float compression = 1.0f;
+            if (args.contains("compression") && args["compression"].is_number()) {
+                compression = args["compression"].get<float>();
+            } else if (!rq.task.empty()) {
+                Decideinput in = decideinputFromJson(args);
+                if (in.task.empty())
+                    in.task = rq.task;
+                compression = rt.decider.decide(in).compression;
+            }
+            return textResult(rulesEnvelope(rt, rq, compression).dump(2));
         }
-        if (name == "catalog") {
+        if (tool == "catalog") {
             json arr = json::array();
             for (auto const& r : rt.rules)
                 arr.push_back({{"name", r.name},
@@ -75,7 +234,7 @@ json callTool(Runtime& rt, std::string const& name, json const& args) {
                                {"enabled", r.enabled}});
             return textResult(arr.dump(2));
         }
-        if (name == "rule") {
+        if (tool == "rule") {
             std::string want = args.value("name", "");
             for (auto const& r : rt.rules)
                 if (r.name == want)
@@ -87,9 +246,18 @@ json callTool(Runtime& rt, std::string const& name, json const& args) {
                                           .dump(2));
             return textResult("rule not found", true);
         }
-        if (name == "search" || name == "recall") {
+        if (tool == "search" || tool == "recall") {
             std::string text = args.value("text", "");
-            std::size_t k = args.value("k", 8);
+            std::size_t k = args.value("k", 0);
+            if (k == 0) {
+                Decideinput in = decideinputFromJson(args);
+                if (in.task.empty())
+                    in.task = text;
+                if (!in.task.empty())
+                    k = rt.decider.topkFor(rt.decider.decide(in).retrieval);
+                else
+                    k = 8;
+            }
             auto vector = rt.encoder.embed(text);
             auto hits = rt.store.search(vector, k);
             json arr = json::array();
@@ -97,7 +265,11 @@ json callTool(Runtime& rt, std::string const& name, json const& args) {
                 arr.push_back({{"id", doc.id}, {"text", doc.text}, {"score", score}, {"meta", doc.meta}});
             return textResult(arr.dump(2));
         }
-        if (name == "upsert") {
+        if (tool == "gate")
+            return textResult(runGate(rt, args).dump(2));
+        if (tool == "observe")
+            return textResult(runObserve(rt, args).dump(2));
+        if (tool == "upsert") {
             Doc doc;
             doc.id = args.value("id", "");
             doc.text = args.value("text", "");
@@ -110,7 +282,7 @@ json callTool(Runtime& rt, std::string const& name, json const& args) {
             }
             return textResult("ok");
         }
-        if (name == "delete") {
+        if (tool == "delete") {
             if (args.contains("ids") && args["ids"].is_array()) {
                 for (auto const& id : args["ids"])
                     if (id.is_string())
@@ -120,7 +292,7 @@ json callTool(Runtime& rt, std::string const& name, json const& args) {
             }
             return textResult("ok");
         }
-        if (name == "decide") {
+        if (tool == "decide") {
             Decideinput in = decideinputFromJson(args);
             if (in.task.empty())
                 in.task = args.value("query", "");
@@ -130,25 +302,96 @@ json callTool(Runtime& rt, std::string const& name, json const& args) {
             Decision d = rt.decider.decideFrom(f);
             return textResult(Deciderecord {f, d}.toJson().dump(2));
         }
-        if (name == "shell")
+        if (tool == "cost") {
+            // 实模解析优先级见 resolveActual；计价 model 与 actual_model 分列。
+            std::string actual;
+            std::string source;
+            if (!resolveActual(args, client, actual, source))
+                return textResult("actual_model required (hook/header/arg)", true);
+            bool cacheHit = false;
+            bool peak = false;
+            if (args.contains("cache_hit") && args["cache_hit"].is_boolean())
+                cacheHit = args["cache_hit"].get<bool>();
+            if (args.contains("peak") && args["peak"].is_boolean())
+                peak = args["peak"].get<bool>();
+            std::uint64_t outTok = 0;
+            if (args.contains("output_tokens") && args["output_tokens"].is_number_unsigned())
+                outTok = args["output_tokens"].get<std::uint64_t>();
+            else if (args.contains("output_tokens") && args["output_tokens"].is_number_integer())
+                outTok = static_cast<std::uint64_t>((std::max)(0, args["output_tokens"].get<int>()));
+
+            Decideinput in = decideinputFromJson(args);
+            if (in.task.empty())
+                in.task = args.value("query", "");
+            Features f {};
+            Decision d {};
+            if (!in.task.empty()) {
+                f = rt.decider.features(in);
+                d = rt.decider.decideFrom(f);
+            } else {
+                d.model = Model::Weak;
+                d.depth = Depth::Shallow;
+                d.retrieval = Retrieval::L0;
+                d.compression = 1.0f;
+                d.confidence = 0.5f;
+            }
+
+            Rulequery rq = rulequeryFromJson(args);
+            if (rq.task.empty())
+                rq.task = in.task;
+            json stats = rulesEnvelope(rt, rq, d.compression);
+            std::string priced = priceModelFrom(d, args.value("model", ""));
+            double inRate = 0, outRate = 0;
+            priceRates(priced, cacheHit, peak, inRate, outRate);
+            double naiveTok = stats.value("naiveTokens", 0.0);
+            double optTok = stats.value("optimizedTokens", 0.0);
+            double naiveCost = roundMoney(naiveTok / 1e6 * inRate);
+            double optCost = roundMoney(optTok / 1e6 * inRate);
+            double outCost = roundMoney(static_cast<double>(outTok) / 1e6 * outRate);
+            json out = {{"naive_input_cost", naiveCost},
+                        {"optimized_input_cost", optCost},
+                        {"saved_input_cost", roundMoney(naiveCost - optCost)},
+                        {"output_cost", outCost},
+                        {"total_cost", roundMoney(optCost + outCost)},
+                        {"cache_hit", cacheHit},
+                        {"peak", peak},
+                        {"actual_model", actual},
+                        {"actual_model_source", source},
+                        {"model", priced},
+                        {"naive_tokens", stats["naiveTokens"]},
+                        {"selected_tokens", stats["selectedTokens"]},
+                        {"optimized_tokens", stats["optimizedTokens"]},
+                        {"output_tokens", outTok},
+                        {"totalRules", stats["totalRules"]},
+                        {"matched", stats["matched"]},
+                        {"decision", d.toJson()},
+                        {"stack", stackOf(rt, d)}};
+            return textResult(out.dump(2));
+        }
+        if (tool == "shell")
             return textResult(rt.shell(args.value("command", "")));
-        if (name == "test") {
+        if (tool == "test") {
             if (fs::exists(rt.workspace() / "CMakeLists.txt"))
                 return textResult(rt.shell("ctest --test-dir build --output-on-failure"));
             return textResult(rt.shell("echo no test runner"));
         }
-        if (name == "status")
+        if (tool == "status")
             return textResult(rt.shell("git status --short"));
-        if (name == "commit")
+        if (tool == "commit")
             return textResult(rt.shell("git commit -am \"" + args.value("message", "api commit") + "\""));
-        if (name == "save") {
+        if (tool == "save") {
+            // 与 observe 对齐：只入队，重活交 Worker；payload 带经验字段。
             auto exp = experienceFromJson(args);
-            auto saved = rt.saveExperience(exp);
-            if (!saved) {
-                char const* msg = saved.error.release();
-                return textResult(msg ? msg : "save failed", true);
-            }
-            return textResult(saved.result.dump(2));
+            json payload = {{"title", exp.title},
+                            {"summary", exp.summary},
+                            {"outcome", exp.outcome},
+                            {"tags", exp.tags},
+                            {"commands", exp.commands},
+                            {"files", exp.files}};
+            json obsArgs = {{"payload", payload}};
+            if (args.contains("id"))
+                obsArgs["id"] = args["id"];
+            return textResult(runObserve(rt, obsArgs).dump(2));
         }
         return textResult(std::string("unknown tool: ") + name, true);
     } catch (...) {
@@ -156,7 +399,7 @@ json callTool(Runtime& rt, std::string const& name, json const& args) {
     }
 }
 
-json mcpHandle(Runtime& rt, json const& req) {
+json mcpHandle(Runtime& rt, json const& req, Mcpclient const& client) {
     json id = req.contains("id") ? req["id"] : json(nullptr);
     std::string method = req.value("method", "");
     json params = req.contains("params") ? req["params"] : json::object();
@@ -169,7 +412,10 @@ json mcpHandle(Runtime& rt, json const& req) {
     };
 
     if (method == "initialize") {
-        return ok({{"protocolVersion", "2024-11-05"},
+        std::string ver = "2024-11-05";
+        if (params.contains("protocolVersion") && params["protocolVersion"].is_string())
+            ver = params["protocolVersion"].get<std::string>();
+        return ok({{"protocolVersion", ver},
                    {"capabilities", {{"tools", json::object()}}},
                    {"serverInfo", {{"name", "api"}, {"version", "0.1.0"}}}});
     }
@@ -182,7 +428,7 @@ json mcpHandle(Runtime& rt, json const& req) {
     if (method == "tools/call") {
         std::string name = params.value("name", "");
         json args = params.contains("arguments") ? params["arguments"] : json::object();
-        return ok(callTool(rt, name, args));
+        return ok(callTool(rt, name, args, client));
     }
     return err(-32601, "method not found: " + method);
 }

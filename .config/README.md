@@ -62,22 +62,47 @@ curl -s http://127.0.0.1:8088/v1/route -H 'content-type: application/json' \
 `chat` / `chat/completions` 会先跑 decide：未显式传 `temperature` 时用决策温度；检索 `k` 与规则裁剪随 `retrieval` / `compression` 变化（分别来自 `decide.topk` / `keep*`）。规则激活：frontmatter `always` / `globs` + task 语义 + `manual`（对齐 apex）。
 嵌入维度随 GGUF 的 `n_embd` 变化。若提示 `index dim mismatch`，删除 `index` / 重建向量库后再 upsert。
 
-## k3s（WSL）
+## k3s（WSL Ubuntu）
 
-清单：`deploy/k3s/api.yaml`。hostPath 挂仓库 + `.local/api` + `.local/lib`（musl 依赖），镜像 `alpine:3.20`。`listen` 须为 `0.0.0.0:8088`。
-
-同一台机器上只能有一个 k3s 占用 `:6443`（mirrored 网络下 Alpine/Ubuntu 会冲突）。用已正常的 **Ubuntu** k3s：
+清单：`deploy/k3s/api.yaml`（Deployment + NodePort + Traefik Ingress）。镜像 `ubuntu:26.04`，hostPath 挂仓库 + `.local/api` + `.local/lib`（glibc 依赖）。`listen` 须为 `0.0.0.0:8088`。`apply.sh` 会把空 `token` 写成 `sk-default`（与 Cursor MCP `Authorization: Bearer sk-default` 对齐）。
 
 ```bash
-# Alpine 编译产物落到共享目录
-mkdir -p /mnt/e/data/USearch/.local/lib
-cp /root/usearch-build/api /mnt/e/data/USearch/.local/api
-cp /usr/lib/libstdc++.so.6 /usr/lib/libgomp.so.1 /usr/lib/libgcc_s.so.1 \
-   /usr/lib/libssl.so.3 /usr/lib/libcrypto.so.3 /mnt/e/data/USearch/.local/lib/
-# Ubuntu WSL
-sed 's/\r$//' deploy/k3s/apply.sh | sh
+# Ubuntu：产物在 /root/usearch-build（勿在 /mnt 上 cmake）。首次编 llama；之后只编改过的 api.cpp。
+# 可选加速：apt install ninja-build ccache
+# 离线 llama：.local/llama-src.tar → $BUILD/_deps/llama-src（跳过 git clone）
+sed 's/\r$//' deploy/k3s/_rebuild.sh | sudo -E sh
+sed 's/\r$//' deploy/k3s/apply.sh | sudo -E sh
 ```
 
-NodePort：`http://127.0.0.1:30088/v1` 、`/mcp`、`/alive`。
+**hosts**：非 mirrored 网络时指向 WSL eth0 IP（`hostname -I | awk '{print $1}'`），不要用 `127.0.0.1`（Traefik LB 绑在 WSL IP 上）：
+
+```text
+192.168.164.162 api.ya.com
+```
+
+**Ingress**（`ingressClassName: traefik`，host `api.ya.com`）：
+
+```bash
+curl -sS http://api.ya.com/alive
+curl -sS http://api.ya.com/v1/models -H 'Authorization: Bearer sk-default'
+curl -sS -X POST http://api.ya.com/mcp \
+  -H 'content-type: application/json' -H 'Authorization: Bearer sk-default' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+**客户端接入**（Bearer `sk-default`）：
+
+- Cursor MCP：`.cursor/mcp.json` → `http://api.ya.com/mcp`
+- Codex MCP：同一 `/mcp`（项目 `.codex/config.toml` 的 `mcp_servers.apex`）
+- Codex LLM：只走 `http://api.ya.com/v1`（`wire_api = responses` → `POST /v1/responses`）
+- 重载 MCP 后应能 `initialize` / `tools/list`（GET SSE 仅发 comment，不再推非法 `data: {}`）
+
+若 Traefik CrashLoop / `api.ya.com:80` 不通（Ubuntu `iptables-nft` + CNI veth 悬空）：
+
+```bash
+sed 's/\r$//' deploy/k3s/fix-net.sh | sudo sh
+```
+
+备用 NodePort：`http://127.0.0.1:30088/v1` 、`/mcp`、`/alive`（鉴权同上）。
 
 可选全量镜像见仓库根 `Dockerfile`。

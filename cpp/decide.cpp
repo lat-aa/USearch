@@ -309,6 +309,9 @@ json Decision::toJson() const {
 
 json Deciderecord::toJson() const {
     // 单对象展平 features+decision，便于轻量遥测 / 日志 grep，无需嵌套解析。
+    json reasons = json::array();
+    for (auto const& r : decision.reasons)
+        reasons.push_back(r);
     return {{"taskLen", features.taskLen},
             {"fileCount", features.fileCount},
             {"complexKeyword", features.complexKeyword},
@@ -321,7 +324,8 @@ json Deciderecord::toJson() const {
             {"retrieval", retrievalName(decision.retrieval)},
             {"compression", decision.compression},
             {"confidence", decision.confidence},
-            {"temperature", decision.temperature}};
+            {"temperature", decision.temperature},
+            {"reasons", std::move(reasons)}};
 }
 
 Hint parseHint(std::string const& s) {

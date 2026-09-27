@@ -1,0 +1,17 @@
+# Codex 接入（本文件 + 仓库根 AGENTS.md；不要去改 .cursor/rules/*.mdc）。
+# LLM → /v1 ；工具 → /mcp。键名服从 Codex schema（允许下划线）。
+
+[features]
+hooks = true
+
+[mcp_servers.apex]
+transport = "streamable_http"
+url = "http://api.ya.com/mcp"
+http_headers = { Authorization = "Bearer sk-default" }
+default_tools_approval_mode = "auto"
+
+[model_providers.rules-gateway]
+name = "rules-gateway"
+base_url = "http://api.ya.com/v1"
+env_key = "RULES_GATEWAY_API_KEY"
+wire_api = "responses"

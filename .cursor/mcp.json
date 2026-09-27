@@ -1,0 +1,11 @@
+﻿{
+  "mcpServers": {
+    "apex": {
+      "type": "http",
+      "url": "http://api.ya.com/mcp",
+      "headers": {
+        "Authorization": "Bearer sk-default"
+      }
+    }
+  }
+}

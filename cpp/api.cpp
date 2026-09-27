@@ -21,6 +21,48 @@
 #include <toml++/toml.hpp>
 
 namespace api {
+namespace {
+
+/** Codex Responses `input` → chat `messages`；缺 role 的片段当 user。 */
+json messagesFromResponses(json const& body) {
+    json messages = json::array();
+    if (body.contains("instructions") && body["instructions"].is_string()) {
+        std::string ins = body["instructions"].get<std::string>();
+        if (!ins.empty())
+            messages.push_back({{"role", "system"}, {"content", ins}});
+    }
+    json input = body.contains("input") ? body["input"] : json();
+    auto push = [&](std::string role, json const& content) {
+        if (role.empty())
+            role = "user";
+        messages.push_back({{"role", std::move(role)}, {"content", content}});
+    };
+    if (input.is_string()) {
+        push("user", input.get<std::string>());
+        return messages;
+    }
+    if (!input.is_array())
+        return messages;
+    for (auto const& item : input) {
+        if (item.is_string()) {
+            push("user", item.get<std::string>());
+            continue;
+        }
+        if (!item.is_object())
+            continue;
+        std::string type = item.value("type", "");
+        if (type == "function_call_output")
+            continue;
+        std::string role = item.value("role", type == "message" ? "user" : "");
+        if (item.contains("content"))
+            push(role, item["content"]);
+        else if (item.contains("text") && item["text"].is_string())
+            push(role.empty() ? "user" : role, item["text"].get<std::string>());
+    }
+    return messages;
+}
+
+} // namespace
 
 void mountOpenai(httplib::Server& svr, Runtime& rt,
                  std::function<bool(httplib::Request const&, httplib::Response&)> gate) {
@@ -29,7 +71,13 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
         if (!gate(req, res))
             return;
         json data = json::array();
-        data.push_back({{"id", rt.encoder.modelId}, {"object", "model"}, {"owned_by", "local"}});
+        auto add = [&](std::string const& id) {
+            data.push_back({{"id", id}, {"object", "model"}, {"owned_by", "local"}});
+        };
+        add(rt.encoder.modelId);
+        // Codex catalog 要看到网关档位名，不能只回本地 GGUF id。
+        add("deepseek-flash");
+        add("deepseek-v4-pro");
         setJson(res, {{"object", "list"}, {"data", data}});
     });
 
@@ -129,6 +177,16 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
         setJson(res, {{"deleted", n}});
     });
 
+    // 前置门控：与 MCP gate 同一管线（answered 时可省上游主 LLM）。
+    svr.Post("/v1/gate", [gate, &rt](httplib::Request const& req, httplib::Response& res) {
+        if (!gate(req, res))
+            return;
+        auto body = json::parse(req.body, nullptr, false);
+        if (body.is_discarded())
+            return setJson(res, {{"error", {{"message", "bad json"}}}}, 400);
+        setJson(res, runGate(rt, body));
+    });
+
     // 路由面：纯决策 + 按 compression 裁剪规则；不加载/不调用 LLM。
     svr.Post("/v1/route", [gate, &rt](httplib::Request const& req, httplib::Response& res) {
         if (!gate(req, res))
@@ -170,8 +228,54 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
         if (!gate(req, res))
             return;
         auto body = json::parse(req.body, nullptr, false);
-        if (body.is_discarded() || !body.contains("messages"))
+        bool responses = req.path.find("/responses") != std::string::npos;
+        if (body.is_discarded())
+            return setJson(res, {{"error", {{"message", "bad json"}}}}, 400);
+        if (responses) {
+            json msgs = messagesFromResponses(body);
+            if (msgs.empty())
+                return setJson(res, {{"error", {{"message", "input required"}}}}, 400);
+            body["messages"] = std::move(msgs);
+            if (body.contains("max_output_tokens") && !body.contains("max_tokens"))
+                body["max_tokens"] = body["max_output_tokens"];
+        }
+        if (!body.contains("messages"))
             return setJson(res, {{"error", {{"message", "messages required"}}}}, 400);
+
+        // /v1 网关内短路：gate answered 则本地直接返回，不跑完整 Pipeline+再生成。
+        if (body.value("gate", true)) {
+            std::string q;
+            for (auto const& m : body["messages"])
+                if (m.value("role", "") != "system")
+                    q += messageText(m["content"]);
+            json gated = runGate(rt, {{"task", q}, {"files", body.value("files", json::array())}});
+            if (gated.value("status", "") == "answered") {
+                std::string reply = gated.value("reply", "");
+                if (responses)
+                    return setJson(res, {{"id", "gate"},
+                                         {"object", "response"},
+                                         {"status", "completed"},
+                                         {"model", body.value("model", rt.encoder.modelId)},
+                                         {"output",
+                                          json::array(
+                                              {{{"type", "message"},
+                                                {"role", "assistant"},
+                                                {"content",
+                                                 json::array({{{"type", "output_text"}, {"text", reply}}})}}})},
+                                         {"gate", gated}});
+                return setJson(res, {{"id", "gate"},
+                                     {"object", "chat.completion"},
+                                     {"model", body.value("model", rt.encoder.modelId)},
+                                     {"choices",
+                                      json::array({{{"index", 0},
+                                                    {"message", {{"role", "assistant"}, {"content", reply}}},
+                                                    {"finish_reason", "stop"}}})},
+                                     {"gate", gated}});
+            }
+            // pack/refuse：把 pack 注入后续 system（主路径仍本地 Nanbeige chat）
+            if (gated.contains("pack"))
+                body["_gatepack"] = gated["pack"];
+        }
 
         json ctx = {{"messages", body["messages"]}, {"query", ""}};
         Decision route {};
@@ -250,7 +354,10 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
         if (!system.empty())
             system.push_back('\n');
         system += "Local knowledge JSON follows.\n";
-        system += json {{"hits", ctx["hits"]}, {"rules", ctx["rules"]}, {"decision", ctx["decision"]}}.dump();
+        json knowledge = {{"hits", ctx["hits"]}, {"rules", ctx["rules"]}, {"decision", ctx["decision"]}};
+        if (body.contains("_gatepack"))
+            knowledge["pack"] = body["_gatepack"];
+        system += knowledge.dump();
 
         std::string modelName = body.value("model", rt.encoder.modelId);
         bool stream = body.value("stream", false);
@@ -272,11 +379,45 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
             res.set_header("Connection", "keep-alive");
             res.set_chunked_content_provider(
                 "text/event-stream",
-                [&rt, system, user, modelName, prevMax, prevTemp](std::size_t, httplib::DataSink& sink) {
+                [&rt, system, user, modelName, prevMax, prevTemp, responses](std::size_t, httplib::DataSink& sink) {
                     auto emit = [&](json const& chunk) {
                         std::string line = "data: " + chunk.dump() + "\n\n";
                         sink.write(line.data(), line.size());
                     };
+                    auto emitEvent = [&](char const* ev, json const& chunk) {
+                        std::string line = std::string("event: ") + ev + "\ndata: " + chunk.dump() + "\n\n";
+                        sink.write(line.data(), line.size());
+                    };
+                    if (responses) {
+                        // Codex wire_api=responses：事件名必须是 response.*，不能冒充 chat.completion。
+                        json created = {{"id", "resp-1"},
+                                        {"object", "response"},
+                                        {"status", "in_progress"},
+                                        {"model", modelName},
+                                        {"output", json::array()}};
+                        emitEvent("response.created", {{"type", "response.created"}, {"response", created}});
+                        std::string acc;
+                        (void)rt.encoder.chat(system, user, [&](std::string_view piece) {
+                            acc.append(piece.data(), piece.size());
+                            emitEvent("response.output_text.delta",
+                                      {{"type", "response.output_text.delta"},
+                                       {"delta", std::string(piece)}});
+                        });
+                        rt.encoder.maxTokens = prevMax;
+                        rt.encoder.temperature = prevTemp;
+                        json done = {{"id", "resp-1"},
+                                     {"object", "response"},
+                                     {"status", "completed"},
+                                     {"model", modelName},
+                                     {"output",
+                                      json::array({{{"type", "message"},
+                                                    {"role", "assistant"},
+                                                    {"content",
+                                                     json::array({{{"type", "output_text"}, {"text", acc}}})}}})}};
+                        emitEvent("response.completed", {{"type", "response.completed"}, {"response", done}});
+                        sink.done();
+                        return true;
+                    }
                     emit({{"id", "chat-1"},
                           {"object", "chat.completion.chunk"},
                           {"model", modelName},
@@ -309,6 +450,19 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
         std::string text = rt.encoder.chat(system, user);
         rt.encoder.maxTokens = prevMax;
         rt.encoder.temperature = prevTemp;
+        if (responses) {
+            setJson(res, {{"id", "resp-1"},
+                          {"object", "response"},
+                          {"status", "completed"},
+                          {"model", modelName},
+                          {"decision", route.toJson()},
+                          {"output",
+                           json::array({{{"type", "message"},
+                                         {"role", "assistant"},
+                                         {"content",
+                                          json::array({{{"type", "output_text"}, {"text", text}}})}}})}});
+            return;
+        }
         setJson(res, {{"id", "chat-1"},
                       {"object", "chat.completion"},
                       {"model", modelName},
@@ -320,6 +474,7 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
     };
     svr.Post("/v1/chat", chat);
     svr.Post("/v1/chat/completions", chat);
+    svr.Post("/v1/responses", chat);
 
     svr.Get("/v1/rules", [gate, &rt](httplib::Request const& req, httplib::Response& res) {
         if (!gate(req, res))
@@ -414,7 +569,7 @@ expected_gt<Config> Config::load(fs::path const& path) {
 
     char const* required[] = {"gguf",   "ctx",      "gpu",     "threads", "pooling", "listen", "index",
                               "base",   "knowledge", "rules",   "workspace", "token",  "shadow", "rate",
-                              "refill", "chat",     "decide"};
+                              "refill", "chat",     "decide",  "gate"};
     for (char const* key : required) {
         if (!root.contains(key))
             return out.failed("config missing required key");
@@ -544,6 +699,44 @@ expected_gt<Config> Config::load(fs::path const& path) {
     if (!asString(d["lexicon"], c.decide.lexicon))
         return failType("decide.lexicon must be string");
 
+    auto* gateTbl = root["gate"].as_table();
+    if (!gateTbl)
+        return out.failed("config gate must be table");
+    char const* gateKeys[] = {"threshold", "l2", "cachek", "reflect", "minevid",
+                              "wevid", "wself", "packtok", "minlen"};
+    for (char const* key : gateKeys) {
+        if (!gateTbl->contains(key))
+            return out.failed("config gate missing required key");
+    }
+    toml::table& g = *gateTbl;
+    if (!asF64(g["threshold"], f64))
+        return failType("gate.threshold must be number");
+    c.gate.threshold = static_cast<float>(f64);
+    if (!asF64(g["l2"], f64))
+        return failType("gate.l2 must be number");
+    c.gate.l2 = static_cast<float>(f64);
+    if (!asI64(g["cachek"], i64) || i64 <= 0)
+        return failType("gate.cachek must be > 0");
+    c.gate.cachek = static_cast<std::size_t>(i64);
+    if (!asI64(g["reflect"], i64) || i64 < 0 || i64 > 2)
+        return failType("gate.reflect must be 0..2");
+    c.gate.reflect = static_cast<int>(i64);
+    if (!asF64(g["minevid"], f64))
+        return failType("gate.minevid must be number");
+    c.gate.minevid = static_cast<float>(f64);
+    if (!asF64(g["wevid"], f64))
+        return failType("gate.wevid must be number");
+    c.gate.wevid = static_cast<float>(f64);
+    if (!asF64(g["wself"], f64))
+        return failType("gate.wself must be number");
+    c.gate.wself = static_cast<float>(f64);
+    if (!asI64(g["packtok"], i64) || i64 <= 0)
+        return failType("gate.packtok must be > 0");
+    c.gate.packtok = static_cast<std::size_t>(i64);
+    if (!asI64(g["minlen"], i64) || i64 <= 0)
+        return failType("gate.minlen must be > 0");
+    c.gate.minlen = static_cast<std::size_t>(i64);
+
     if (c.gguf.empty() || c.listen.empty() || c.index.empty() || c.base.empty() || c.knowledge.empty() ||
         c.rules.empty() || c.workspace.empty() || c.pooling.empty())
         return out.failed("config path or pooling must be non-empty");
@@ -635,7 +828,7 @@ expected_gt<json> Runtime::saveExperience(Experience const& exp) {
     Doc doc;
     doc.id = id;
     doc.text = exp.title + "\n" + exp.summary;
-    doc.meta = {{"path", path.result}, {"kind", "experience"}};
+    doc.meta = {{"path", path.result}, {"kind", "memory"}};
     auto vector = encoder.embed(doc.text);
     if (error_t err = store.upsert(std::move(doc), vector); err)
         return out.failed(err.release());

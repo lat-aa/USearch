@@ -59,6 +59,7 @@ if (USEARCH_BUILD_API)
         http.cpp
         mcp.cpp
         decide.cpp
+        gate.cpp
     )
     setup_target(api)
     target_compile_features(api PRIVATE cxx_std_17)

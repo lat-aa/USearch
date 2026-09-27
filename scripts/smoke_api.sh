@@ -50,7 +50,24 @@ curl -fsS --max-time 30 "$BASE/v1/embeddings" -H 'Content-Type: application/json
 curl -fsS --max-time 60 "$BASE/v1/chat/completions" -H 'Content-Type: application/json' \
   -d '{"messages":[{"role":"user","content":"ping"}]}' >/tmp/usearch_chat.json
 curl -fsS --max-time 30 -X POST "$BASE/mcp" -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' >/tmp/usearch_mcp.json
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}' \
+  >/tmp/usearch_mcp_init.json
+curl -fsS --max-time 10 -X POST "$BASE/mcp" -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' -o /tmp/usearch_mcp_inited.txt -w '%{http_code}' \
+  | tee /tmp/usearch_mcp_inited.code
+echo
+curl -fsS --max-time 30 -X POST "$BASE/mcp" -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' >/tmp/usearch_mcp.json
+# GET SSE must not emit JSON-RPC `data: {...}` stubs (Cursor rejects).
+curl -fsS --max-time 5 -X GET "$BASE/mcp" -H 'Accept: text/event-stream' -H 'Authorization: Bearer '"${TOKEN:-}" \
+  >/tmp/usearch_mcp_sse.txt || true
+if grep -q '^data: {' /tmp/usearch_mcp_sse.txt 2>/dev/null; then
+  echo "mcp GET SSE leaked JSON-RPC data frame" >&2
+  cat /tmp/usearch_mcp_sse.txt >&2
+  exit 1
+fi
 
 python3 - <<'PY'
 import json
@@ -58,8 +75,12 @@ emb = json.load(open("/tmp/usearch_emb.json"))
 assert emb["data"][0]["embedding"], "empty embedding"
 chat = json.load(open("/tmp/usearch_chat.json"))
 assert chat["choices"][0]["message"]["content"], "empty chat"
+init = json.load(open("/tmp/usearch_mcp_init.json"))
+assert init["result"]["protocolVersion"], "initialize failed"
 mcp = json.load(open("/tmp/usearch_mcp.json"))
 assert len(mcp["result"]["tools"]) >= 1, "no mcp tools"
+code = open("/tmp/usearch_mcp_inited.code").read().strip()
+assert code == "202", f"notifications/initialized expected 202 got {code}"
 print("smoke ok", "dim", len(emb["data"][0]["embedding"]), "tools", len(mcp["result"]["tools"]))
 PY
 

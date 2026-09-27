@@ -90,6 +90,8 @@ int serve(Runtime& rt) {
     }
 
     httplib::Server svr;
+    // 沉淀 Worker：领取 queue → Nanbeige 蒸馏 → 写 memory（用户路径不阻塞）。
+    rt.startWorker();
     // 默认任务队列；自定义 ThreadPool(1) 在 keep-alive 下易踩死锁/崩溃。
     Bucket bucket(rt.config.rate, rt.config.refill);
     std::mutex bucketMutex;
@@ -127,38 +129,75 @@ int serve(Runtime& rt) {
 
     mountOpenai(svr, rt, gate);
 
+    // Streamable HTTP MCP (Cursor / Codex):
+    // GET opens optional SSE for server→client. Never emit `data: {}` (invalid JSON-RPC).
+    // POST carries JSON-RPC; notifications (no id) → 202.
     svr.Get("/mcp", [&](httplib::Request const& req, httplib::Response& res) {
         if (!gate(req, res))
             return;
-        res.set_header("Content-Type", "text/event-stream");
+        auto accept = req.get_header_value("Accept");
+        if (accept.find("text/event-stream") == std::string::npos) {
+            res.status = 405;
+            res.set_header("Allow", "POST");
+            res.set_content("SSE requires Accept: text/event-stream", "text/plain");
+            return;
+        }
         res.set_header("Cache-Control", "no-cache");
-        res.set_header("mcp-session-id", "1");
-        res.status = 200;
-        res.set_content("event: message\ndata: {}\n\n", "text/event-stream");
+        res.set_header("Connection", "keep-alive");
+        res.set_header("Mcp-Session-Id", "1");
+        // Comment-only SSE frames are ignored by JSON-RPC parsers (no event/data message).
+        res.set_chunked_content_provider("text/event-stream", [](std::size_t, httplib::DataSink& sink) {
+            char const open[] = ": connected\n\n";
+            sink.write(open, sizeof(open) - 1);
+            sink.done();
+            return true;
+        });
     });
 
     svr.Post("/mcp", [&](httplib::Request const& req, httplib::Response& res) {
         if (!gate(req, res))
             return;
         auto body = json::parse(req.body, nullptr, false);
-        if (body.is_discarded())
-            return setJson(res, {{"jsonrpc", "2.0"}, {"error", {{"code", -32700}, {"message", "parse error"}}}});
-        res.set_header("mcp-session-id", "1");
-        if (!body.contains("id")) {
-            res.status = 202;
-            res.set_content("", "text/plain");
-            if (body.contains("method"))
-                mcpHandle(rt, body);
+        if (body.is_discarded()) {
+            setJson(res,
+                    {{"jsonrpc", "2.0"},
+                     {"id", nullptr},
+                     {"error", {{"code", -32700}, {"message", "parse error"}}}});
             return;
         }
-        setJson(res, mcpHandle(rt, body));
+        // 头里的实模作 hook/显式参数之外的回退；每请求重读，避免进程级缓存旧名。
+        Mcpclient client;
+        client.actualModel = req.get_header_value("X-Apex-Actual-Model");
+        client.actualModelSource = req.get_header_value("X-Apex-Actual-Model-Source");
+        res.set_header("Mcp-Session-Id", "1");
+        // JSON-RPC notification: no id → 202, no body.
+        if (!body.contains("id") || body["id"].is_null()) {
+            if (body.contains("method"))
+                (void)mcpHandle(rt, body, client);
+            res.status = 202;
+            res.set_content("", "text/plain");
+            return;
+        }
+        auto accept = req.get_header_value("Accept");
+        json out = mcpHandle(rt, body, client);
+        // Prefer JSON; wrap as SSE only when client asks for stream and not JSON.
+        if (accept.find("text/event-stream") != std::string::npos &&
+            accept.find("application/json") == std::string::npos) {
+            res.set_header("Cache-Control", "no-cache");
+            std::string frame = "event: message\ndata: " + out.dump() + "\n\n";
+            res.set_content(frame, "text/event-stream");
+            return;
+        }
+        setJson(res, out);
     });
 
     std::printf("api 监听 http://%s:%d\n", host.c_str(), port);
     if (!svr.listen(host, port)) {
         std::fprintf(stderr, "api: 监听失败\n");
+        rt.stopWorker();
         return 1;
     }
+    rt.stopWorker();
     return 0;
 }
 

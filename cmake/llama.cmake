@@ -1,6 +1,12 @@
 include(FetchContent)
 
-find_package(CUDAToolkit QUIET)
+# WSL PATH often exposes Windows nvcc.exe; that cannot compile the Linux api.
+find_program(_usearch_nvcc nvcc)
+if (_usearch_nvcc MATCHES "\\.exe$")
+    message(STATUS "llama.cpp: ignore Windows nvcc.exe (${_usearch_nvcc})")
+else ()
+    find_package(CUDAToolkit QUIET)
+endif ()
 if (CUDAToolkit_FOUND)
     set(GGML_CUDA
         ON
@@ -43,6 +49,16 @@ set(GGML_NATIVE
     OFF
     CACHE BOOL "" FORCE
 )
+
+# Prefer an unpacked tree (Linux FS). Git clone of llama.cpp is the slow path.
+if(DEFINED ENV{LLAMA_SRC} AND EXISTS "$ENV{LLAMA_SRC}/CMakeLists.txt")
+    set(FETCHCONTENT_SOURCE_DIR_LLAMA "$ENV{LLAMA_SRC}")
+elseif(NOT FETCHCONTENT_SOURCE_DIR_LLAMA AND EXISTS "${CMAKE_BINARY_DIR}/_deps/llama-src/CMakeLists.txt")
+    set(FETCHCONTENT_SOURCE_DIR_LLAMA "${CMAKE_BINARY_DIR}/_deps/llama-src")
+endif()
+if(FETCHCONTENT_SOURCE_DIR_LLAMA)
+    message(STATUS "llama.cpp: SOURCE_DIR ${FETCHCONTENT_SOURCE_DIR_LLAMA} (skip git clone)")
+endif()
 
 FetchContent_Declare(
     llama
