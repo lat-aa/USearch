@@ -53,18 +53,19 @@ jobs:
         run: git submodule update --init --recursive
       - name: Build C++
         run: |
-          sudo apt update
-          sudo apt install -y cmake build-essential libjemalloc-dev libomp-dev
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libjemalloc-dev libomp-dev
           cmake -B build_artifacts \
             -D CMAKE_BUILD_TYPE=RelWithDebInfo \
             -D USEARCH_BUILD_TEST_CPP=1 \
             -D USEARCH_BUILD_BENCH_CPP=1 \
             -D USEARCH_USE_OPENMP=1 \
             -D USEARCH_USE_NUMKONG=1 \
-            -D USEARCH_USE_JEMALLOC=1
+            -D USEARCH_USE_JEMALLOC=1 \
+            -D USEARCH_SANITIZE_DEBUG=OFF
           cmake --build build_artifacts --config RelWithDebInfo
-      - name: Test C++
-        run: build_artifacts/test_cpp
+      - name: Test C++ (ctest)
+        run: ctest --test-dir build_artifacts --output-on-failure -L unit --timeout 600
 
   test_ubuntu_clang:
     name: Ubuntu (Clang)
@@ -79,17 +80,183 @@ jobs:
         run: git submodule update --init --recursive
       - name: Build C++
         run: |
-          sudo apt update
-          sudo apt install -y cmake build-essential clang libomp-dev
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential clang libomp-dev
           cmake -B build_artifacts \
             -D CMAKE_BUILD_TYPE=RelWithDebInfo \
             -D USEARCH_BUILD_TEST_CPP=1 \
             -D USEARCH_BUILD_BENCH_CPP=1 \
             -D USEARCH_USE_OPENMP=1 \
-            -D USEARCH_USE_NUMKONG=1
+            -D USEARCH_USE_NUMKONG=1 \
+            -D USEARCH_SANITIZE_DEBUG=OFF
           cmake --build build_artifacts --config RelWithDebInfo
-      - name: Test C++
-        run: build_artifacts/test_cpp
+      - name: Test C++ (ctest)
+        run: ctest --test-dir build_artifacts --output-on-failure -L unit --timeout 600
+
+  test_asan:
+    name: Ubuntu (ASan+UBSan)
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang
+      CXX: clang++
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Pull Git submodules
+        run: git submodule update --init --recursive
+      - name: Build with sanitizers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential clang libomp-dev
+          cmake -B build_asan \
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+            -D USEARCH_BUILD_TEST_CPP=1 \
+            -D USEARCH_BUILD_BENCH_CPP=0 \
+            -D USEARCH_USE_NUMKONG=1 \
+            -D USEARCH_ENABLE_ASAN=ON \
+            -D USEARCH_ENABLE_UBSAN=ON \
+            -D USEARCH_SANITIZE_DEBUG=OFF
+          cmake --build build_asan --config RelWithDebInfo -j$(nproc)
+      - name: ctest under ASan
+        run: ctest --test-dir build_asan --output-on-failure -L unit --timeout 900
+
+  test_tsan:
+    name: Ubuntu (TSan)
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang
+      CXX: clang++
+      TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Pull Git submodules
+        run: git submodule update --init --recursive
+      - name: Build with TSan
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential clang libomp-dev
+          cmake -B build_tsan \
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+            -D USEARCH_BUILD_TEST_CPP=1 \
+            -D USEARCH_BUILD_BENCH_CPP=0 \
+            -D USEARCH_USE_NUMKONG=0 \
+            -D USEARCH_USE_OPENMP=0 \
+            -D USEARCH_ENABLE_TSAN=ON \
+            -D USEARCH_SANITIZE_DEBUG=OFF
+          cmake --build build_tsan --config RelWithDebInfo -j$(nproc)
+      - name: ctest under TSan
+        run: ctest --test-dir build_tsan --output-on-failure -L unit --timeout 1200
+
+  test_fuzz:
+    name: Ubuntu (libFuzzer)
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Pull Git submodules
+        run: git submodule update --init --recursive
+      - name: Build fuzz_index
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang
+          cmake -B build_fuzz \
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+            -D USEARCH_BUILD_TEST_CPP=1 \
+            -D USEARCH_BUILD_BENCH_CPP=0 \
+            -D USEARCH_BUILD_FUZZ=ON \
+            -D USEARCH_USE_NUMKONG=0 \
+            -D USEARCH_SANITIZE_DEBUG=OFF \
+            -D USEARCH_ENABLE_ASAN=OFF \
+            -D USEARCH_ENABLE_UBSAN=OFF
+          cmake --build build_fuzz --target fuzz_index -j$(nproc)
+      - name: Fuzz smoke (60s)
+        run: build_fuzz/fuzz_index -max_total_time=60 -timeout=10 -rss_limit_mb=2048
+
+  test_static:
+    name: Static analysis
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Pull Git submodules
+        run: git submodule update --init --recursive
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-tidy cppcheck cmake clang
+      - name: cppcheck
+        run: |
+          cppcheck --enable=warning,performance,portability --error-exitcode=1 --inline-suppr \
+            --suppress=missingIncludeSystem --suppress=unusedFunction \
+            -I include -I stringzilla/include \
+            include/usearch/index.hpp \
+            include/usearch/index_dense.hpp \
+            include/usearch/index_plugins.hpp \
+            cpp/fuzz_index.cpp
+      - name: Configure compile_commands
+        run: |
+          cmake -B build_tidy \
+            -D CMAKE_BUILD_TYPE=Debug \
+            -D CMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -D CMAKE_CXX_COMPILER=clang++ \
+            -D USEARCH_BUILD_TEST_CPP=1 \
+            -D USEARCH_BUILD_FUZZ=ON \
+            -D USEARCH_BUILD_BENCH_CPP=0 \
+            -D USEARCH_USE_NUMKONG=0 \
+            -D USEARCH_SANITIZE_DEBUG=OFF
+      - name: clang-tidy (CI hard gate)
+        run: |
+          clang-tidy -p build_tidy \
+            --config-file=.clang-tidy.ci \
+            cpp/fuzz_index.cpp \
+            --warnings-as-errors='*' \
+            --header-filter='include/usearch/.*' \
+            -extra-arg=-Wno-unknown-warning-option
+
+  test_coverage:
+    name: Coverage (GCC)
+    runs-on: ubuntu-24.04
+    env:
+      CC: gcc
+      CXX: g++
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Pull Git submodules
+        run: git submodule update --init --recursive
+      - name: Build with coverage
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ lcov
+          cmake -B build_cov \
+            -D CMAKE_BUILD_TYPE=Debug \
+            -D USEARCH_BUILD_TEST_CPP=1 \
+            -D USEARCH_BUILD_BENCH_CPP=0 \
+            -D USEARCH_USE_NUMKONG=0 \
+            -D USEARCH_ENABLE_COVERAGE=ON \
+            -D USEARCH_SANITIZE_DEBUG=OFF
+          cmake --build build_cov -j$(nproc)
+      - name: Run tests
+        run: ctest --test-dir build_cov --output-on-failure -L unit --timeout 600
+      - name: lcov report
+        run: |
+          lcov --capture --directory build_cov --output-file coverage.info --ignore-errors mismatch,gcov || \
+            lcov --capture --directory build_cov --output-file coverage.info
+          lcov --remove coverage.info '/usr/*' '*/stringzilla/*' '*/numkong/*' --output-file coverage.info || true
+          lcov --list coverage.info | tee coverage.txt
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: |
+            coverage.info
+            coverage.txt
 
   test_macos:
     name: macOS
@@ -107,10 +274,11 @@ jobs:
             -D CMAKE_BUILD_TYPE=RelWithDebInfo \
             -D USEARCH_BUILD_TEST_CPP=1 \
             -D USEARCH_BUILD_BENCH_CPP=1 \
-            -D USEARCH_USE_NUMKONG=1
+            -D USEARCH_USE_NUMKONG=1 \
+            -D USEARCH_SANITIZE_DEBUG=OFF
           cmake --build build_artifacts --config RelWithDebInfo
-      - name: Test C++
-        run: build_artifacts/test_cpp
+      - name: Test C++ (ctest)
+        run: ctest --test-dir build_artifacts --output-on-failure -L unit --timeout 600
 
   test_windows_x86:
     name: Windows (X86)
@@ -126,7 +294,40 @@ jobs:
             -D CMAKE_BUILD_TYPE=RelWithDebInfo `
             -D USEARCH_BUILD_TEST_CPP=1 `
             -D USEARCH_BUILD_BENCH_CPP=1 `
-            -D USEARCH_USE_NUMKONG=1
+            -D USEARCH_USE_NUMKONG=1 `
+            -D USEARCH_SANITIZE_DEBUG=OFF
           cmake --build build_artifacts --config RelWithDebInfo
-      - name: Test C++
-        run: .\build_artifacts\test_cpp.exe
+      - name: Test C++ (ctest)
+        run: ctest --test-dir build_artifacts --output-on-failure -C RelWithDebInfo -L unit --timeout 600
+
+  # API smoke pulls llama.cpp — keep as required for top-tier integration.
+  test_api_smoke:
+    name: API smoke (ASan)
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang
+      CXX: clang++
+      ASAN_OPTIONS: detect_leaks=0:halt_on_error=1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Pull Git submodules
+        run: git submodule update --init --recursive
+      - name: Build api with ASan
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang libomp-dev python3 curl
+          cmake -B build_api \
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+            -D USEARCH_BUILD_TEST_CPP=0 \
+            -D USEARCH_BUILD_BENCH_CPP=0 \
+            -D USEARCH_BUILD_API=ON \
+            -D USEARCH_USE_NUMKONG=0 \
+            -D USEARCH_ENABLE_ASAN=ON \
+            -D USEARCH_ENABLE_UBSAN=ON \
+            -D USEARCH_SANITIZE_DEBUG=OFF
+          cmake --build build_api --target api -j$(nproc)
+      - name: Smoke HTTP/MCP
+        run: |
+          chmod +x scripts/smoke_api.sh
+          API_BIN="$PWD/build_api/api" ./scripts/smoke_api.sh

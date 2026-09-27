@@ -1,0 +1,19 @@
+# CI hard-gate clang-tidy: high-signal checks only (full local set remains in .clang-tidy).
+Checks: 'clang-analyzer-*,
+         bugprone-*,
+         -bugprone-easily-swappable-parameters,
+         -bugprone-exception-escape,
+         -bugprone-unchecked-optional-access,
+         cert-*,
+         -cert-err58-cpp,
+         -cert-msc32-c,
+         -cert-msc51-cpp,
+         performance-*,
+         -performance-avoid-endl,
+         modernize-use-nullptr,
+         modernize-use-override,
+         readability-misleading-indentation'
+
+WarningsAsErrors: '*'
+HeaderFilterRegex: 'include/usearch/.*'
+FormatStyle: none

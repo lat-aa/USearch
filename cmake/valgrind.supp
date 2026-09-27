@@ -1,0 +1,22 @@
+# Valgrind suppressions for third-party / CRT noise only — keep empty of USearch leaks.
+{
+   glibc_dl_init
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   obj:*/ld-*.so*
+}
+{
+   libstdc++_pool
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   obj:*/libstdc++.so*
+}
+{
+   jemalloc_bootstrap
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   obj:*/libjemalloc.so*
+}

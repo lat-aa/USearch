@@ -35,6 +35,7 @@ option(USEARCH_BUILD_API "Compile the C++ HTTP/MCP api binary" OFF)
 # Includes
 set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake ${CMAKE_MODULE_PATH})
 include(ExternalProject)
+include(sanitizers)
 
 # Configuration
 include(GNUInstallDirs)
@@ -220,12 +221,7 @@ function (setup_target TARGET_NAME)
                     $<$<CONFIG:RELWITHDEBINFO>:-O3
                     -g>
                     $<$<CONFIG:DEBUG>:-O0
-                    -g
-                    -fsanitize=address
-                    -fsanitize=leak
-                    -fsanitize=alignment
-                    -fsanitize=undefined
-                    >
+                    -g>
                     -ffast-math
                     -fPIC
                     -Wall
@@ -237,17 +233,7 @@ function (setup_target TARGET_NAME)
                     -pedantic
                     -fdiagnostics-color=always
         )
-        target_link_options(
-            ${TARGET_NAME}
-            PRIVATE
-            $<$<CONFIG:DEBUG>:-g
-            -fsanitize=address
-            -fsanitize=leak
-            -fsanitize=alignment
-            -fsanitize=undefined
-            >
-            -fPIC
-        )
+        target_link_options(${TARGET_NAME} PRIVATE -fPIC)
 
         if (USEARCH_USE_OPENMP)
             target_link_libraries(${TARGET_NAME} PRIVATE OpenMP::OpenMP_CXX)
@@ -262,37 +248,14 @@ function (setup_target TARGET_NAME)
                     $<$<CONFIG:RELWITHDEBINFO>:-O3
                     -g>
                     $<$<CONFIG:DEBUG>:-O0
-                    -g
-                    -fsanitize=address
-                    -fsanitize=alignment
-                    -fsanitize=undefined
-                    >
+                    -g>
                     -ffast-math
                     -fPIC
                     -pedantic
                     -Wfatal-errors
                     -fcolor-diagnostics
         )
-        target_link_options(
-            ${TARGET_NAME}
-            PRIVATE
-            $<$<CONFIG:DEBUG>:-g
-            -fsanitize=address
-            -fsanitize=alignment
-            -fsanitize=undefined
-            >
-            -fPIC
-        )
-
-        # Check if the compiler is AppleClang, and if not, add the leak sanitizer
-        if (CMAKE_HOST_SYSTEM_NAME MATCHES "Darwin")
-            # It's likely AppleClang
-            # Adjust options as needed for AppleClang
-        else ()
-            # It's likely LLVM Clang
-            target_compile_options(${TARGET_NAME} PRIVATE $<$<CONFIG:DEBUG>:-fsanitize=leak>)
-            target_link_options(${TARGET_NAME} PRIVATE $<$<CONFIG:DEBUG>:-fsanitize=leak>)
-        endif ()
+        target_link_options(${TARGET_NAME} PRIVATE -fPIC)
 
         if (USEARCH_USE_OPENMP)
             target_link_libraries(${TARGET_NAME} PRIVATE OpenMP::OpenMP_CXX)
@@ -324,6 +287,8 @@ function (setup_target TARGET_NAME)
                                    /DEBUG>
         )
     endif ()
+
+    usearch_apply_sanitizers(${TARGET_NAME})
 
     target_include_directories(${TARGET_NAME} PRIVATE ${USEARCH_HEADER_INCLUDES})
     set_target_properties(${TARGET_NAME} PROPERTIES CXX_STANDARD 17)
@@ -422,6 +387,6 @@ endif ()
 # https://stackoverflow.com/questions/30250494/ctest-not-detecting-tests.
 enable_testing()
 
-if (${USEARCH_BUILD_TEST_CPP} OR ${USEARCH_BUILD_BENCH_CPP} OR ${USEARCH_BUILD_API})
+if (${USEARCH_BUILD_TEST_CPP} OR ${USEARCH_BUILD_BENCH_CPP} OR ${USEARCH_BUILD_API} OR ${USEARCH_BUILD_FUZZ})
     add_subdirectory(cpp)
 endif ()
