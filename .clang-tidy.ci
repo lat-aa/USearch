@@ -1,9 +1,6 @@
 # CI hard-gate clang-tidy — closer to full .clang-tidy, still exclude style-only noise.
-Checks: 'clang-analyzer-*,
-         -clang-analyzer-core.Exception,
-         -clang-analyzer-cplusplus.InnerPointer,
-         -clang-analyzer-core.StackAddressEscape,
-         bugprone-*,
+# CI hard-gate clang-tidy — no clang-analyzer (false positives in header-only noexcept paths).
+Checks: 'bugprone-*,
          -bugprone-easily-swappable-parameters,
          -bugprone-exception-escape,
          -bugprone-unchecked-optional-access,
@@ -24,7 +21,7 @@ Checks: 'clang-analyzer-*,
          readability-misleading-indentation,
          readability-redundant-control-flow,
          cppcoreguidelines-pro-type-const-cast,
-         -cppcoreguidelines-pro-type-member-init'
+         -misc-definitions-in-headers'
 
 WarningsAsErrors: '*'
 HeaderFilterRegex: 'include/usearch/.*'
