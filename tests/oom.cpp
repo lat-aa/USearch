@@ -1,6 +1,6 @@
 /**
- * @file oom_insert.cpp
- * @brief 验证 add() 在图扩展 OOM 时返回错误并回滚（注入失败分配器）。
+ *  @file       oom.cpp
+ *  @brief      注入失败分配器，断言 add 在图扩展 OOM 时返回错误并回滚边。
  */
 #include <usearch/index.hpp>
 
@@ -111,7 +111,7 @@ int main() {
         auto r = index.add(2, vecs[2].data(), metric);
         if (r) {
             r.error.release();
-            std::puts("oom_insert: OOM not triggered on this host (skipped)");
+            std::puts("oom: OOM not triggered on this host (skipped)");
             return 0;
         }
         char const* msg = r.error.what();
@@ -123,6 +123,6 @@ int main() {
     }
     assert(index.size() == 2);
 
-    std::puts("oom_insert: ok");
+    std::puts("oom: ok");
     return 0;
 }
