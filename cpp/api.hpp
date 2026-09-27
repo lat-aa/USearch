@@ -288,24 +288,6 @@ std::string compressSections(std::string_view body, std::string_view task, std::
 /** 按激活档分配 section 配额：Always=满额，Semantic 按分占比，其余=半额起。 */
 int ruleSections(Activation act, float score, float scoreSum, int baseSections) noexcept;
 
-struct Runtime {
-    fs::path root;
-    Config config;
-    Encoder encoder;
-    Store store;
-    std::vector<Rule> rules;
-    Decider decider;
-    Runtime() = default;
-    Runtime(Runtime const&) = delete;
-    Runtime& operator=(Runtime const&) = delete;
-    Runtime(Runtime&&) noexcept = default;
-    Runtime& operator=(Runtime&&) noexcept = default;
-    static expected_gt<Runtime> open(fs::path const& root);
-    fs::path workspace() const;
-    std::string shell(std::string const& command) const;
-    expected_gt<json> saveExperience(Experience const& exp);
-};
-
 bool authOk(Runtime const& rt, httplib::Request const& req);
 void setJson(httplib::Response& res, json const& body, int status = 200);
 std::string messageText(json const& content);
@@ -414,6 +396,11 @@ struct Deciderecord {
  * 确定性级联决策器。全部阈值与词表来自 @ref Decideconfig（启动时载入）。
  * 无 I/O、无全局可变状态；同 Features → 同 Decision。
  */
+struct Lexicon {
+    std::vector<std::string> complex;
+    std::vector<std::string> medium;
+};
+
 struct Decider {
     std::uint64_t speedMs = 0;
     std::uint8_t highComplexity = 0;
@@ -442,12 +429,25 @@ struct Decider {
     int sectionsFor(float compression) const noexcept;
 };
 
-/** 词表：`complex` / `medium` 字符串数组，相对仓库根的单一 TOML。 */
-struct Lexicon {
-    std::vector<std::string> complex;
-    std::vector<std::string> medium;
-};
 expected_gt<Lexicon> loadLexicon(fs::path const& path);
+
+struct Runtime {
+    fs::path root;
+    Config config;
+    Encoder encoder;
+    Store store;
+    std::vector<Rule> rules;
+    Decider decider;
+    Runtime() = default;
+    Runtime(Runtime const&) = delete;
+    Runtime& operator=(Runtime const&) = delete;
+    Runtime(Runtime&&) noexcept = default;
+    Runtime& operator=(Runtime&&) noexcept = default;
+    static expected_gt<Runtime> open(fs::path const& root);
+    fs::path workspace() const;
+    std::string shell(std::string const& command) const;
+    expected_gt<json> saveExperience(Experience const& exp);
+};
 
 /** 解析 route/decide 请求体；键名：task|query、files、latency、hints。 */
 Decideinput decideinputFromJson(json const& body);
