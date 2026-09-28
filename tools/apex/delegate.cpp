@@ -121,7 +121,7 @@ std::string delegateToUpstream(Runtime& rt, json const& messages, bool responses
     if (reply.empty())
         reply = up->body;
 
-    // 回合真值块（统计块 + 📝/📥/📤）：上游路径同样确定性追加，不依赖模型自觉照抄。
+    // 回合真值块（统计块 + 📝/♻️）：上游路径同样确定性追加，不依赖模型自觉照抄。
     std::string const shown = reply;
     if (blockFor) {
         std::string const tail = blockFor(usage, shown);

@@ -241,7 +241,7 @@ function getLastcall(base, token) {
     } catch (_) {}
   }
   // 回合后当轮补块：presync 已注入输入侧块（模型照抄），这里补上"只有回合结束才知道"的
-  // 真值：实际输入 token / 输出 token / 输出内容。默认开（APEX_POSTSYNC_BLOCK=0 关）。
+  // 真值：实际输入 token / 输出 token / 省下的主 LLM api 调用。默认开（APEX_POSTSYNC_BLOCK=0 关）。
   try {
     const wantBlock = process.env.APEX_POSTSYNC_BLOCK !== '0';
     const block = typeof stash.block === 'string' ? stash.block : '';
@@ -254,16 +254,21 @@ function getLastcall(base, token) {
         outLines.push(
           '📝 输入 ' + (lc.inTok || 0) + ' tok · 输出 ' + (lc.outTok || 0) + ' tok' + (lc.real === true ? '' : '(est)')
         );
-        const inj = String(stash.inject || '').replace(/\s+/g, ' ').trim();
-        if (inj) outLines.push('📥 输入内容「json」 ' + JSON.stringify(inj.slice(0, 200)));
-        let snip = String(lc.replyTrunc || lc.reply || '').trim();
-        const bi = snip.indexOf('⚡ 规则');
-        if (bi !== -1) snip = snip.slice(0, bi).trim();
-        if (snip) outLines.push('📤 输出内容「json」 ' + JSON.stringify(snip));
+        outLines.push(
+          '♻️ 省主 LLM api 调用 **' +
+            (lc.saved || 0) +
+            '** 次（缓存 L1 **' +
+            (lc.savedL1 || 0) +
+            '** · L2 **' +
+            (lc.savedL2 || 0) +
+            '** · 本地直答 **' +
+            (lc.savedLocal || 0) +
+            '**）'
+        );
       }
       // ② 输入侧：hook 注入的整块（模型漏抄时才补）
       const hasBlock = answer.includes('⚡ 规则');
-      const hasOut = answer.includes('📥 输入内容');
+      const hasOut = answer.includes('♻️ 省主 LLM');
       const addBlock = !hasBlock && !!block;
       const addOut = !hasOut && outLines.length > 0;
       if (addBlock || addOut) {

@@ -630,14 +630,6 @@ inline void priceRates(std::string const& model, bool cacheHit, bool peak, doubl
 // ---- 七块统计渲染（服务端权威；与 scripts/stats.sh 同格式，供三端 hook 注入）----
 
 /** 用 /v1/presync 的字段渲染七块 markdown。缺失字段写「未上报」，禁止用 0 冒充。 */
-/** 只取模型正文：去掉其后可能附带的统计块（避免 📝 摘要把块再嵌一遍）。 */
-inline std::string replyOnly(std::string const& s) {
-    std::size_t const i = s.find("⚡ 规则");
-    if (i == std::string::npos)
-        return s;
-    std::size_t const e = s.find_last_not_of(" \t\r\n", i);
-    return e == std::string::npos ? std::string() : s.substr(0, e + 1);
-}
 
 /** UTF-8 安全截断到 maxChars 个码点；超长补 `…`（避免截断多字节序列）。 */
 inline std::string truncChars(std::string const& s, std::size_t maxChars) {

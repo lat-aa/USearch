@@ -44,11 +44,21 @@ void writeReply(httplib::Response& res, std::string const& id, std::string const
     replyText(res, id, model, payload, responses, usage);
 }
 
+/** 省下的主 LLM api 调用（累计真值）：L1 精确缓存 + L2 语义缓存 + 本地直答。
+ *  三个计数即 /ready 的 v1.agent.{cache_l1,cache_l2,ok}，不另立口径。 */
+static std::string savedCallsLine(Runtime& rt) {
+    std::uint64_t const l1 = rt.cacheL1.load(std::memory_order_relaxed);
+    std::uint64_t const l2 = rt.cacheL2.load(std::memory_order_relaxed);
+    std::uint64_t const ok = rt.agentOk.load(std::memory_order_relaxed);
+    return "\n♻️ 省主 LLM api 调用 **" + std::to_string(l1 + l2 + ok) + "** 次（缓存 L1 **" + std::to_string(l1) +
+           "** · L2 **" + std::to_string(l2) + "** · 本地直答 **" + std::to_string(ok) + "**）";
+}
+
 /** 统一统计块渲染（presync 与 /v1 回包共用）：真 token / 实时栈 / 人读 corpus / 实际注入。
- *  usage 非空时追加 `📝 输入 · 输出`、`📥 输入内容` 与 `📤 输出内容`（回合结束才知道的真值）。 */
+ *  usage 非空时追加 `📝 输入 · 输出` 与省调用行（回合结束才知道的真值）。 */
 static std::string renderTurnBlock(Runtime& rt, Decision const& d, json const& rulesJson, json const& hitsJson,
-                                   std::string const& inject, json const& usage, std::string const& replyText,
-                                   char const* source, std::string const& routeLabel) {
+                                   std::string const& inject, json const& usage, char const* source,
+                                   std::string const& routeLabel) {
     bool const tokReal = rt.tokensReal();
     auto tok = [&](std::string_view s) -> std::size_t { return tokReal ? rt.encoder.countTokens(s) : estimate(s); };
     std::size_t total = 0, naive = 0, selected = 0, optimized = 0;
@@ -115,27 +125,24 @@ static std::string renderTurnBlock(Runtime& rt, Decision const& d, json const& r
         std::uint64_t const o = usage.value("completion_tokens", usage.value("output_tokens", std::uint64_t{0}));
         out += "\n📝 输入 " + std::to_string(i) + " tok · 输出 " + std::to_string(o) + " tok" +
                (tokReal ? "" : "(est)") + "  ";
-        out += "\n📥 输入内容「json」 " + json(truncChars(inject, 200)).dump();
-        out += "\n📤 输出内容「json」 " + json(replyOnly(replyText)).dump();
+        out += savedCallsLine(rt);
     }
     return out;
 }
 
-/** 回包末尾追块：缺 📝/📥/📤 行就补行；整块也缺就补整块 + 行。返回待追加文本（含前导换行）。 */
+/** 回包末尾追块：缺 `📝 输入`/`♻️ 省主 LLM` 行就补行；整块也缺就补整块 + 行。返回待追加文本（含前导换行）。 */
 static std::string wrapBlock(Runtime& rt, Decision const& d, json const& rulesJson, json const& hitsJson,
                              std::string const& inject, json const& usage, std::string const& shown, char const* source,
                              std::string const& routeLabel) {
-    if (shown.find("📥 输入内容") != std::string::npos)
+    if (shown.find("♻️ 省主 LLM") != std::string::npos)
         return {};
     std::uint64_t const i = usage.value("prompt_tokens", usage.value("input_tokens", std::uint64_t{0}));
     std::uint64_t const o = usage.value("completion_tokens", usage.value("output_tokens", std::uint64_t{0}));
     std::string const lines = "📝 输入 " + std::to_string(i) + " tok · 输出 " + std::to_string(o) + " tok" +
-                              (rt.tokensReal() ? "" : "(est)") + "  \n📥 输入内容「json」 " +
-                              json(truncChars(inject, 200)).dump() + "\n📤 输出内容「json」 " +
-                              json(replyOnly(shown)).dump();
+                              (rt.tokensReal() ? "" : "(est)") + "  " + savedCallsLine(rt);
     if (shown.find("⚡ 规则") != std::string::npos)
         return "\n" + lines;
-    return "\n\n" + renderTurnBlock(rt, d, rulesJson, hitsJson, inject, usage, shown, source, routeLabel);
+    return "\n\n" + renderTurnBlock(rt, d, rulesJson, hitsJson, inject, usage, source, routeLabel);
 }
 void mountOpenai(httplib::Server& svr, Runtime& rt,
                  std::function<bool(httplib::Request const&, httplib::Response&)> gate) {
@@ -657,7 +664,15 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
     svr.Get("/v1/lastcall", [gate, &rt](httplib::Request const& req, httplib::Response& res) {
         if (!gate(req, res))
             return;
-        setJson(res, rt.lastCall.toJson());
+        json lc = rt.lastCall.toJson();
+        std::uint64_t const l1 = rt.cacheL1.load(std::memory_order_relaxed);
+        std::uint64_t const l2 = rt.cacheL2.load(std::memory_order_relaxed);
+        std::uint64_t const ok = rt.agentOk.load(std::memory_order_relaxed);
+        lc["saved"] = l1 + l2 + ok;
+        lc["savedL1"] = l1;
+        lc["savedL2"] = l2;
+        lc["savedLocal"] = ok;
+        setJson(res, lc);
     });
 
     // GET：只读目录（全部规则）；POST：按 task/files/manual 解析命中。

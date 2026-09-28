@@ -175,7 +175,7 @@ function debugTail() { try { return fsm.readFileSync(debugLog, 'utf8').trim().sp
   else bad('回合后补块 Codex', r.out.slice(0, 160));
 }
 
-// 14) 模型已带块 → 只可能追加 📝/📥/📤，绝不重复贴整块
+// 14) 模型已带块 → 只可能追加 📝/♻️，绝不重复贴整块
 {
   const r = runHook('postsync.js',
     { hook_event_name: 'Stop', session_id: 'smoke-block-2', cwd: ROOT, transcript_path: tfPath('with-block') },
