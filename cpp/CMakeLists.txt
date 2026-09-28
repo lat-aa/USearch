@@ -22,7 +22,7 @@ if (USEARCH_BUILD_FUZZ)
     target_compile_options(fuzz_format PRIVATE -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
     target_link_options(fuzz_format PRIVATE -fsanitize=fuzzer,address,undefined)
 
-    # apex agent result 解析 harness：helpers.hpp 纯头 + nlohmann::json，不链 llama/sqlite。
+    # apex agent result 解析 harness：render.hpp 纯头 + nlohmann::json，不链 llama/sqlite。
     if (NOT TARGET nlohmann_json::nlohmann_json)
         include(FetchContent)
         set(JSON_BuildTests OFF CACHE BOOL "" FORCE)

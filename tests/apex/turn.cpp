@@ -2,7 +2,7 @@
  * @file turn.cpp
  * @brief Turnstats 人读 corpus / prompt / 规范消息契约单测（只链 helpers，无 llama）。
  */
-#include "../../tools/apex/helpers.hpp"
+#include "../../tools/apex/render.hpp"
 
 #include <cassert>
 #include <cstdio>

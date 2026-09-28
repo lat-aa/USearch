@@ -2,7 +2,7 @@
  * @file helpers.cpp
  * @brief helpers 纯函数单测（无 Runtime / 无 LLM）。
  */
-#include "../../tools/apex/helpers.hpp"
+#include "../../tools/apex/render.hpp"
 #include "../../tools/apex/slim.hpp"
 
 #include <cassert>

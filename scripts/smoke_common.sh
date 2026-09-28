@@ -117,6 +117,11 @@ smoke_boot() {
     [[ -n "${SMOKE_BASE_DB:-}" ]] || SMOKE_BASE_DB="$SMOKE_TMP/store.sqlite"
     SMOKE_INDEX="$SMOKE_TMP/index.usearch"
     rm -f "$SMOKE_TMP"/store.sqlite* "$SMOKE_INDEX"
+    # 原生 Windows api.exe 不认 MSYS 的 /tmp；写成盘符路径。
+    if command -v cygpath >/dev/null 2>&1; then
+      SMOKE_BASE_DB=$(cygpath -m "$SMOKE_BASE_DB")
+      SMOKE_INDEX=$(cygpath -m "$SMOKE_INDEX")
+    fi
     sed -i.bak -E "s|^base = .*|base = \"$SMOKE_BASE_DB\"|" "$SMOKE_ROOT/.config/config.toml"
     sed -i.bak -E "s|^index = .*|index = \"$SMOKE_INDEX\"|" "$SMOKE_ROOT/.config/config.toml"
   fi
@@ -144,19 +149,18 @@ smoke_boot() {
   uname_s=$(uname -s 2>/dev/null || echo unknown)
   if [[ "$uname_s" == MINGW* || "$uname_s" == MSYS* || "$uname_s" == CYGWIN* ]] &&
     command -v powershell.exe >/dev/null 2>&1; then
-    local win_bin win_root win_log
+    local win_bin win_root win_log win_err
     win_bin=$(cygpath -w "$SMOKE_API_BIN" 2>/dev/null || echo "$SMOKE_API_BIN")
     win_root=$(cygpath -w "$SMOKE_ROOT" 2>/dev/null || echo "$SMOKE_ROOT")
     win_log=$(cygpath -w "$SMOKE_LOG" 2>/dev/null || echo "$SMOKE_LOG")
+    win_err=$(cygpath -w "${SMOKE_LOG}.err" 2>/dev/null || echo "${SMOKE_LOG}.err")
+    # 关键命 powershell -Command + RedirectStandard* 会在 PS 退出后弄死子进程。
+    # 用 cmd /c 包一层持有重定向句柄，再 Start-Process 脱离作业。
     local pid
-    # stdout/stderr 不能同时 Redirect 到同一路径；合并到 .err 再 type 拼日志太重，这里只收 stdout，stderr 进旁路文件。
-    local win_err="${win_log}.err"
     pid=$(powershell.exe -NoProfile -Command \
-      "\$p = Start-Process -FilePath '$win_bin' -ArgumentList 'serve' -WorkingDirectory '$win_root' -RedirectStandardOutput '$win_log' -RedirectStandardError '$win_err' -WindowStyle Hidden -PassThru; Write-Output \$p.Id")
+      "\$arg = '/c \"\"$win_bin\" serve >\"$win_log\" 2>\"$win_err\"\"'; \$p = Start-Process -FilePath 'cmd.exe' -ArgumentList \$arg -WorkingDirectory '$win_root' -WindowStyle Hidden -PassThru; Write-Output \$p.Id")
     pid=$(echo "$pid" | tr -d '\r' | tail -n1)
     echo "$pid" >"$SMOKE_PID_FILE"
-    # 便于 smoke_dump_log：把 .err 追加提示进主日志头
-    echo "# stderr -> $win_err" >>"$SMOKE_LOG"
   else
     (cd "$SMOKE_ROOT" && "$SMOKE_API_BIN" serve) >>"$SMOKE_LOG" 2>&1 &
     echo $! >"$SMOKE_PID_FILE"

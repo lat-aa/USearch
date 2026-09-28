@@ -1,9 +1,9 @@
 /**
- *  @file       upstream.cpp
- *  @brief      上游兜底：本地 agent delegate / 解析失败时，转发到远端 OpenAI 兼容接口。
+ *  @file       delegate.cpp
+ *  @brief      上游兜底：本地 agent delegate 时转发远端 OpenAI 兼容接口。
  */
 #include "api.hpp"
-#include "helpers.hpp"
+#include "render.hpp"
 
 #include <cstdlib>
 #include <httplib.h>

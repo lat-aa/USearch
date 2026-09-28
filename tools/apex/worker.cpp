@@ -1,34 +1,34 @@
 /**
- *  @file       gate.cpp
- *  @brief      observe 入队与 Worker 蒸馏；Turnstats / note* 辅助（前置门控 runGate 已移除）。
+ *  @file       worker.cpp
+ *  @brief      observe 入队与 Worker 蒸馏；Turnstats / note*（请求级 TLS）。
  */
 
 #include "api.hpp"
-#include "helpers.hpp"
+#include "render.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <sstream>
+#include <mutex>
 #include <thread>
 
 namespace api {
-/** 临时改写 Encoder 采样参数，作用域结束自动恢复（gate/worker 共用）。 */
-struct Encoderguard {
-    Encoder& enc;
-    float prevTemp;
-    std::uint32_t prevMax;
-    Encoderguard(Encoder& e, float temp, std::uint32_t maxTok) : enc(e), prevTemp(e.temperature), prevMax(e.maxTokens) {
-        enc.temperature = temp;
-        enc.maxTokens = (std::min)(prevMax ? prevMax : maxTok, maxTok);
-    }
-    ~Encoderguard() {
-        enc.temperature = prevTemp;
-        enc.maxTokens = prevMax;
-    }
-    Encoderguard(Encoderguard const&) = delete;
-    Encoderguard& operator=(Encoderguard const&) = delete;
-};
+namespace {
+thread_local Turnstats* tlsTurn = nullptr;
+
+bool userHot(Runtime const& rt) {
+    if (rt.encoder.chatBusy.load(std::memory_order_acquire) != 0)
+        return true;
+    std::int64_t const last = rt.lastUserMs.load(std::memory_order_relaxed);
+    return last != 0 && steadyNowMs() - last < 2000;
+}
+} // namespace
+
+Turnscope::Turnscope() : prev(tlsTurn) { tlsTurn = &local; }
+Turnscope::~Turnscope() { tlsTurn = prev; }
+
+Turnstats& activeTurn(Runtime& rt) { return tlsTurn ? *tlsTurn : rt.turn; }
 
 void Turnstats::rebuildPrompt(Decision const& d) {
     // 与 /v1 契约一致，但禁止用 rule:id 合成假 pack 冒充门控命中
@@ -77,7 +77,7 @@ json Turnstats::toJson() const {
         out["answer"] = answer;
     if (!source.empty())
         out["source"] = source;
-    if (sawRules || sawGate || !prompt.empty()) {
+    if (sawRules || !prompt.empty()) {
         auto toArr = [](std::vector<std::pair<std::string, std::string>> const& xs) {
             json arr = json::array();
             for (auto const& [id, body] : xs) {
@@ -107,44 +107,49 @@ void noteRules(Runtime& rt, std::vector<Resolvedrule> const& matched) {
         texts.emplace_back(r.rule.name, r.rule.body);
     }
     std::sort(texts.begin(), texts.end(), [](auto const& a, auto const& b) { return a.first < b.first; });
-    std::lock_guard<std::mutex> lock(rt.turn.mutex);
-    rt.turn.sawRules = true;
-    rt.turn.ruleText = std::move(texts);
-    rt.turn.rebuildCorpus();
+    Turnstats& t = activeTurn(rt);
+    std::lock_guard<std::mutex> lock(t.mutex);
+    t.sawRules = true;
+    t.ruleText = std::move(texts);
+    t.rebuildCorpus();
 }
 
 void noteKept(Runtime& rt, std::vector<std::pair<std::string, std::string>> kept) {
     std::sort(kept.begin(), kept.end(), [](auto const& a, auto const& b) { return a.first < b.first; });
-    std::lock_guard<std::mutex> lock(rt.turn.mutex);
-    rt.turn.sawRules = true;
-    rt.turn.ruleKept = std::move(kept);
-    rt.turn.rebuildCorpus();
+    Turnstats& t = activeTurn(rt);
+    std::lock_guard<std::mutex> lock(t.mutex);
+    t.sawRules = true;
+    t.ruleKept = std::move(kept);
+    t.rebuildCorpus();
 }
 
 void notePrompt(Runtime& rt, json prompt) {
     if (!prompt.is_array() || prompt.empty())
         return;
-    std::lock_guard<std::mutex> lock(rt.turn.mutex);
-    rt.turn.prompt = std::move(prompt);
-    rt.turn.source = "injected";
+    Turnstats& t = activeTurn(rt);
+    std::lock_guard<std::mutex> lock(t.mutex);
+    t.prompt = std::move(prompt);
+    t.source = "injected";
     rt.promptInjected.fetch_add(1, std::memory_order_relaxed);
-    rt.turn.rebuildCorpus();
+    t.rebuildCorpus();
 }
 
 void noteQueued(Runtime& rt, std::string const& id) {
     if (id.empty())
         return;
-    std::lock_guard<std::mutex> lock(rt.turn.mutex);
-    rt.turn.queued.push_back(id);
+    Turnstats& t = activeTurn(rt);
+    std::lock_guard<std::mutex> lock(t.mutex);
+    t.queued.push_back(id);
 }
 
 void noteDistill(Runtime& rt, std::string const& id, bool didChat) {
     if (id.empty())
         return;
-    std::lock_guard<std::mutex> lock(rt.turn.mutex);
-    rt.turn.distill.push_back(id);
+    Turnstats& t = activeTurn(rt);
+    std::lock_guard<std::mutex> lock(t.mutex);
+    t.distill.push_back(id);
     if (didChat)
-        ++rt.turn.local;
+        ++t.local;
 }
 
 std::string policyFingerprint(std::vector<Rule> const& rules) {
@@ -204,6 +209,13 @@ void workerLoop(Runtime& rt) {
                                     "prefix with CONFLICT:";
 
     while (!rt.workerStop.load(std::memory_order_acquire)) {
+        if (userHot(rt)) {
+            rt.yieldSkip.fetch_add(1, std::memory_order_relaxed);
+            std::unique_lock<std::mutex> lk(rt.workerMutex);
+            rt.workerCv.wait_for(lk, std::chrono::milliseconds(250),
+                                 [&] { return rt.workerStop.load(std::memory_order_acquire); });
+            continue;
+        }
         expected_gt<Queuerow> claimed;
         {
             std::lock_guard<std::mutex> lock(rt.store.mutex);
@@ -221,12 +233,10 @@ void workerLoop(Runtime& rt) {
         // 有任务：处理 → 再 claim；empty 或 stop 时条件为假，结构上不可能空转
         do {
             Queuerow row = std::move(claimed.result);
-            // 让路：最近 2s 内有用户请求时先等（蒸馏与 /v1 共用 encoder 锁，避免阻塞用户）
-            for (int w = 0; w < 20; ++w) {
-                std::int64_t const last = rt.lastUserMs.load(std::memory_order_relaxed);
-                if (last == 0 || steadyNowMs() - last >= 2000)
-                    break;
-                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            if (userHot(rt)) {
+                rt.yieldSkip.fetch_add(1, std::memory_order_relaxed);
+                for (int w = 0; w < 20 && userHot(rt) && !rt.workerStop.load(std::memory_order_acquire); ++w)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(250));
             }
             try {
                 json const& p = row.payload;
@@ -246,8 +256,7 @@ void workerLoop(Runtime& rt) {
                 std::string distilled;
                 bool didChat = false;
                 try {
-                    Encoderguard guard(rt.encoder, 0.0f, 160); // 记忆摘要不需要 512 token（省 GPU 时间）
-                    distilled = rt.encoder.chat(kSys, user);
+                    distilled = rt.encoder.distillChat(kSys, user, 0.0f, 160);
                     distilled = stripThink(std::move(distilled));
                     didChat = !distilled.empty();
                 } catch (...) {

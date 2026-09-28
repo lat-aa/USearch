@@ -1,9 +1,8 @@
 /**
- * @file helpers.hpp
- * @brief gate 纯辅助：kind/冲突/解析/终态/证据/命令包与人读 corpus。
+ * @file render.hpp
+ * @brief Policy 呈现/解析：命令包、人读 corpus、L1 插入、定价；无 Runtime / 无 LLM。
  *
- * 无 Runtime / 无 LLM，供 gate.cpp 与 tests/apex 共用（避免测试链拉 httplib/llama）。
- * 命名遵守 .config/rules/names.md：单单词文件名，禁止 _/-。
+ * 供 worker.cpp 与 tests/apex 共用（避免测试链拉 httplib/llama）。
  */
 #pragma once
 
@@ -215,7 +214,7 @@ inline json extractAgentResult(std::string_view raw) {
 
 /** 协议判定：仅 status=="ok" 视为本地完成，其余（delegate/缺失/非法）一律交上游。 */
 inline bool agentOk(json const& j) { return j.is_object() && j.value("status", "") == "ok"; }
-/** 粗估 token（与 text.cpp estimate 同量级；测试与打包共用，免链 text）。 */
+/** 粗估 token（与 rules.cpp estimate 同量级；测试与打包共用，免链 rules）。 */
 inline std::size_t estimateLoose(std::string_view text) noexcept { return (text.size() + 3) / 4; }
 
 /** 截断段：按空行切，保留前 maxSections 段。 */

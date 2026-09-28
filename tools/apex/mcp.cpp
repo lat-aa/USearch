@@ -98,37 +98,13 @@ bool resolveActual(json const& args, Mcpclient const& client, std::string& actua
  * 本轮栈职责（给 🔖 行）：只陈述 turn 实测，禁止用 decide.retrieval 预测冒充 ANN/回填。
  */
 json stackOf(Runtime& rt, Decision const& /*d*/) {
-    std::lock_guard<std::mutex> lock(rt.turn.mutex);
+    Turnstats& t = activeTurn(rt);
+    std::lock_guard<std::mutex> lock(t.mutex);
     std::string nanbeige;
     std::string usearch;
     std::string sqlite;
 
-    if (rt.turn.sawGate) {
-        if (rt.turn.cache == "L1")
-            nanbeige = "门控 L1 直答";
-        else if (rt.turn.cache == "L2")
-            nanbeige = "门控 L2 直答";
-        else if (rt.turn.gate == "answered")
-            nanbeige = "门控直答";
-        else if (rt.turn.gate == "refuse")
-            nanbeige = "门控 refuse";
-        else
-            nanbeige = "门控 pack";
-        if (rt.turn.local > 0)
-            nanbeige += " chat=" + std::to_string(rt.turn.local);
-
-        if (rt.turn.didAnn)
-            usearch = "ANN k=" + std::to_string(rt.turn.annK ? rt.turn.annK : 0);
-        else
-            usearch = "跳过";
-
-        if (rt.turn.packn > 0)
-            sqlite = "回填 pack n=" + std::to_string(rt.turn.packn);
-        else if (rt.turn.cache == "L2")
-            sqlite = "回填 cache";
-        else
-            sqlite = "待命";
-    } else if (rt.turn.sawRules) {
+    if (t.sawRules) {
         if (rt.encoder.modelReady)
             nanbeige = "语义规则嵌入 dim=" + std::to_string(rt.encoder.dimensions);
         else
@@ -136,7 +112,6 @@ json stackOf(Runtime& rt, Decision const& /*d*/) {
         usearch = "跳过";
         sqlite = "待命";
     } else {
-        // 本轮未跑 gate/rules：如实待命，不用 decide 预测 ANN
         nanbeige = rt.encoder.modelReady ? "待命" : "hash 回退";
         usearch = "跳过";
         sqlite = "待命";
@@ -201,6 +176,7 @@ json toolDefs() {
 }
 
 json callTool(Runtime& rt, std::string const& name, json const& args, Mcpclient const& client) {
+    Turnscope scope;
     auto textResult = [](std::string const& text, bool error = false) {
         return json{{"content", json::array({{{"type", "text"}, {"text", text}}})}, {"isError", error}};
     };
@@ -346,25 +322,24 @@ json callTool(Runtime& rt, std::string const& name, json const& args, Mcpclient 
                 rq.task = in.task;
             json stats = rulesEnvelope(rt, rq, d.compression);
 
-            // 门控缓存命中才给计价折扣；禁止 Agent 口传 cache_hit 冒充
             bool cacheHit = false;
             json turnJson;
             {
-                std::lock_guard<std::mutex> lock(rt.turn.mutex);
-                rt.turn.retain = d.compression;
-                rt.turn.naive = stats.value("naiveTokens", 0);
-                rt.turn.picked = stats.value("selectedTokens", 0);
-                rt.turn.kept = stats.value("optimizedTokens", 0);
-                // /v1 注入：保留 prompt，只刷人读 corpus；MCP 轮每轮按当前决策重建，禁止串上一轮 JSON
-                if (rt.turn.source == "injected" && !rt.turn.prompt.empty()) {
-                    rt.turn.rebuildCorpus();
+                Turnstats& t = activeTurn(rt);
+                std::lock_guard<std::mutex> lock(t.mutex);
+                t.retain = d.compression;
+                t.naive = stats.value("naiveTokens", 0);
+                t.picked = stats.value("selectedTokens", 0);
+                t.kept = stats.value("optimizedTokens", 0);
+                if (t.source == "injected" && !t.prompt.empty()) {
+                    t.rebuildCorpus();
                 } else {
-                    rt.turn.rebuildPrompt(d);
-                    rt.turn.rebuildCorpus();
+                    t.rebuildPrompt(d);
+                    t.rebuildCorpus();
                 }
-                if (rt.turn.cache == "L1" || rt.turn.cache == "L2")
+                if (t.cache == "L1" || t.cache == "L2")
                     cacheHit = true;
-                turnJson = rt.turn.toJson();
+                turnJson = t.toJson();
             }
 
             std::string priced = priceModelFrom(d, args.value("model", ""));

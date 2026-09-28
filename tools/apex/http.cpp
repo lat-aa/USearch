@@ -4,7 +4,7 @@
  */
 
 #include "api.hpp"
-#include "helpers.hpp"
+#include "render.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -63,6 +63,32 @@ bool Pipeline::run(Runtime& rt, json& ctx) {
     return true;
 }
 
+json metricsSnapshot(Runtime const& rt) {
+    auto n = rt.encoder.lockWaitN.load(std::memory_order_relaxed);
+    auto sum = rt.encoder.lockWaitSumMs.load(std::memory_order_relaxed);
+    auto mx = rt.encoder.lockWaitMaxMs.load(std::memory_order_relaxed);
+    double avg = n ? static_cast<double>(sum) / static_cast<double>(n) : 0.0;
+    return {{"edge",
+             {{"v1Chat", rt.v1Chat.load(std::memory_order_relaxed)},
+              {"v1Responses", rt.v1Responses.load(std::memory_order_relaxed)},
+              {"presync", rt.presyncCalls.load(std::memory_order_relaxed)},
+              {"observe", rt.observeCalls.load(std::memory_order_relaxed)}}},
+            {"policy", {{"rules", rt.rules.size()}}},
+            {"encode",
+             {{"chatBusy", rt.encoder.chatBusy.load(std::memory_order_relaxed)},
+              {"dedicatedEmbed", rt.encoder.dedicatedEmbed()},
+              {"lockWaitN", n},
+              {"lockWaitAvgMs", avg},
+              {"lockWaitMaxMs", mx},
+              {"stealChat", rt.encoder.stealChat.load(std::memory_order_relaxed)}}},
+            {"async",
+             {{"yieldSkip", rt.yieldSkip.load(std::memory_order_relaxed)},
+              {"queueAge", 0}}},
+            {"cache",
+             {{"l1", rt.cacheL1.load(std::memory_order_relaxed)},
+              {"l2", rt.cacheL2.load(std::memory_order_relaxed)}}}};
+}
+
 int serve(Runtime& rt) {
     auto colon = rt.config.listen.find(':');
     if (colon == std::string::npos || colon == 0 || colon + 1 >= rt.config.listen.size()) {
@@ -118,10 +144,6 @@ int serve(Runtime& rt) {
                        {{"responses", rt.v1Responses.load(std::memory_order_relaxed)},
                         {"chat", rt.v1Chat.load(std::memory_order_relaxed)},
                         {"injected", rt.promptInjected.load(std::memory_order_relaxed)},
-                        {"gate",
-                         {{"answered", rt.gateAnswered.load(std::memory_order_relaxed)},
-                          {"pack", rt.gatePack.load(std::memory_order_relaxed)},
-                          {"refuse", rt.gateRefuse.load(std::memory_order_relaxed)}}},
                         {"hooks",
                          {{"presync", rt.presyncCalls.load(std::memory_order_relaxed)},
                           {"observe", rt.observeCalls.load(std::memory_order_relaxed)}}},
@@ -132,7 +154,14 @@ int serve(Runtime& rt) {
                           {"rounds", rt.agentRounds.load(std::memory_order_relaxed)},
                           {"cache_l1", rt.cacheL1.load(std::memory_order_relaxed)},
                           {"cache_l2", rt.cacheL2.load(std::memory_order_relaxed)},
-                          {"fuse", rt.fuse.openedAtMs.load(std::memory_order_relaxed) != 0}}}}}});
+                          {"fuse", rt.fuse.openedAtMs.load(std::memory_order_relaxed) != 0},
+                          {"chatBusy", rt.encoder.chatBusy.load(std::memory_order_relaxed)}}}}}});
+    });
+
+    svr.Get("/v1/metrics", [&](httplib::Request const& req, httplib::Response& res) {
+        if (!gate(req, res))
+            return;
+        setJson(res, metricsSnapshot(rt));
     });
 
     mountOpenai(svr, rt, gate);

@@ -1,5 +1,5 @@
 /**
- *  @file       sq8.cpp
+ *  @file       shadow.cpp
  *  @brief      SQ8 对称 int8 影子：量化、粗分、候选证明（移植自 Apex sq8.rs）。
  */
 

@@ -14,15 +14,21 @@ enable_language(C)
 
 add_executable(api
     api.cpp
-    dense.cpp
-    sq8.cpp
+    encode.cpp
+    store.cpp
+    shadow.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../sqlite/sql.cpp
-    text.cpp
+    rules.cpp
     http.cpp
     mcp.cpp
     decide.cpp
-    gate.cpp
-    upstream.cpp
+    worker.cpp
+    delegate.cpp
+    cache.cpp
+    agent.cpp
+    openai.cpp
+    config.cpp
+    fuse.cpp
 )
 # 服务端二进制：可移植 core（-O2），禁止 -march=native。
 setup_core_target(api)

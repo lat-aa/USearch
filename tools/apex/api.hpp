@@ -35,7 +35,7 @@
 #endif
 #endif
 
-#include "helpers.hpp"
+#include "render.hpp"
 #include <dense/dense.hpp>
 #include <httplib.h>
 #include <nlohmann/json.hpp>
@@ -240,7 +240,14 @@ struct Encoder {
     std::string embedPath;
     ::llama_model* embedModel = nullptr;
     ::llama_context* embedCtx = nullptr;
-    std::mutex mutex;
+    /// 专用 embed 上下文时与 chat 并行；复用 chat 模型时 embed 走 chatMutex。
+    std::mutex chatMutex;
+    std::mutex embedMutex;
+    std::atomic<int> chatBusy{0}; ///< 持 chatMutex 生成中；Worker 硬让路读此值
+    std::atomic<std::uint64_t> lockWaitN{0};
+    std::atomic<std::uint64_t> lockWaitSumMs{0};
+    std::atomic<std::int64_t> lockWaitMaxMs{0};
+    std::atomic<std::uint64_t> stealChat{0}; ///< Worker try_lock chat 失败次数（活跃期应为 0）
     Encoder() = default;
     ~Encoder();
     Encoder(Encoder const&) = delete;
@@ -253,14 +260,22 @@ struct Encoder {
     /** 加载专用嵌入模型（bge-m3 等）；pooling ∈ cls|mean|lasttoken。失败即回退复用 chat 模型。 */
     error_t openEmbed(fs::path const& gguf, std::uint32_t ctxSize, int gpuLayers, std::string const& pooling);
     std::vector<float> embed(std::string_view text);
-    /** 非阻塞嵌入：锁被占（如 Worker 蒸馏中）时立即返回空，调用方降级。 */
+    /** 非阻塞嵌入：锁被占时立即返回空，调用方降级（Policy/presync 热路径必须走这条）。 */
     std::vector<float> tryEmbed(std::string_view text);
-    /** 实际嵌入实现（调用方须已持锁）。 */
+    /** 实际嵌入实现（调用方须已持 embed 对应锁）。 */
     std::vector<float> embedImpl(std::string_view text);
+    /** 是否有独立 embed 上下文：是则可与 distill chat 并行。 */
+    bool dedicatedEmbed() const noexcept;
+    std::mutex& embedLock() noexcept;
     std::string chat(std::string_view system, std::string_view user);
     std::string chat(std::string_view system, std::string_view user, std::function<void(std::string_view)> onDelta);
     std::string chat(json const& messages);
     std::string chat(json const& messages, std::function<void(std::string_view)> onDelta);
+    /** opts 在持 chatMutex 内应用并恢复，禁止无锁改采样字段。 */
+    std::string chat(json const& messages, std::function<void(std::string_view)> onDelta, float temp, std::uint32_t maxTok,
+                     std::string const* grammar, std::string const* prefix, bool block = true);
+    /** Worker 蒸馏：try_lock chatMutex；抢不到立即空串（stealChat++），禁止堵用户。 */
+    std::string distillChat(std::string_view system, std::string_view user, float temp, std::uint32_t maxTok);
 };
 
 /** USearch 图 + SQLite 载荷 + 可选 SQ8；upsert=put→add/save→commit。 */
@@ -302,6 +317,8 @@ struct Rule {
     bool always = false; ///< 无条件激活
     bool enabled = true;
     std::vector<std::string> globs; ///< 路径 glob；非空则走 Glob，不进 Semantic
+    /** 启动时缓存的 description 向量；热路径禁止再 embed 每条规则。 */
+    std::vector<float> descVec;
 };
 
 /** 规则激活原因（对齐 apex：Always → Glob → Semantic → Manual）。 */
@@ -339,10 +356,12 @@ std::pair<Frontmatter, std::string> parseFront(std::string const& text);
 std::vector<Rule> loadRules(fs::path const& dir);
 /** 纯词法语义（无 Encoder）；供轻量路径。 */
 std::vector<Resolvedrule> resolveRules(std::vector<Rule> const& rules, Rulequery const& q);
-/** 语义分支优先用 Encoder 稠密向量，否则回退 hashEmbed / 词法。 */
+/** 语义分支：task 用 tryEmbed；规则用 descVec 缓存；忙则词法降级。 */
 std::vector<Resolvedrule> resolveRules(Runtime& rt, Rulequery const& q);
-/** 复用已算好的 task 向量，避免门控路径上二次 embed。 */
+/** 复用已算好的 task 向量；规则侧只读 descVec，不再阻塞 embed。 */
 std::vector<Resolvedrule> resolveRules(Runtime& rt, Rulequery const& q, std::vector<float> const& qVec);
+/** 规则加载后缓存 description 向量（允许阻塞，仅启动/热重载）。 */
+void warmRuleVecs(Runtime& rt);
 /** 从 JSON 填 Rulequery：task|query、files、manual。 */
 Rulequery rulequeryFromJson(json const& body);
 bool globMatch(std::string_view pattern, std::string_view path);
@@ -515,9 +534,9 @@ expected_gt<Lexicon> loadLexicon(fs::path const& path);
  */
 struct Turnstats {
     std::mutex mutex;
-    std::string gate = "none";  ///< answered|pack|refuse|none
+    std::string gate = "none";  ///< 历史字段：门控已移除，恒 none
     std::string cache = "none"; ///< L1|L2|miss|none
-    bool hasSaved = false;      ///< 未调 gate 时 toJson 省略 saved
+    bool hasSaved = false;      ///< 未测省量时 toJson 省略 saved
     int saved = 0;              ///< 省主 LLM 次数
     int local = 0;              ///< 本轮 Nanbeige chat 次数
     std::vector<std::string> queued;
@@ -532,7 +551,6 @@ struct Turnstats {
     float answer = 0;
     bool hasAnswer = false;
     bool sawRules = false;
-    bool sawGate = false;
     bool didAnn = false;
     std::size_t annK = 0;
     /** 工具侧：全文 / 裁剪后 / 真实 gate pack（不进统计块重复粘贴）。 */
@@ -569,22 +587,20 @@ struct Runtime {
     std::unordered_map<std::string, L1entry> l1;
     /** 单调时钟；命中/写入时 ++，供 LRU 比较（持 l1Mutex）。 */
     std::uint64_t l1tick = 0;
-    /** 本轮 gate/rules/observe/worker 实测；cost 读出。 */
+    /** 进程级兜底 turn（Worker queued/distill）；请求线程用 Turnscope。 */
     Turnstats turn;
-    /** /v1 命中计数（进程级）：确认客户端是否真打到 /v1，以及 gate 结局与注入次数。 */
+    /** /v1 命中计数（进程级）。 */
     std::atomic<std::uint64_t> v1Responses{0};
     std::atomic<std::uint64_t> v1Chat{0};
     std::atomic<std::uint64_t> promptInjected{0};
-    std::atomic<std::uint64_t> gateAnswered{0};
-    std::atomic<std::uint64_t> gatePack{0};
-    std::atomic<std::uint64_t> gateRefuse{0};
     std::atomic<std::uint64_t> agentOk{0};
     std::atomic<std::uint64_t> agentDelegate{0};
     std::atomic<std::uint64_t> agentParsefail{0};
     std::atomic<std::uint64_t> agentRounds{0};  ///< 本地 agent 实际执行的工具轮次
     std::atomic<std::int64_t> lastUserMs{0};    ///< 最近一次用户请求时刻（Worker 让路用）
-    std::atomic<std::uint64_t> presyncCalls{0}; ///< /v1/presync 调用（三端前置 hook）
+    std::atomic<std::uint64_t> presyncCalls{0}; ///< 仅 /v1/presync
     std::atomic<std::uint64_t> observeCalls{0}; ///< MCP observe 入队次数（沉淀）
+    std::atomic<std::uint64_t> yieldSkip{0};    ///< Worker 因用户活跃跳过 claim/chat
     std::atomic<std::uint64_t> cacheL1{0};      ///< L1 精确缓存命中
     std::atomic<std::uint64_t> cacheL2{0};      ///< L2 语义缓存命中
     Fuse fuse;                                  ///< 本地 agent 解析熔断
@@ -614,6 +630,19 @@ std::string policyFingerprint(std::vector<Rule> const& rules);
 json runObserve(Runtime& rt, json const& args);
 void workerLoop(Runtime& rt);
 /** 记入命中规则全文（turn.rules，供工具；不进统计块粘贴）。 */
+Turnstats& activeTurn(Runtime& rt);
+/** 请求级 Turnstats：构造时绑定 TLS，析构还原；并发 Edge 互不覆盖。 */
+struct Turnscope {
+    Turnstats local;
+    Turnstats* prev = nullptr;
+    Turnscope();
+    ~Turnscope();
+    Turnscope(Turnscope const&) = delete;
+    Turnscope& operator=(Turnscope const&) = delete;
+};
+
+json metricsSnapshot(Runtime const& rt);
+
 void noteRules(Runtime& rt, std::vector<Resolvedrule> const& matched);
 /** 记入裁剪后正文（turn.clip；与 optimized_tokens 对齐）。 */
 void noteKept(Runtime& rt, std::vector<std::pair<std::string, std::string>> kept);
@@ -634,6 +663,12 @@ struct Mcpclient {
     std::string actualModel;       ///< X-Apex-Actual-Model
     std::string actualModelSource; ///< X-Apex-Actual-Model-Source
 };
+
+bool l1Hit(Runtime& rt, std::string const& key, std::string& payload, std::string& source);
+bool l2Hit(Runtime& rt, std::string const& task, std::string& payload, std::string& source);
+void cachePut(Runtime& rt, std::string const& task, std::string const& payload, std::string const& source);
+std::string l1Key(std::string const& policyFp, std::string const& task);
+bool agentRun(Runtime& rt, std::string const& modelName, json const& agentMsgs, std::string& payload);
 
 json toolDefs();
 json callTool(Runtime& rt, std::string const& name, json const& args, Mcpclient const& client = {});

@@ -1,5 +1,5 @@
 /**
- *  @file       text.cpp
+ *  @file       rules.cpp
  *  @brief      规则加载/激活（Always/Glob/Semantic/Manual）、token 估计、抽取式压缩、经验落盘。
  */
 
@@ -454,10 +454,8 @@ std::vector<Resolvedrule> resolveRules(Runtime& rt, Rulequery const& q, std::vec
     return resolveCore(
         rt.rules, q,
         [&](Rule const& r) -> float {
-            if (dense) {
-                auto dVec = rt.encoder.embed(r.description);
-                float c = cosine(qVec, dVec);
-                // 与词法混合：稠密为主，词法托底
+            if (dense && !r.descVec.empty()) {
+                float c = cosine(qVec, r.descVec);
                 return (std::max)(c, lexicalScore(taskLower, r) * 0.05f);
             }
             return lexicalScore(taskLower, r);
@@ -468,8 +466,18 @@ std::vector<Resolvedrule> resolveRules(Runtime& rt, Rulequery const& q, std::vec
 std::vector<Resolvedrule> resolveRules(Runtime& rt, Rulequery const& q) {
     std::vector<float> qVec;
     if (!q.task.empty())
-        qVec = rt.encoder.embed(q.task);
+        qVec = rt.encoder.tryEmbed(q.task);
     return resolveRules(rt, q, qVec);
+}
+
+void warmRuleVecs(Runtime& rt) {
+    for (auto& r : rt.rules) {
+        if (r.description.empty()) {
+            r.descVec.clear();
+            continue;
+        }
+        r.descVec = rt.encoder.embed(r.description);
+    }
 }
 
 Experience experienceFromJson(json const& j) {

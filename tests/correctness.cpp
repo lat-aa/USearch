@@ -106,7 +106,7 @@ static void testAnnMatchesExact() {
     expectTrue(ann == exact, "HNSW top-k equals exact on tiny corpus with high ef");
 }
 
-// --- 内联 SQ8 证明核心（与 sq8.cpp 同构），避免链完整 api ---
+// --- 内联 SQ8 证明核心（与 shadow.cpp 同构），避免链完整 api ---
 namespace {
 
 constexpr float kEpsSlack = 1.0001f;

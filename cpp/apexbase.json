@@ -1,0 +1,12 @@
+{
+  "presyncP99Ms": 61.629600008018315,
+  "presyncL1P99Ms": null,
+  "costP99Ms": 16.53200000873767,
+  "observeP99Ms": 27.62740000616759,
+  "costAfterObserveP99Ms": 16.581199975917116,
+  "antPresyncP99Ms": 22.789599985117093,
+  "stealChat": 0,
+  "lockWaitMaxMs": 0,
+  "n": 15,
+  "note": "hash-embed mode (SMOKE_HASH=1); costAfterObserve is primary invariant-1 KPI"
+}

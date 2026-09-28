@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 校验 helpers.hpp + gate.cpp 合并行覆盖 ≥ MIN_LINE_PCT（默认 80）。
+# 校验 render.hpp 合并行覆盖 ≥ MIN_LINE_PCT（默认 80）。
 # 用法：./scripts/checkgate.sh coverage_gate.info
 set -euo pipefail
 INFO="${1:?coverage.info}"
