@@ -278,7 +278,7 @@ jobs:
             --output-file coverage_gate.info || true
           if [ -f coverage_gate.info ] && [ -s coverage_gate.info ]; then
             lcov --list coverage_gate.info | tee coverage_gate.txt
-            MIN_LINE_PCT=60 ./scripts/checkgate.sh coverage_gate.info
+            MIN_LINE_PCT=70 ./scripts/checkgate.sh coverage_gate.info
           else
             echo "apex helpers coverage extract empty; ensure apex unit tests ran under --coverage" >&2
             exit 1
