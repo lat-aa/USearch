@@ -22,6 +22,7 @@ Nanbeige=; USearch=; Sqlite=
 Gate=; Cache=; Saved=; Local=; Queued=; Distill=
 Retain=; CtxNaive=; CtxPicked=; CtxKept=; PackTok=; PackN=
 PromptSource=
+TokenMode=
 CorpusFile=
 PromptFile=
 
@@ -74,6 +75,7 @@ while [ $# -gt 0 ]; do
     -PackTok|--pack-tok) PackTok=$val ;;
     -PackN|--pack-n) PackN=$val ;;
     -PromptSource|--prompt-source) PromptSource=$val ;;
+    -TokenMode|--token-mode) TokenMode=$val ;;
     -CorpusFile|--corpus-file) CorpusFile=$val ;;
     -PromptFile|--prompt-file) PromptFile=$val ;;
     *) echo "unknown arg: $key" >&2; exit 2 ;;
@@ -108,7 +110,7 @@ if [ "$Selected" -gt 0 ] 2>/dev/null; then
   pickSaved=$((Naive - Selected))
   trimSaved=$((Selected - Optimized))
 fi
-confPct=$(awk -v c="$Confidence" 'BEGIN{printf "%d", c*100+0.5}')
+confPct=$(awk -v c="$Confidence" 'BEGIN{ if (c>1) printf "%d", c+0.5; else printf "%d", c*100+0.5 }')
 retainPct=$(awk -v c="$Compression" 'BEGIN{printf "%d", c*100+0.5}')
 # 📦 摘要优先用 turn.retain；否则回退 Compression
 if [ -n "$Retain" ]; then
@@ -188,7 +190,9 @@ if printf '%s' "$Reason" | grep -Eq 'complexity[[:space:]]+[0-9]+.*\((low|mid|hi
   case "$band" in low) band=浅层 ;; mid) band=中层 ;; high) band=深层 ;; esac
   reasonCn="复杂度${n}（${band}）"
 fi
-if [ "$BiasNote" = 未实测 ]; then
+if [ "$TokenMode" = real ]; then
+  biasCn='token 实测'
+elif [ "$BiasNote" = 未实测 ]; then
   biasCn='token 为估算值'
 else
   biasAbs=$(awk -v b="$EstimateBias" 'BEGIN{ if(b<0) b=-b; printf "%s", b}')

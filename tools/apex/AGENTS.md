@@ -111,6 +111,7 @@ Codex 实模：`.codex/hooks.json` 的 `PreToolUse` 把本轮 `model` 写入 `co
   -CtxNaive "<cost.turn.naive>" -CtxPicked "<cost.turn.picked>" -CtxKept "<cost.turn.kept>" \
   -PackTok "<cost.turn.packtok>" -PackN "<cost.turn.packn>" \
   -PromptSource "<cost.turn.source：injected|rebuild>" \
+  -TokenMode "<cost.turn.tokenMode：real|estimate；真分词器时第 6 行写「token 实测」、否则写「token 为估算值」>" \
   -PromptFile "<cost.turn.prompt（messages 数组）落入的临时文件；一行一条；渲染会自动剔除 knowledge 行>" \
   -CorpusFile "<cost.turn.corpus 落入的临时文件；人读 markdown>"
 ```
