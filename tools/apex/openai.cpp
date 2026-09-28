@@ -2,13 +2,15 @@
  *  @file       openai.cpp
  *  @brief      OpenAI 兼容 /v1（chat/presync/embed/route）与请求级 Turnscope。
  */
+#include "openai.hpp"
 #include "api.hpp"
 #include "render.hpp"
 #include "slim.hpp"
 #include <algorithm>
 #include <cstdio>
 namespace api {
-namespace {static void replyText(httplib::Response& res, std::string const& id, std::string const& model,
+namespace {
+static void replyText(httplib::Response& res, std::string const& id, std::string const& model,
                       std::string const& payload, bool responses) {
     if (responses)
         setJson(res, {{"id", id},
@@ -512,4 +514,3 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
     });
 }
 } // namespace api
-

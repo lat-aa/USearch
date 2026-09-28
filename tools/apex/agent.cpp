@@ -2,6 +2,7 @@
  *  @file       agent.cpp
  *  @brief      本地 CoT agent：采样参数只经 Encoder::chat 进锁。
  */
+#include "agent.hpp"
 #include "api.hpp"
 #include "render.hpp"
 #include "slim.hpp"
@@ -10,7 +11,8 @@
 #include <fstream>
 #include <sstream>
 namespace api {
-namespace {static std::string envStr(char const* key) {
+namespace {
+static std::string envStr(char const* key) {
     char const* v = std::getenv(key);
     return v && *v ? std::string(v) : std::string();
 }
@@ -153,4 +155,3 @@ bool agentRun(Runtime& rt, std::string const& modelName, json const& agentMsgs, 
     }
 }
 } // namespace api
-

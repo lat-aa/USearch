@@ -25,9 +25,11 @@
 7. 规则 description 向量在加载时缓存；用户路径禁止 N+1 embed。
 8. Turnstats 请求隔离：并发 Edge 不得互相覆盖 prompt/corpus。
 
-## 词表（文件 = 平面）
+## 词表（文件 = 平面，1 个 `.hpp`/`.cpp` 一模块）
 
-`openai` / `mcp` / `http` / `agent` = Edge；`rules` / `decide` / `render` / `fuse` / `turnstats` = Policy；`encode` / `store` / `shadow` / `cache` = ModelMemory；`worker` = Async；`delegate` = Remote。`http.cpp` 保留名。
+`openai` / `mcp` / `http` / `agent` = Edge；`rules` / `decide` / `render`（含 `Fuse`）/ `types` = Policy；`encode` / `store` / `shadow` / `cache` = ModelMemory；`worker`（含 `Turnstats`）= Async；`delegate` = Remote；`config` = 装配。
+
+头文件布局：`api.hpp` 只留 `Runtime` 装配；平面头只 `#include "types.hpp"`（`render.hpp` 为无 Runtime 的纯逻辑头）并前向声明 `Runtime`，实现 `.cpp` 才 include `api.hpp`。纯逻辑（`render`/`rules`/`shadow` 的 inline 部分）由 `ctest -L apex` 直接单测。
 
 ## 构建
 
@@ -53,7 +55,7 @@ cmake --build build --target api
 
 - `GET /v1/metrics`：按平面暴露 chatBusy、lockWait、stealChat、yieldSkip、presync
 - `scripts/benchapex.sh`：presync / cost / observe / chat∥distill
-- 基线：`cpp/apexbase.json`
+- 基线：`cpp/apexbase.json`；**手动**运行 `scripts/regapex.sh` 做全量回归并比对（墙钟阈值在 CI 上抖动，故不进 CI）
 
 ## 自测
 

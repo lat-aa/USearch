@@ -2,6 +2,7 @@
  *  @file       delegate.cpp
  *  @brief      上游兜底：本地 agent delegate 时转发远端 OpenAI 兼容接口。
  */
+#include "delegate.hpp"
 #include "api.hpp"
 #include "render.hpp"
 

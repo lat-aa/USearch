@@ -3,18 +3,19 @@
  *  @brief      Encoder：chat/embed 双锁与采样进锁。
  */
 
+#include "encode.hpp"
 #include "api.hpp"
 
 #include "render.hpp"
-#include <cstdio>
-#include <cstdlib>
-#include <llama.h>
 #include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <llama.h>
 #include <mutex>
 #include <thread>
 
@@ -23,7 +24,8 @@ namespace api {
 namespace {
 
 void noteLockWait(Encoder& enc, std::chrono::steady_clock::time_point t0) {
-    auto const ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+    auto const ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
     if (ms <= 0)
         return;
     enc.lockWaitN.fetch_add(1, std::memory_order_relaxed);
@@ -250,7 +252,9 @@ error_t Encoder::openEmbed(fs::path const& gguf, std::uint32_t ctxSize, int gpuL
     return {};
 }
 
-bool Encoder::dedicatedEmbed() const noexcept { return embedCtx != nullptr && embedCtx != context && embedCtx != chatCtx; }
+bool Encoder::dedicatedEmbed() const noexcept {
+    return embedCtx != nullptr && embedCtx != context && embedCtx != chatCtx;
+}
 
 std::mutex& Encoder::embedLock() noexcept { return dedicatedEmbed() ? embedMutex : chatMutex; }
 
@@ -332,8 +336,8 @@ std::string Encoder::chat(json const& messages, std::function<void(std::string_v
     return chat(messages, std::move(onDelta), -1.0f, 0, nullptr, nullptr);
 }
 
-std::string Encoder::chat(json const& messages, std::function<void(std::string_view)> onDelta, float temp, std::uint32_t maxTok,
-                          std::string const* grammarIn, std::string const* prefixIn, bool block) {
+std::string Encoder::chat(json const& messages, std::function<void(std::string_view)> onDelta, float temp,
+                          std::uint32_t maxTok, std::string const* grammarIn, std::string const* prefixIn, bool block) {
     std::unique_lock<std::mutex> lock(chatMutex, std::defer_lock);
     if (block) {
         auto const t0 = std::chrono::steady_clock::now();
@@ -541,4 +545,3 @@ std::string Encoder::distillChat(std::string_view system, std::string_view user,
 }
 
 } // namespace api
-

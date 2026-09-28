@@ -1,9 +1,9 @@
 /**
  *  @file       shadow.cpp
- *  @brief      SQ8 对称 int8 影子：量化、粗分、候选证明（移植自 Apex sq8.rs）。
+ *  @brief      SQ8 对称 int8 影子：ISA 分发内核 + 候选证明（纯量化在 shadow.hpp）。
  */
 
-#include "api.hpp"
+#include "shadow.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -24,37 +24,6 @@
 namespace api {
 namespace sq8 {
 
-std::size_t candidateBudget(std::size_t k) { return (std::max)(std::size_t{1024}, 16 * k); }
-
-float epsFromMaxScale(std::size_t dim, float maxScale) {
-    return std::sqrt(static_cast<float>(dim)) * epsSlack * (maxScale / 254.0f + 1.0f / 65534.0f);
-}
-
-float quantizeRow(float const* row, std::int8_t* dst, std::size_t dim) {
-    for (std::size_t i = 0; i != dim; ++i) {
-        if (!std::isfinite(row[i])) {
-            for (std::size_t j = 0; j != dim; ++j)
-                dst[j] = 0;
-            return -1.0f;
-        }
-    }
-    float s = 0.0f;
-    for (std::size_t i = 0; i != dim; ++i)
-        s = (std::max)(s, std::fabs(row[i]));
-    if (s > 0.0f) {
-        float inv = 127.0f / s;
-        for (std::size_t i = 0; i != dim; ++i) {
-            float v = std::round(row[i] * inv);
-            v = (std::max)(-127.0f, (std::min)(127.0f, v));
-            dst[i] = static_cast<std::int8_t>(v);
-        }
-    } else {
-        for (std::size_t i = 0; i != dim; ++i)
-            dst[i] = 0;
-    }
-    return s;
-}
-
 void buildShadow(float const* data, std::size_t n, std::size_t dim, std::vector<std::int8_t>& q8,
                  std::vector<float>& qscale, float& eps) {
     q8.clear();
@@ -72,27 +41,6 @@ void buildShadow(float const* data, std::size_t n, std::size_t dim, std::vector<
             maxScale = s;
     }
     eps = epsFromMaxScale(dim, maxScale);
-}
-
-std::vector<std::int16_t> quantizeQueryI16(float const* q, std::size_t dim) {
-    std::vector<std::int16_t> out(dim, 0);
-    for (std::size_t i = 0; i != dim; ++i) {
-        float v = std::round(q[i] * 32767.0f);
-        if (!std::isfinite(v))
-            out[i] = 0;
-        else {
-            v = (std::max)(-32767.0f, (std::min)(32767.0f, v));
-            out[i] = static_cast<std::int16_t>(v);
-        }
-    }
-    return out;
-}
-
-std::int32_t i8DotScalar(std::int8_t const* doc, std::int16_t const* q, std::size_t dim) {
-    std::int32_t s = 0;
-    for (std::size_t i = 0; i != dim; ++i)
-        s += static_cast<std::int32_t>(doc[i]) * static_cast<std::int32_t>(q[i]);
-    return s;
 }
 
 #if defined(__AVX2__)
@@ -142,14 +90,6 @@ std::int32_t i8Dot(std::int8_t const* doc, std::int16_t const* q, std::size_t di
 #else
     return i8DotScalar(doc, q, dim);
 #endif
-}
-
-float coarseScore(std::int32_t dot, float scale) {
-    if (scale < 0.0f)
-        return -std::numeric_limits<float>::infinity();
-    if (scale == 0.0f)
-        return 0.0f;
-    return static_cast<float>(dot) * scale * i8i16Inv;
 }
 
 bool selectCandidates(float const* est, std::size_t n, std::size_t k, float eps, std::vector<std::size_t>& out) {

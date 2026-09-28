@@ -273,16 +273,19 @@ jobs:
             cp coverage.info coverage_usearch.info
           lcov --list coverage_usearch.info | tee coverage.txt
           MIN_LINE_PCT=40 ./scripts/check_coverage.sh coverage_usearch.info
-          # apex Policy 呈现纯逻辑（render.hpp；apexhelpers/apexturn 驱动）
-          lcov --extract coverage.info '*/tools/apex/render.hpp' \
-            --output-file coverage_gate.info || true
-          if [ -f coverage_gate.info ] && [ -s coverage_gate.info ]; then
-            lcov --list coverage_gate.info | tee coverage_gate.txt
-            MIN_LINE_PCT=70 ./scripts/checkgate.sh coverage_gate.info
-          else
-            echo "apex render.hpp coverage extract empty; ensure apex unit tests ran under --coverage" >&2
-            exit 1
-          fi
+          # apex 三个纯逻辑头（Policy/ModelMemory inline）：render / rules / shadow。
+          # 均须被 apex 单测真实驱动，行覆盖 ≥ 70%。
+          for h in render rules shadow; do
+            lcov --extract coverage.info "*/tools/apex/$h.hpp" \
+              --output-file "coverage_$h.info" --ignore-errors empty,unused || true
+            if [ -f "coverage_$h.info" ] && [ -s "coverage_$h.info" ]; then
+              lcov --list "coverage_$h.info" | tee "coverage_$h.txt"
+              MIN_LINE_PCT=70 ./scripts/checkgate.sh "coverage_$h.info"
+            else
+              echo "apex $h.hpp coverage extract empty; ensure apex unit tests ran under --coverage" >&2
+              exit 1
+            fi
+          done
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
@@ -290,9 +293,13 @@ jobs:
           path: |
             coverage.info
             coverage_usearch.info
-            coverage_gate.info
+            coverage_render.info
+            coverage_rules.info
+            coverage_shadow.info
             coverage.txt
-            coverage_gate.txt
+            coverage_render.txt
+            coverage_rules.txt
+            coverage_shadow.txt
 
   test_linux_arm:
     name: Linux (ARM64)

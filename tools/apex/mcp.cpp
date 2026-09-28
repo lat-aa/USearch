@@ -3,6 +3,7 @@
  *  @brief      Streamable HTTP MCP：tools/list、tools/call 与 JSON-RPC 面。
  */
 
+#include "mcp.hpp"
 #include "api.hpp"
 
 #include <cmath>

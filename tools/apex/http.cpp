@@ -3,6 +3,7 @@
  *  @brief      HTTP 网关：鉴权闸、令牌桶、Stage 流水线、MCP 挂载；OpenAI /v1 见 api.cpp。
  */
 
+#include "http.hpp"
 #include "api.hpp"
 #include "render.hpp"
 
@@ -81,12 +82,9 @@ json metricsSnapshot(Runtime const& rt) {
               {"lockWaitAvgMs", avg},
               {"lockWaitMaxMs", mx},
               {"stealChat", rt.encoder.stealChat.load(std::memory_order_relaxed)}}},
-            {"async",
-             {{"yieldSkip", rt.yieldSkip.load(std::memory_order_relaxed)},
-              {"queueAge", 0}}},
+            {"async", {{"yieldSkip", rt.yieldSkip.load(std::memory_order_relaxed)}, {"queueAge", 0}}},
             {"cache",
-             {{"l1", rt.cacheL1.load(std::memory_order_relaxed)},
-              {"l2", rt.cacheL2.load(std::memory_order_relaxed)}}}};
+             {{"l1", rt.cacheL1.load(std::memory_order_relaxed)}, {"l2", rt.cacheL2.load(std::memory_order_relaxed)}}}};
 }
 
 int serve(Runtime& rt) {

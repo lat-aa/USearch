@@ -2,6 +2,7 @@
  *  @file       config.cpp
  *  @brief      Config::load 与仓库根解析。
  */
+#include "config.hpp"
 #include "api.hpp"
 #include <cstdlib>
 #include <toml++/toml.hpp>
@@ -267,4 +268,3 @@ expected_gt<Config> Config::load(fs::path const& path) {
 }
 
 } // namespace api
-

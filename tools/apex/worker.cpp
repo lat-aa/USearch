@@ -3,14 +3,15 @@
  *  @brief      observe 入队与 Worker 蒸馏；Turnstats / note*（请求级 TLS）。
  */
 
+#include "worker.hpp"
 #include "api.hpp"
 #include "render.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
-#include <sstream>
 #include <mutex>
+#include <sstream>
 #include <thread>
 
 namespace api {
@@ -18,10 +19,8 @@ namespace {
 thread_local Turnstats* tlsTurn = nullptr;
 
 bool userHot(Runtime const& rt) {
-    if (rt.encoder.chatBusy.load(std::memory_order_acquire) != 0)
-        return true;
-    std::int64_t const last = rt.lastUserMs.load(std::memory_order_relaxed);
-    return last != 0 && steadyNowMs() - last < 2000;
+    return workerHot(rt.encoder.chatBusy.load(std::memory_order_acquire) != 0,
+                     rt.lastUserMs.load(std::memory_order_relaxed), steadyNowMs());
 }
 } // namespace
 

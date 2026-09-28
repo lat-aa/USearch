@@ -1,22 +1,21 @@
 /**
  * @file worker.cpp
- * @brief Worker 硬让路合同：chatBusy 或 lastUserMs 窗口内视为用户热路径。
+ * @brief Worker 硬让路合同：验证生产 api::workerHot 的 busy / 窗口边界。
  */
+#include "../../tools/apex/worker.hpp"
+
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
 
-static bool userHot(int chatBusy, std::int64_t lastMs, std::int64_t nowMs) {
-    if (chatBusy != 0)
-        return true;
-    return lastMs != 0 && nowMs - lastMs < 2000;
-}
-
 int main() {
-    assert(userHot(1, 0, 10000));
-    assert(userHot(0, 9000, 10000));
-    assert(!userHot(0, 7000, 10000));
-    assert(!userHot(0, 0, 10000));
+    using api::workerHot;
+    assert(workerHot(true, 0, 10000));            // chat 忙 → 热
+    assert(workerHot(false, 9000, 10000));        // 窗口内 → 热
+    assert(!workerHot(false, 7000, 10000));       // 窗口外 → 冷
+    assert(!workerHot(false, 0, 10000));          // 无用户活动 → 冷
+    assert(workerHot(true, 0, 10000, 5000));      // busy 优先于窗口
+    assert(!workerHot(false, 8000, 10000, 1500)); // 自定义窗口外
     std::puts("apex worker: ok");
     return 0;
 }

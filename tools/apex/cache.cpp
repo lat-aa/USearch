@@ -2,6 +2,7 @@
  *  @file       cache.cpp
  *  @brief      L1 精确缓存与 L2 语义缓存；热路径 tryEmbed，忙则 fail-open。
  */
+#include "cache.hpp"
 #include "api.hpp"
 #include "render.hpp"
 #include <mutex>
@@ -79,4 +80,3 @@ void cachePut(Runtime& rt, std::string const& task, std::string const& payload, 
     }
 }
 } // namespace api
-

@@ -28,7 +28,6 @@ add_executable(api
     agent.cpp
     openai.cpp
     config.cpp
-    fuse.cpp
 )
 # 服务端二进制：可移植 core（-O2），禁止 -march=native。
 setup_core_target(api)

@@ -3,12 +3,13 @@
  *  @brief      USearch ANN + SQLite 载荷 + 可选 shadow（SQ8）。
  */
 
+#include "store.hpp"
 #include "api.hpp"
 
 #include <algorithm>
 #include <cstdio>
-#include <mutex>
 #include <limits>
+#include <mutex>
 
 namespace api {
 Store::Store(Store&& other) noexcept
@@ -254,4 +255,3 @@ std::vector<std::pair<Doc, float>> Store::search(std::vector<float> const& query
 }
 
 } // namespace api
-

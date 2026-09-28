@@ -20,6 +20,9 @@ core.*
 .config/models/store.sqlite-*
 .config/models/
 
+# apex KPI 基准产物（benchapex/regapex 生成，手动比对）
+cpp/apexafter.json
+
 # C++ builds
 /build
 /build_release

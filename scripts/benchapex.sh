@@ -86,7 +86,7 @@ observeP99=$(p99 "${observe[@]}")
 costAfterP99=$(p99 "${costAfterObs[@]}")
 antPresyncP99=$(p99 "${antPresync[@]}")
 
-python3 - "$OUT" "$presyncP99" "$costP99" "$observeP99" "$costAfterP99" "$antPresyncP99" "$steal0" "$steal1" "$lockMax" "$N" <<'PY'
+python3 - "$OUT" "$presyncP99" "$costP99" "$observeP99" "$costAfterP99" "$antPresyncP99" "$steal0" "$steal1" "$lockMax" "$chatBusy" "$N" <<'PY'
 import json, sys
 path = sys.argv[1]
 out = {
@@ -98,7 +98,8 @@ out = {
     "stealChatBefore": int(float(sys.argv[7])),
     "stealChatAfter": int(float(sys.argv[8])),
     "lockWaitMaxMs": float(sys.argv[9]),
-    "n": int(sys.argv[10]),
+    "chatBusy": int(float(sys.argv[10])),
+    "n": int(sys.argv[11]),
 }
 json.dump(out, open(path, "w", encoding="utf-8"), indent=2)
 print("wrote", path)

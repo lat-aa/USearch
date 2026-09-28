@@ -43,18 +43,22 @@ set_tests_properties(apexfuse PROPERTIES LABELS "apex;unit" TIMEOUT 30)
 
 add_executable(apexworker worker.cpp)
 target_compile_features(apexworker PRIVATE cxx_std_17)
+target_include_directories(apexworker PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/apex)
+target_link_libraries(apexworker PRIVATE ${USEARCH_TARGET_NAME} nlohmann_json::nlohmann_json)
 add_test(NAME apexworker COMMAND apexworker)
 set_tests_properties(apexworker PROPERTIES LABELS "apex;unit" TIMEOUT 30)
 
 add_executable(apexrules rules.cpp)
 target_compile_features(apexrules PRIVATE cxx_std_17)
 target_include_directories(apexrules PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/apex)
-target_link_libraries(apexrules PRIVATE nlohmann_json::nlohmann_json)
+target_link_libraries(apexrules PRIVATE ${USEARCH_TARGET_NAME} nlohmann_json::nlohmann_json)
 add_test(NAME apexrules COMMAND apexrules)
 set_tests_properties(apexrules PROPERTIES LABELS "apex;unit" TIMEOUT 30)
 
 add_executable(apexshadow shadow.cpp)
 target_compile_features(apexshadow PRIVATE cxx_std_17)
+target_include_directories(apexshadow PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/apex)
+target_link_libraries(apexshadow PRIVATE ${USEARCH_TARGET_NAME} nlohmann_json::nlohmann_json)
 add_test(NAME apexshadow COMMAND apexshadow)
 set_tests_properties(apexshadow PROPERTIES LABELS "apex;unit" TIMEOUT 30)
 

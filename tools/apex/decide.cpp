@@ -30,6 +30,7 @@
  *  语义对齐 apex `decide.rs`（CascadeDecider）；标识命名遵守 `.config/rules/names.md`。
  */
 
+#include "decide.hpp"
 #include "api.hpp"
 
 #include <algorithm>
@@ -42,15 +43,6 @@
 namespace api {
 
 namespace {
-
-/** ASCII 折叠为小写；非 ASCII（如中文关键词）原样保留，便于 `find` 命中。 */
-std::string asciiLower(std::string_view text) {
-    std::string out(text);
-    for (char& c : out)
-        if (static_cast<unsigned char>(c) <= 127)
-            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return out;
-}
 
 bool containsAny(std::string_view hay, std::vector<std::string> const& keys) {
     for (auto const& k : keys)
