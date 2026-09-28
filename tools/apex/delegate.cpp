@@ -11,28 +11,13 @@
 
 namespace api {
 
-std::string delegateToUpstream(Runtime& rt, json const& messages, bool responses, httplib::Response& res) {
+std::string delegateToUpstream(Runtime& rt, json const& messages, bool responses, httplib::Response& res, bool stream) {
     // 上游 model 统一口径：config.upstream.model（缺省 deepseek-chat）。
     std::string const model = rt.config.upstream.model.empty() ? "deepseek-chat" : rt.config.upstream.model;
     // 测试 seam：SMOKE_UPSTREAM_FIXTURE 设置时短路网络，返回固定文本（无 key 也可跑）。
     if (char const* uf = std::getenv("SMOKE_UPSTREAM_FIXTURE"); uf && *uf) {
         std::string reply = uf;
-        if (responses)
-            setJson(res, {{"id", "upstream"},
-                          {"object", "response"},
-                          {"status", "completed"},
-                          {"model", model},
-                          {"output",
-                           json::array({{{"type", "message"},
-                                         {"role", "assistant"},
-                                         {"content", json::array({{{"type", "output_text"}, {"text", reply}}})}}})}});
-        else
-            setJson(res, {{"id", "upstream"},
-                          {"object", "chat.completion"},
-                          {"model", model},
-                          {"choices", json::array({{{"index", 0},
-                                                    {"message", {{"role", "assistant"}, {"content", reply}}},
-                                                    {"finish_reason", "stop"}}})}});
+        writeReply(res, "upstream", model, reply, responses, stream);
         return reply;
     }
 
@@ -121,22 +106,7 @@ std::string delegateToUpstream(Runtime& rt, json const& messages, bool responses
     if (reply.empty())
         reply = up->body;
 
-    if (responses)
-        setJson(res,
-                {{"id", "upstream"},
-                 {"object", "response"},
-                 {"status", "completed"},
-                 {"model", model},
-                 {"output", json::array({{{"type", "message"},
-                                          {"role", "assistant"},
-                                          {"content", json::array({{{"type", "output_text"}, {"text", reply}}})}}})}});
-    else
-        setJson(res, {{"id", "upstream"},
-                      {"object", "chat.completion"},
-                      {"model", model},
-                      {"choices", json::array({{{"index", 0},
-                                                {"message", {{"role", "assistant"}, {"content", reply}}},
-                                                {"finish_reason", "stop"}}})}});
+    writeReply(res, "upstream", model, reply, responses, stream);
     return reply;
 }
 

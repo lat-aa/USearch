@@ -630,6 +630,79 @@ inline void priceRates(std::string const& model, bool cacheHit, bool peak, doubl
 // ---- 七块统计渲染（服务端权威；与 scripts/stats.sh 同格式，供三端 hook 注入）----
 
 /** 用 /v1/presync 的字段渲染七块 markdown。缺失字段写「未上报」，禁止用 0 冒充。 */
+/**
+ * OpenAI Responses 流式帧（单发，纯文本）：以 `response.completed` 收尾。
+ * Codex 用 wire_api=responses 且默认 stream=true；缺此帧即报
+ * "stream closed before response.completed"。
+ */
+inline std::string sseResponses(std::string const& id, std::string const& model, std::string const& text) {
+    auto ev = [](std::string const& name, json const& d) { return "event: " + name + "\ndata: " + d.dump() + "\n\n"; };
+    std::string const item = "msg-" + id;
+    json const content = json::array({{{"type", "output_text"}, {"text", text}}});
+    json const message = {
+        {"id", item}, {"type", "message"}, {"role", "assistant"}, {"status", "completed"}, {"content", content}};
+    json const resp = {{"id", id},
+                       {"object", "response"},
+                       {"status", "completed"},
+                       {"model", model},
+                       {"output", json::array({message})}};
+    std::string out;
+    out += ev("response.created", {{"type", "response.created"},
+                                   {"response",
+                                    {{"id", id},
+                                     {"object", "response"},
+                                     {"status", "in_progress"},
+                                     {"model", model},
+                                     {"output", json::array()}}}});
+    out += ev("response.output_item.added", {{"type", "response.output_item.added"},
+                                             {"output_index", 0},
+                                             {"item",
+                                              {{"id", item},
+                                               {"type", "message"},
+                                               {"role", "assistant"},
+                                               {"status", "in_progress"},
+                                               {"content", json::array()}}}});
+    out += ev("response.content_part.added", {{"type", "response.content_part.added"},
+                                              {"item_id", item},
+                                              {"output_index", 0},
+                                              {"content_index", 0},
+                                              {"part", {{"type", "output_text"}, {"text", ""}}}});
+    out += ev("response.output_text.delta", {{"type", "response.output_text.delta"},
+                                             {"item_id", item},
+                                             {"output_index", 0},
+                                             {"content_index", 0},
+                                             {"delta", text}});
+    out += ev("response.output_text.done", {{"type", "response.output_text.done"},
+                                            {"item_id", item},
+                                            {"output_index", 0},
+                                            {"content_index", 0},
+                                            {"text", text}});
+    out += ev("response.content_part.done", {{"type", "response.content_part.done"},
+                                             {"item_id", item},
+                                             {"output_index", 0},
+                                             {"content_index", 0},
+                                             {"part", {{"type", "output_text"}, {"text", text}}}});
+    out += ev("response.output_item.done",
+              {{"type", "response.output_item.done"}, {"output_index", 0}, {"item", message}});
+    out += ev("response.completed", {{"type", "response.completed"}, {"response", resp}});
+    return out;
+}
+
+/** OpenAI Chat 流式帧（单发）：一个 delta + 一个 stop，以 `[DONE]` 收尾。 */
+inline std::string sseChat(std::string const& id, std::string const& model, std::string const& text) {
+    json const head = {
+        {"id", id},
+        {"object", "chat.completion.chunk"},
+        {"model", model},
+        {"choices", json::array({{{"index", 0}, {"delta", {{"content", text}}}, {"finish_reason", nullptr}}})}};
+    json const tail = {
+        {"id", id},
+        {"object", "chat.completion.chunk"},
+        {"model", model},
+        {"choices", json::array({{{"index", 0}, {"delta", json::object()}, {"finish_reason", "stop"}}})}};
+    return "data: " + head.dump() + "\n\ndata: " + tail.dump() + "\n\ndata: [DONE]\n\n";
+}
+
 inline std::string renderBlock(json const& in) {
     auto num = [&](char const* k, long long dflt = 0) -> long long {
         auto it = in.find(k);

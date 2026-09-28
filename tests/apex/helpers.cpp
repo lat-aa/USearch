@@ -158,6 +158,20 @@ int main() {
         assert(big.find("overflow") != big.end());
     }
 
+    // SSE 线协议：Responses 必须 response.completed 收尾（否则 Codex 报 stream disconnected）；Chat 必须 [DONE]
+    {
+        std::string rs = api::sseResponses("cache", "deepseek-flash", "好");
+        assert(rs.find("event: response.created") != std::string::npos);
+        assert(rs.find("event: response.output_text.delta") != std::string::npos);
+        assert(rs.find("event: response.completed") != std::string::npos);
+        assert(rs.find("\"status\":\"completed\"") != std::string::npos);
+        assert(rs.find("好") != std::string::npos);
+        std::string cs = api::sseChat("agent", "deepseek-flash", "妙");
+        assert(cs.find("chat.completion.chunk") != std::string::npos);
+        assert(cs.find("\"content\":\"妙\"") != std::string::npos);
+        assert(cs.find("data: [DONE]") != std::string::npos);
+    }
+
     std::puts("apex helpers: ok");
     return 0;
 }

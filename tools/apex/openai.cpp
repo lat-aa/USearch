@@ -31,6 +31,16 @@ static void replyText(httplib::Response& res, std::string const& id, std::string
 }
 } // namespace
 
+void writeReply(httplib::Response& res, std::string const& id, std::string const& model, std::string const& payload,
+                bool responses, bool stream) {
+    if (stream) {
+        res.set_content(responses ? sseResponses(id, model, payload) : sseChat(id, model, payload),
+                        "text/event-stream");
+        return;
+    }
+    replyText(res, id, model, payload, responses);
+}
+
 void mountOpenai(httplib::Server& svr, Runtime& rt,
                  std::function<bool(httplib::Request const&, httplib::Response&)> gate) {
     // gate must outlive handlers: take by value into each lambda (see http.cpp stored std::function).
@@ -213,13 +223,15 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
                 taskQuery += messageText(m["content"]);
 
         std::string modelName = body.value("model", rt.encoder.modelId);
+        // Codex 用 wire_api=responses 且默认 stream=true；必须回 SSE 并以 response.completed 收尾。
+        bool const streamReq = body.value("stream", false);
 
         // L1 精确缓存：纯短路，命中即返回（不评分、不建上下文）。
         if (rt.config.cache.enableL1) {
             std::string payload, source;
             if (l1Hit(rt, l1Key(rt.policyFp, taskQuery), payload, source)) {
                 rt.cacheL1.fetch_add(1, std::memory_order_relaxed);
-                return replyText(res, "cache", modelName, payload, responses);
+                return writeReply(res, "cache", modelName, payload, responses, streamReq);
             }
         }
         // L2 语义缓存：USearch kind=cache + 指纹 + 相似度阈值。
@@ -227,7 +239,7 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
             std::string payload, source;
             if (l2Hit(rt, taskQuery, payload, source)) {
                 rt.cacheL2.fetch_add(1, std::memory_order_relaxed);
-                return replyText(res, "cache", modelName, payload, responses);
+                return writeReply(res, "cache", modelName, payload, responses, streamReq);
             }
         }
         // 本地 agent 关闭 / 熔断：跳过本地，直走上游兜底。
@@ -236,7 +248,7 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
             (rt.config.agent.enableFuse && rt.fuse.tripped(rt.config.agent.fuseFail, rt.config.agent.fuseRecover));
         if (localOff) {
             rt.agentDelegate.fetch_add(1, std::memory_order_relaxed);
-            std::string up = delegateToUpstream(rt, body["messages"], responses, res);
+            std::string up = delegateToUpstream(rt, body["messages"], responses, res, streamReq);
             if (!up.empty())
                 cachePut(rt, taskQuery, up, "upstream");
             return;
@@ -313,7 +325,7 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
         // 复杂任务（decide 判 Strong）直接交上游：本地 3B 在 4G 卡上 ~10s，白跑不值。
         if (rt.config.agent.skipComplex && route.model == Model::Strong) {
             rt.agentDelegate.fetch_add(1, std::memory_order_relaxed);
-            std::string up = delegateToUpstream(rt, body["messages"], responses, res);
+            std::string up = delegateToUpstream(rt, body["messages"], responses, res, streamReq);
             if (!up.empty())
                 cachePut(rt, taskQuery, up, "upstream");
             return;
@@ -352,10 +364,10 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
         }
         if (localOk) {
             cachePut(rt, taskQuery, payload, "local");
-            return replyText(res, "agent", modelName, payload, responses);
+            return writeReply(res, "agent", modelName, payload, responses, streamReq);
         }
         rt.agentDelegate.fetch_add(1, std::memory_order_relaxed);
-        std::string up = delegateToUpstream(rt, body["messages"], responses, res);
+        std::string up = delegateToUpstream(rt, body["messages"], responses, res, streamReq);
         if (!up.empty())
             cachePut(rt, taskQuery, up, "upstream");
         return;

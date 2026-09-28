@@ -12,6 +12,7 @@ namespace api {
 
 struct Runtime;
 
-std::string delegateToUpstream(Runtime& rt, json const& messages, bool responses, httplib::Response& res);
+std::string delegateToUpstream(Runtime& rt, json const& messages, bool responses, httplib::Response& res,
+                               bool stream = false);
 
 } // namespace api

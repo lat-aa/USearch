@@ -224,6 +224,15 @@ int serve(Runtime& rt) {
         setJson(res, out);
     });
 
+    // Streamable HTTP MCP：DELETE 终止会话（Codex/Cursor 收尾调用）。
+    // 实现里无按会话状态，回 204 即"已删除"；缺此路由客户端会记 404 ERROR。
+    svr.Delete("/mcp", [&](httplib::Request const& req, httplib::Response& res) {
+        if (!gate(req, res))
+            return;
+        res.status = 204;
+        res.set_content("", "text/plain");
+    });
+
     // 先 bind 再起 Worker，避免与 listen 抢启动期资源；失败则不入队消费。
     if (!svr.bind_to_port(host.c_str(), port)) {
         std::fprintf(stderr, "api: bind 失败 %s:%d\n", host.c_str(), port);
