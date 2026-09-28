@@ -39,9 +39,13 @@ int main() {
     }
 
     std::string prompt = formatPrompt(json::array({{{"name", "default"}, {"body", "hello"}}}),
-                                      json {{"model", "standard"}, {"depth", "medium"}, {"retrieval", "L2"},
-                                            {"compression", 0.7}, {"confidence", 0.75},
-                                            {"temperature", 0.2}, {"reasons", json::array({"r1"})}},
+                                      json{{"model", "standard"},
+                                           {"depth", "medium"},
+                                           {"retrieval", "L2"},
+                                           {"compression", 0.7},
+                                           {"confidence", 0.75},
+                                           {"temperature", 0.2},
+                                           {"reasons", json::array({"r1"})}},
                                       json::array(), nullptr);
     assert(prompt.find("Local knowledge JSON follows.") == 0);
     std::string corpus = formatCorpusText(prompt);
@@ -57,7 +61,8 @@ int main() {
     assert(stripThink("  plain  ") == "plain");
 
     // extractAgentResult / agentOk：标签隔离 + 解析兜底
-    assert(agentOk(extractAgentResult("<think>x</think><agent-result>{\"status\":\"ok\",\"payload\":\"hi\"}</agent-result>")));
+    assert(agentOk(
+        extractAgentResult("<think>x</think><agent-result>{\"status\":\"ok\",\"payload\":\"hi\"}</agent-result>")));
     assert(!agentOk(extractAgentResult("<agent-result>{\"status\":\"delegate\"}</agent-result>")));
     assert(extractAgentResult("<agent-result>{bad json}</agent-result>").empty());
     assert(extractAgentResult("no tags here").empty());
@@ -66,9 +71,8 @@ int main() {
 
     // 边界：多标签取首个；大小写不合规判失效；think 内示例不泄漏
     {
-        auto multi = extractAgentResult(
-            "<agent-result>{\"status\":\"ok\",\"payload\":\"first\"}</agent-result>"
-            "<agent-result>{\"status\":\"ok\",\"payload\":\"second\"}</agent-result>");
+        auto multi = extractAgentResult("<agent-result>{\"status\":\"ok\",\"payload\":\"first\"}</agent-result>"
+                                        "<agent-result>{\"status\":\"ok\",\"payload\":\"second\"}</agent-result>");
         assert(agentOk(multi));
         assert(multi.value("payload", "") == "first");
 
@@ -84,8 +88,8 @@ int main() {
 
     // 宽松兜底：payload 内含【未转义】的双引号（3B 模型常见）→ 仍能救回
     {
-        auto bad = extractAgentResult(
-            "<agent-result>{\"status\":\"ok\",\"tool_calls\":[],\"payload\":\"use \"git add <file>...\" to stage\"}</agent-result>");
+        auto bad = extractAgentResult("<agent-result>{\"status\":\"ok\",\"tool_calls\":[],\"payload\":\"use \"git add "
+                                      "<file>...\" to stage\"}</agent-result>");
         assert(agentOk(bad));
         assert(bad.value("payload", "").find("git add <file>") != std::string::npos);
 

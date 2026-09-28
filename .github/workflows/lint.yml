@@ -26,7 +26,7 @@ jobs:
           sudo apt-get install -y clang-format shellcheck cmake build-essential curl
       - name: clang-format check
         run: |
-          mapfile -t files < <(find tools/apex tools/sqlite \( -name '*.hpp' -o -name '*.cpp' \) | sort)
+          mapfile -t files < <(find tools/apex tools/sqlite tests/apex \( -name '*.hpp' -o -name '*.cpp' \) | sort)
           clang-format --dry-run --Werror "${files[@]}"
       - name: shellcheck
         run: shellcheck -S warning scripts/*.sh

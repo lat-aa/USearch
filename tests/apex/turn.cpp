@@ -57,8 +57,12 @@ int main() {
     // content 归一：只留文本部件，丢非文本
     {
         json parts = json::array();
-        json p1; p1["type"] = "input_text"; p1["text"] = "hi";
-        json p2; p2["type"] = "input_image"; p2["image_url"] = "x";
+        json p1;
+        p1["type"] = "input_text";
+        p1["text"] = "hi";
+        json p2;
+        p2["type"] = "input_image";
+        p2["image_url"] = "x";
         parts.push_back(p1);
         parts.push_back(p2);
         parts.push_back("raw");
@@ -71,8 +75,12 @@ int main() {
     // role 归一：developer→system，空→user
     {
         json msgs = json::array();
-        json a; a["role"] = "developer"; a["content"] = "a";
-        json b; b["role"] = ""; b["content"] = "b";
+        json a;
+        a["role"] = "developer";
+        a["content"] = "a";
+        json b;
+        b["role"] = "";
+        b["content"] = "b";
         msgs.push_back(a);
         msgs.push_back(b);
         json nm = normalizeMessages(msgs);
@@ -86,12 +94,18 @@ int main() {
         json body;
         body["instructions"] = "SYS";
         json input = json::array();
-        json m1; m1["type"] = "message"; m1["role"] = "user";
+        json m1;
+        m1["type"] = "message";
+        m1["role"] = "user";
         json c1 = json::array();
-        json t1; t1["type"] = "input_text"; t1["text"] = "U1";
+        json t1;
+        t1["type"] = "input_text";
+        t1["text"] = "U1";
         c1.push_back(t1);
         m1["content"] = c1;
-        json fc; fc["type"] = "function_call_output"; fc["output"] = "x";
+        json fc;
+        fc["type"] = "function_call_output";
+        fc["output"] = "x";
         input.push_back(m1);
         input.push_back(fc);
         input.push_back("U2");

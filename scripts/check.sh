@@ -31,7 +31,7 @@ do_lint() {
 
   say "clang-format --dry-run --Werror"
   if have clang-format; then
-    mapfile -t files < <(find "$ROOT/tools/apex" "$ROOT/tools/sqlite" \( -name '*.hpp' -o -name '*.cpp' \) | sort)
+    mapfile -t files < <(find "$ROOT/tools/apex" "$ROOT/tools/sqlite" "$ROOT/tests/apex" \( -name '*.hpp' -o -name '*.cpp' \) | sort)
     clang-format --dry-run --Werror "${files[@]}" || fail "clang-format"
   else
     echo "SKIP clang-format (not installed)"

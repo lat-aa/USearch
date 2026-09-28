@@ -121,3 +121,7 @@ jobs:
       - name: Smoke L4 nightly
         run: |
           API_BIN="$PWD/build_api/api" TOKEN=sk-default PORT=18089 ./scripts/smoke_nightly.sh
+      - name: Smoke store persistence (upsert -> restart -> search)
+        run: |
+          chmod +x scripts/smoke_store.sh
+          API_BIN="$PWD/build_api/api" PORT=18093 ./scripts/smoke_store.sh

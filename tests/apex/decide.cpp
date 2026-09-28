@@ -3,9 +3,9 @@
  * @brief decide 档位命名与降档约定（本地镜像，不拉 llama），防止 MCP/HTTP 展示名漂移。
  */
 #include <cassert>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <cstdint>
 
 enum class Model : std::uint8_t { Weak, Standard, Strong };
 enum class Depth : std::uint8_t { Shallow, Medium, Deep };
@@ -13,48 +13,36 @@ enum class Retrieval : std::uint8_t { L0, L1, L2, L3 };
 
 static char const* modelName(Model m) noexcept {
     switch (m) {
-    case Model::Weak:
-        return "weak";
-    case Model::Standard:
-        return "standard";
-    case Model::Strong:
-        return "strong";
+    case Model::Weak: return "weak";
+    case Model::Standard: return "standard";
+    case Model::Strong: return "strong";
     }
     return "standard";
 }
 
 static Model modelDowngrade(Model m) noexcept {
     switch (m) {
-    case Model::Weak:
-        return Model::Weak;
-    case Model::Standard:
-        return Model::Weak;
-    case Model::Strong:
-        return Model::Standard;
+    case Model::Weak: return Model::Weak;
+    case Model::Standard: return Model::Weak;
+    case Model::Strong: return Model::Standard;
     }
     return Model::Weak;
 }
 
 static char const* depthName(Depth d) noexcept {
     switch (d) {
-    case Depth::Shallow:
-        return "shallow";
-    case Depth::Medium:
-        return "medium";
-    case Depth::Deep:
-        return "deep";
+    case Depth::Shallow: return "shallow";
+    case Depth::Medium: return "medium";
+    case Depth::Deep: return "deep";
     }
     return "medium";
 }
 
 static Depth depthDowngrade(Depth d) noexcept {
     switch (d) {
-    case Depth::Shallow:
-        return Depth::Shallow;
-    case Depth::Medium:
-        return Depth::Shallow;
-    case Depth::Deep:
-        return Depth::Medium;
+    case Depth::Shallow: return Depth::Shallow;
+    case Depth::Medium: return Depth::Shallow;
+    case Depth::Deep: return Depth::Medium;
     }
     return Depth::Shallow;
 }
