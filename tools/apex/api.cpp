@@ -690,8 +690,8 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
 
         // 4) 七块（服务端权威渲染；纯 MCP 路径无上游费用）
         char conf[16], retain[16];
-        std::snprintf(conf, sizeof(conf), "%d", static_cast<int>(d.confidence * 100.0f + 0.5f));
-        std::snprintf(retain, sizeof(retain), "%d", static_cast<int>(d.compression * 100.0f + 0.5f));
+        std::snprintf(conf, sizeof(conf), "%d", static_cast<int>(std::lround(d.confidence * 100.0f)));
+        std::snprintf(retain, sizeof(retain), "%d", static_cast<int>(std::lround(d.compression * 100.0f)));
         std::string const depthCn = d.depth == Depth::Deep     ? "深层推理"
                                     : d.depth == Depth::Medium ? "中层推理"
                                                                : "浅层推理";

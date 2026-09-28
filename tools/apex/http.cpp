@@ -70,11 +70,15 @@ int serve(Runtime& rt) {
         return 1;
     }
     std::string host = rt.config.listen.substr(0, colon);
-    int port = std::atoi(rt.config.listen.c_str() + colon + 1);
-    if (host.empty() || port <= 0 || port > 65535) {
+    char* portEnd = nullptr;
+    long const portParsed = std::strtol(rt.config.listen.c_str() + colon + 1, &portEnd, 10);
+    bool const portOk =
+        portEnd != rt.config.listen.c_str() + colon + 1 && *portEnd == '\0' && portParsed > 0 && portParsed <= 65535;
+    if (host.empty() || !portOk) {
         std::fprintf(stderr, "api: listen 端口无效\n");
         return 1;
     }
+    int const port = static_cast<int>(portParsed);
 
     httplib::Server svr;
     // 默认任务队列；自定义 ThreadPool(1) 在 keep-alive 下易踩死锁/崩溃。
