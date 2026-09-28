@@ -7,11 +7,13 @@
 #include "render.hpp"
 
 #include <cstdlib>
+#include <functional>
 #include <httplib.h>
 
 namespace api {
 
-std::string delegateToUpstream(Runtime& rt, json const& messages, bool responses, httplib::Response& res, bool stream) {
+std::string delegateToUpstream(Runtime& rt, json const& messages, bool responses, httplib::Response& res, bool stream,
+                               std::function<std::string(json const&, std::string const&)> const& blockFor) {
     // 上游 model 统一口径：config.upstream.model（缺省 deepseek-chat）。
     std::string const model = rt.config.upstream.model.empty() ? "deepseek-chat" : rt.config.upstream.model;
     // 测试 seam：SMOKE_UPSTREAM_FIXTURE 设置时短路网络，返回固定文本（无 key 也可跑）。
@@ -119,6 +121,13 @@ std::string delegateToUpstream(Runtime& rt, json const& messages, bool responses
     if (reply.empty())
         reply = up->body;
 
+    // 回合真值块（统计块 + 🔤/📝）：上游路径同样确定性追加，不依赖模型自觉照抄。
+    std::string const shown = reply;
+    if (blockFor) {
+        std::string const tail = blockFor(usage, shown);
+        if (!tail.empty())
+            reply += tail;
+    }
     rt.lastCall.put(usage.value("prompt_tokens", std::uint64_t{0}), usage.value("completion_tokens", std::uint64_t{0}),
                     reply, model, "upstream", !usage.empty(), steadyNowMs());
     writeReply(res, "upstream", model, reply, responses, stream, usage);

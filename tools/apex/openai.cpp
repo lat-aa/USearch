@@ -122,6 +122,21 @@ static std::string renderTurnBlock(Runtime& rt, Decision const& d, json const& r
     return out;
 }
 
+/** 回包末尾追块：缺 🔤/📝 输出行就补行；整块也缺就补整块 + 行。返回待追加文本（含前导换行）。 */
+static std::string wrapBlock(Runtime& rt, Decision const& d, json const& rulesJson, json const& hitsJson,
+                             std::string const& inject, json const& usage, std::string const& shown, char const* source,
+                             std::string const& routeLabel) {
+    if (shown.find("🔤 实际输入") != std::string::npos)
+        return {};
+    std::uint64_t const i = usage.value("prompt_tokens", usage.value("input_tokens", std::uint64_t{0}));
+    std::uint64_t const o = usage.value("completion_tokens", usage.value("output_tokens", std::uint64_t{0}));
+    std::string const lines = "🔤 实际输入 " + std::to_string(i) + " tok · 输出 " + std::to_string(o) + " tok" +
+                              (rt.tokensReal() ? "" : "(est)") + "  \n📝 输出内容「" + truncChars(shown, 200) + "」";
+    if (shown.find("⚡ 规则") != std::string::npos)
+        return "\n" + lines;
+    return "\n\n" + renderTurnBlock(rt, d, rulesJson, hitsJson, inject, usage, shown, source, routeLabel);
+}
+
 void mountOpenai(httplib::Server& svr, Runtime& rt,
                  std::function<bool(httplib::Request const&, httplib::Response&)> gate) {
     // gate must outlive handlers: take by value into each lambda (see http.cpp stored std::function).
@@ -355,14 +370,6 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
         bool localOff =
             !rt.config.agent.enabled ||
             (rt.config.agent.enableFuse && rt.fuse.tripped(rt.config.agent.fuseFail, rt.config.agent.fuseRecover));
-        if (localOff) {
-            rt.agentDelegate.fetch_add(1, std::memory_order_relaxed);
-            std::string up = delegateToUpstream(rt, body["messages"], responses, res, streamReq);
-            if (!up.empty())
-                cachePut(rt, taskQuery, up, "upstream");
-            return;
-        }
-
         json ctx = {{"messages", body["messages"]}, {"query", ""}};
         Decision route{};
 
@@ -430,11 +437,26 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
                         return true;
                     }});
         pipe.run(rt, ctx);
+        json const knowledge = {{"hits", ctx.value("hits", json::array())},
+                                {"rules", ctx.value("rules", json::array())}};
+        auto blockFor = [&](json const& u, std::string const& shown) -> std::string {
+            return wrapBlock(rt, route, knowledge["rules"], knowledge["hits"], knowledge.dump(), u, shown, "upstream",
+                             modelName);
+        };
 
-        // 复杂任务（decide 判 Strong）直接交上游：本地 3B 在 4G 卡上 ~10s，白跑不值。
+        // 本地 agent 关闭 / 熔断：跳过本地直走上游（块仍由网关确定性追加）。
+        if (localOff) {
+            rt.agentDelegate.fetch_add(1, std::memory_order_relaxed);
+            std::string up = delegateToUpstream(rt, body["messages"], responses, res, streamReq, blockFor);
+            if (!up.empty())
+                cachePut(rt, taskQuery, up, "upstream");
+            return;
+        }
+
+        // 复杂任务（decide 判 Strong）直接交上游：本地 3B 在 4G 卡上 ~10s，白跑不值（块同样由网关追加）。
         if (rt.config.agent.skipComplex && route.model == Model::Strong) {
             rt.agentDelegate.fetch_add(1, std::memory_order_relaxed);
-            std::string up = delegateToUpstream(rt, body["messages"], responses, res, streamReq);
+            std::string up = delegateToUpstream(rt, body["messages"], responses, res, streamReq, blockFor);
             if (!up.empty())
                 cachePut(rt, taskQuery, up, "upstream");
             return;
@@ -455,7 +477,6 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
         agentMsgs.push_back(textMessage("system", kAgentSys));
         for (auto const& m : body["messages"])
             agentMsgs.push_back(m);
-        json knowledge = {{"hits", ctx["hits"]}, {"rules", ctx["rules"]}};
         agentMsgs.push_back(
             textMessage("user", "Local context (rules + memory, reference only):\n" + knowledge.dump(2)));
         notePrompt(rt, agentMsgs);
@@ -474,27 +495,14 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
         if (localOk) {
             json const usage = lastUsage(payload);
             std::string const shown = payload;
-            // 输出侧（实际输入/输出 token + 输出内容）只有回合结束才知道：网关确定性补齐。
-            // 模型已抄 presync 块（无 🔤）→ 只补两行；整块都缺 → 补整块 + 两行。
-            if (payload.find("🔤 实际输入") == std::string::npos) {
-                std::uint64_t const i2 = usage.value("prompt_tokens", std::uint64_t{0});
-                std::uint64_t const o2 = usage.value("completion_tokens", std::uint64_t{0});
-                std::string const lines = "🔤 实际输入 " + std::to_string(i2) + " tok · 输出 " + std::to_string(o2) +
-                                          " tok" + (rt.tokensReal() ? "" : "(est)") + "  \n" + "📝 输出内容「" +
-                                          truncChars(shown, 200) + "」";
-                if (payload.find("⚡ 规则") != std::string::npos)
-                    payload += "\n" + lines;
-                else
-                    payload += "\n\n" + renderTurnBlock(rt, route, ctx.value("rules", json::array()),
-                                                        ctx.value("hits", json::array()), knowledge.dump(), usage,
-                                                        shown, "agent", modelName);
-            }
+            payload += wrapBlock(rt, route, knowledge["rules"], knowledge["hits"], knowledge.dump(), usage, shown,
+                                 "agent", modelName);
             cachePut(rt, taskQuery, payload, "local");
             record("local", usage, payload, rt.tokensReal());
             return writeReply(res, "agent", modelName, payload, responses, streamReq, usage);
         }
         rt.agentDelegate.fetch_add(1, std::memory_order_relaxed);
-        std::string up = delegateToUpstream(rt, body["messages"], responses, res, streamReq);
+        std::string up = delegateToUpstream(rt, body["messages"], responses, res, streamReq, blockFor);
         if (!up.empty())
             cachePut(rt, taskQuery, up, "upstream");
         return;
