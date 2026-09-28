@@ -26,7 +26,7 @@ Windows 宿主 (APEXLY)
    `192.168.164.162 api.ya.com`
 3. **api 二进制**：`.local/api` 必须是 Ubuntu glibc 构建（拒绝 musl/Alpine 产物），
    `.local/lib` 内含运行时 so（libstdc++ / libgomp / libgcc_s / libssl / libcrypto）。
-4. **模型**：`/var/lib/usearch/models/Nanbeige4.1-3B-Instruct.Q4_K_M.gguf`（2.44GB）。
+4. **模型**：`/var/lib/usearch/models/Nanbeige4.2-3B-Q4_K_M.gguf`（~2.57GB）。
 5. **镜像**：`docker.io/library/ubuntu:26.04`（缺失时 apply.sh 会从国内镜像拉取）。
 
 ## 快速开始
@@ -79,7 +79,7 @@ sudo deploy/k3s/apply.sh redeploy    # 再滚动重启并双路径探活
    旧进程在 PID namespace 间留下孤儿 socket。清理：Windows 侧 `wsl --shutdown` 后重进 Ubuntu，
    `systemctl restart k3s`；确认 `ss -ltnp | grep 6444` 无残留。
 
-2. **Pod 加载 2.44GB 模型期间被杀 / 一直不 Ready**
+2. **Pod 加载 ~2.57GB 模型期间被杀 / 一直不 Ready**
    根因是 GGUF 放在 drvfs(`/mnt/e`) 上，9p 随机读慢 + 探针过紧。
    对策（已固化进 api.yaml）：GGUF 放 `/var/lib/usearch/models`（ext4）+ `startupProbe`
    10s×30（最长 300s），readiness/liveness 后置。先确认 `k3s kubectl -n usearch logs -l app=api`

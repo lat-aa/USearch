@@ -1,19 +1,20 @@
 #!/bin/sh
 # 下载/复制 Nanbeige GGUF 到 Linux ext4 盘（/var/lib/usearch/models），并做 sha256 校验。
-# 2.44GB 模型放 drvfs(/mnt/e) 会因 9p 随机读慢而拖长启动窗口，务必落盘到 /var/lib。
+# ~2.57GB 模型放 drvfs(/mnt/e) 会因 9p 随机读慢而拖长启动窗口，务必落盘到 /var/lib。
 #
 # Usage:
 #   deploy/k3s/fetch-model.sh                          # 默认 HF 源
-#   MODEL_SRC=/mnt/e/models/Nanbeige4.1-3B-Instruct.Q4_K_M.gguf ./fetch-model.sh   # 本地复制
+#   MODEL_SRC=/mnt/e/models/Nanbeige4.2-3B-Q4_K_M.gguf ./fetch-model.sh   # 本地复制
 #   MODEL_SRC=https://example.com/model.gguf ./fetch-model.sh                       # URL 下载
 set -e
 
 MODEL_DIR="${MODEL_DIR:-/var/lib/usearch/models}"
-MODEL_NAME="Nanbeige4.1-3B-Instruct.Q4_K_M.gguf"
+MODEL_NAME="Nanbeige4.2-3B-Q4_K_M.gguf"
 DEST="$MODEL_DIR/$MODEL_NAME"
-EXPECT="043246350c952877b38958a9e35c480419008b6b2d52bedaf2b805ed2447b4df"
-# HF 仓库 Edge-Quant/Nanbeige4.1-3B-Q4_K_M-GGUF；确切文件名以仓库实际为准，可用 MODEL_SRC 覆盖。
-MODEL_SRC="${MODEL_SRC:-https://huggingface.co/Edge-Quant/Nanbeige4.1-3B-Q4_K_M-GGUF/resolve/main/Nanbeige4.1-3B-Instruct.Q4_K_M.gguf}"
+# Tdamre/Nanbeige4.2-3B-GGUF Q4_K_M（arch=nanbeige）
+EXPECT="99c7bfb88907f7eee0a04c4314f1c46bca391819478d8cb90b3e164f09576489"
+# HF 官方常不通时用镜像：MODEL_SRC=https://hf-mirror.com/Tdamre/Nanbeige4.2-3B-GGUF/resolve/main/Nanbeige4.2-3B-Q4_K_M.gguf
+MODEL_SRC="${MODEL_SRC:-https://huggingface.co/Tdamre/Nanbeige4.2-3B-GGUF/resolve/main/Nanbeige4.2-3B-Q4_K_M.gguf}"
 
 sha_of() { sha256sum "$1" | awk '{print $1}'; }
 

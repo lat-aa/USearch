@@ -75,7 +75,7 @@ spec:
             - name: cuda
               mountPath: /usr/local/cuda
               readOnly: true
-          # 2.44GB GGUF 启动慢：先跑 startupProbe（最长 300s），过了才走就绪/存活
+          # ~2.57GB GGUF 启动慢：先跑 startupProbe（最长 300s），过了才走就绪/存活
           startupProbe:
             httpGet:
               path: /alive

@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <sstream>
 #include <string>
@@ -103,9 +104,68 @@ inline std::string stripThink(std::string text) {
         return {};
     return cleaned.substr(b, e - b + 1);
 }
+/** 宽松取某 key 后第一个字符串标量（容忍整体 JSON 略坏）。 */
+inline std::string lenientStringField(std::string const& s, std::string const& key) {
+    std::string const pat = "\"" + key + "\"";
+    std::size_t const k = s.find(pat);
+    if (k == std::string::npos)
+        return {};
+    std::size_t const c = s.find(':', k + pat.size());
+    if (c == std::string::npos)
+        return {};
+    std::size_t const q = s.find('"', c + 1);
+    if (q == std::string::npos)
+        return {};
+    std::size_t const e = s.find('"', q + 1);
+    if (e == std::string::npos)
+        return {};
+    return s.substr(q + 1, e - q - 1);
+}
+
+/**
+ * 宽松取某 key 后的长文本：从开引号一直取到最后一个引号。
+ * 模型（尤其 3B）经常在 payload 里写未转义的 " ，导致整体 JSON 非法；这里救回来。
+ * 只做常见反转义（\n \t \r \" \\ \/）。
+ */
+inline std::string lenientTailField(std::string const& s, std::string const& key) {
+    std::string const pat = "\"" + key + "\"";
+    std::size_t const k = s.find(pat);
+    if (k == std::string::npos)
+        return {};
+    std::size_t const c = s.find(':', k + pat.size());
+    if (c == std::string::npos)
+        return {};
+    std::size_t const q = s.find('"', c + 1);
+    if (q == std::string::npos)
+        return {};
+    std::size_t const e = s.rfind('"');
+    if (e == std::string::npos || e <= q)
+        return {};
+    std::string const rawv = s.substr(q + 1, e - q - 1);
+    std::string out;
+    out.reserve(rawv.size());
+    for (std::size_t i = 0; i < rawv.size(); ++i) {
+        if (rawv[i] == '\\' && i + 1 < rawv.size()) {
+            switch (rawv[i + 1]) {
+            case 'n': out.push_back('\n'); ++i; break;
+            case 't': out.push_back('\t'); ++i; break;
+            case 'r': out.push_back('\r'); ++i; break;
+            case '"': out.push_back('"'); ++i; break;
+            case '\\': out.push_back('\\'); ++i; break;
+            case '/': out.push_back('/'); ++i; break;
+            default: out.push_back(rawv[i]); break;
+            }
+        } else {
+            out.push_back(rawv[i]);
+        }
+    }
+    return out;
+}
+
 /**
  * 标签隔离：丢弃全部 <think> 推理，只取 <agent-result>…</agent-result> 内部的 JSON。
  * 缺失开始/结束标签、截断、JSON 解析失败 → 返回空对象（判失效 → 上层 delegate）。
+ * 严格 JSON 失败时走宽松兜底（救回 payload 内未转义的引号）。
  */
 inline json extractAgentResult(std::string_view raw) {
     std::string text = stripThink(std::string(raw));
@@ -119,10 +179,21 @@ inline json extractAgentResult(std::string_view raw) {
         return json();
     try {
         json j = json::parse(slice);
-        return j.is_object() ? j : json();
+        if (j.is_object())
+            return j;
     } catch (...) {
-        return json();
+        // fallthrough: 宽松兜底
     }
+    // 宽松兜底：模型常在 payload 里写未转义的 " → 严格 JSON 必然失败。
+    std::string const st = lenientStringField(inner, "status");
+    if (st == "ok" || st == "delegate") {
+        json out = json::object();
+        out["status"] = st;
+        out["tool_calls"] = json::array();
+        out["payload"] = lenientTailField(inner, "payload");
+        return out;
+    }
+    return json();
 }
 
 /** 协议判定：仅 status=="ok" 视为本地完成，其余（delegate/缺失/非法）一律交上游。 */
@@ -528,5 +599,58 @@ struct Fuse {
         openedAtMs.store(0, std::memory_order_release);
     }
 };
+
+
+// ---- 七块统计渲染（服务端权威；与 scripts/stats.sh 同格式，供三端 hook 注入）----
+
+/** 用 /v1/presync 的字段渲染七块 markdown。缺失字段写「未上报」，禁止用 0 冒充。 */
+inline std::string renderBlock(json const& in) {
+    auto num = [&](char const* k, long long dflt = 0) -> long long {
+        auto it = in.find(k);
+        return (it != in.end() && it->is_number()) ? it->get<long long>() : dflt;
+    };
+    auto str = [&](char const* k, char const* dflt = "") -> std::string {
+        auto it = in.find(k);
+        return (it != in.end() && it->is_string()) ? it->get<std::string>() : std::string(dflt);
+    };
+    long long const total = num("total"), matched = num("matched");
+    long long const naive = num("naive"), selected = num("selected"), optimized = num("optimized");
+    long long const pickSaved = (selected > 0) ? (naive - selected) : 0;
+    long long const trimSaved = (selected > 0) ? (selected - optimized) : 0;
+    double const savedPct = naive > 0 ? (static_cast<double>(naive - optimized) / naive) * 100.0 : 0.0;
+    long long const retainPct = num("retainPct"), confPct = num("confPct");
+
+    char pctBuf[32];
+    std::snprintf(pctBuf, sizeof(pctBuf), "%.1f", savedPct);
+
+    std::ostringstream o;
+    o << "⚡ 规则 **" << matched << "**/**" << total << "** 命中 · token **" << naive << " → " << optimized
+      << "** · **省 " << pctBuf << "%**  \n";
+    o << "🔖 决策 Nanbeige4.2 " << str("nanbeige", "未上报") << " · USearch " << str("usearch", "未上报")
+      << " · SQLite " << str("sqlite", "未上报") << str("stackExtra") << "  \n";
+    std::string const route = str("route"), routeNote = str("routeNote");
+    o << "🧭 路由 ";
+    if (!route.empty() && !routeNote.empty())
+        o << route << "（" << routeNote << "）";
+    else if (!route.empty())
+        o << route;
+    else
+        o << routeNote;
+    o << " · " << str("depthCn", "浅层推理") << " · " << str("retCn", "不做检索") << " · 保留上下文 "
+      << retainPct << "% · 置信 " << confPct << "%  \n";
+    char costBuf[32], outBuf[32];
+    std::snprintf(costBuf, sizeof(costBuf), "%.6f", in.value("totalCost", 0.0));
+    std::snprintf(outBuf, sizeof(outBuf), "%.6f", in.value("outputCost", 0.0));
+    o << "💰 费用 **¥" << costBuf << "** · " << str("priceNote", "未调/v1") << " · "
+      << str("cacheNote", "未命中缓存") << " · " << str("peakNote", "空闲时段") << " · 输出 ¥" << outBuf
+      << str("costExtra") << "  \n";
+    o << "🏷️ 命中规则 " << str("ids", "无") << " · 省量 筛选 **" << pickSaved << "** ＋ 裁剪 **" << trimSaved
+      << "**" << str("hitExtra") << "  \n";
+    o << "💡 依据 " << str("reasonCn", "未上报") << " · " << str("biasCn", "token 为估算值") << "  \n";
+    o << str("summary", "📦 上下文 未上报") << "\n";
+    if (auto c = in.find("corpus"); c != in.end() && c->is_string() && !c->get_ref<std::string const&>().empty())
+        o << c->get_ref<std::string const&>() << "\n";
+    return o.str();
+}
 
 } // namespace api

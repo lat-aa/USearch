@@ -1,5 +1,16 @@
 {
   "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node scripts/presync.js",
+            "statusMessage": "apex presync"
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "cost|mcp__.*__cost",

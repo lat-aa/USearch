@@ -34,7 +34,10 @@ HTTP/MCP 线协议仍为 JSON；仅进程配置与 decide 词表用 TOML。
 | `rate` / `refill` | 令牌桶；rate=0 关闭 |
 | `chat.temperature` / `chat.max` | 采样 |
 | `decide.*` | 级联路由阈值；`lexicon` → `.config/decide/config.toml`（含 `complex` / `medium`） |
+| `embed.gpu` | 嵌入模型卸载层数；4G 显存下须 0(CPU)，GPU 失败会自动回退 CPU |
+| `embed.gguf` | 专用嵌入模型（bge-m3 等）；空=复用 chat 模型；池化用顶层 `pooling`(cls\|mean\|lasttoken) |
 | `upstream.base_url` / `upstream.key_env` / `upstream.model` | 上游兜底地址 / 密钥环境变量 / 上游 `model` 名（缺省 `https://api.deepseek.com` / `OPENAI_API_KEY` / `deepseek-chat`） |
+| `agent.skip_complex` | true 时 decide 判复杂(Strong)直接走上游，不白跑本地 |
 | `agent.*` | 本地 agent：`enabled`（false=直连上游）/ `max_tool_rounds` / `token_budget_ratio` / `enable_fuse` / `fuse_fail_threshold` / `fuse_recovery_seconds` |
 | `cache.*` | 短路缓存：`enable_l1` / `l1_ttl_seconds` / `enable_l2` / `l2_similarity_threshold` |
 | `retrieval.*` | 检索重排：`rule_weight_multiplier` / `top_k` |
@@ -69,6 +72,7 @@ NumKong 单元门禁（与 CI `quality.yml` / Ubuntu GCC 对齐）：见 `CONTRI
 |----|------|------|-----|
 | L0 | `scripts/smoke_mcp.sh` | MCP 握手 / Auth / GET·POST SSE / `tools/list`（含 Codex 别名） | prerelease |
 | L1 | `scripts/smoke_v1.sh` | `/v1` models·embed·memory·route·rules·chat·responses·流式·负向 | prerelease（无 GGUF 时生成类 SKIP） |
+| Hooks | `scripts/smoke_hooks.js` | 三端 presync/posttool 契约 + fail-open（7 例） | prerelease |
 | L1b | `scripts/smoke_agent.sh` | 本地 agent ok/delegate/truncated 三路径 + 工具循环 + L1 缓存 + observe→Worker | prerelease（确定性，无 GGUF/上游 key） |
 | L2 | `scripts/smoke_apex.sh` | rules→decide→cost→observe→aliases→`stats.sh` | nightly |
 | L3 | `scripts/test_hooks.js` | `injectmodel.js`（实际模型上报；`presync.js` gate 已移除） | prerelease |
@@ -82,6 +86,7 @@ cmake -B build -DUSEARCH_BUILD_API=ON -DUSEARCH_BUILD_TEST_CPP=OFF -DUSEARCH_BUI
 cmake --build build --target api -j"$(nproc)"
 API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_mcp.sh
 API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_v1.sh
+node scripts/smoke_hooks.js
 API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_agent.sh
 API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_apex.sh
 node scripts/test_hooks.js

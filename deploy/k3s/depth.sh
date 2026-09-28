@@ -283,7 +283,7 @@ if "local" in tr:
 out=subprocess.check_output(cmd,text=True)
 os.unlink(path)
 print(out)
-assert "🔖 决策 Nanbeige4.1" in out
+assert "🔖 决策 Nanbeige4.2" in out
 assert "📦 上下文" in out
 assert "naive" in out and "kept" in out and "gatePack" in out
 assert "注入" in out

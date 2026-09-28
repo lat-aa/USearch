@@ -1,186 +1,187 @@
 #!/usr/bin/env node
 /**
- * 三端 Hook(presync)：主 LLM 前调用 MCP/HTTP gate。
- * Cursor beforeSubmitPrompt → continue/user_message
- * Codex UserPromptSubmit → decision/additionalContext
- * Claude UserPromptSubmit → continue/stopReason 或 additionalContext
+ * apex presync：主 LLM 之前的统一前置钩子（三端）。
+ *
+ * 实测/官方契约：
+ *   Codex  UserPromptSubmit   → { hookSpecificOutput: { hookEventName, additionalContext } }   ✅ 可注入
+ *   Claude UserPromptSubmit   → 同上                                                          ✅ 可注入
+ *   Cursor beforeSubmitPrompt → { continue, user_message(仅阻断时) }                            ❌ 不能注入
+ *        → Cursor 的注入改由 postToolUse.additional_context 完成（见 scripts/posttool.js）
+ *
+ * 红线：fail-open。任何异常都必须放行，绝不阻塞用户输入。
  */
 'use strict';
-
 const http = require('http');
 const https = require('https');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { URL } = require('url');
 
+const TIMEOUT_MS = Number(process.env.APEX_PRESYNC_TIMEOUT_MS || 800);
+const STASH_TTL_MS = 120000;
+
 function readStdin() {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const chunks = [];
     process.stdin.setEncoding('utf8');
     process.stdin.on('data', (c) => chunks.push(c));
     process.stdin.on('end', () => resolve(chunks.join('')));
-    process.stdin.on('error', reject);
+    process.stdin.on('error', () => resolve(''));
   });
 }
 
 function detectClient(raw) {
-  if (raw.hook_event_name === 'UserPromptSubmit' || raw.hookEventName === 'UserPromptSubmit') {
-    if (raw.session_id || raw.cwd) return 'claude';
+  if (raw && raw.hook_event_name === 'UserPromptSubmit') {
+    // Claude 带 session_id + transcript_path；Codex 带 session_id/cwd
+    if (raw.transcript_path || raw.permission_mode) return 'claude';
     return 'codex';
   }
-  if (raw.prompt !== undefined && (raw.continue !== undefined || raw.attachments)) return 'cursor';
-  if (raw.prompt !== undefined) return 'cursor';
+  if (raw && raw.prompt !== undefined) return 'cursor';
   return 'codex';
 }
 
-function extractPrompt(raw) {
-  return String(raw.prompt || raw.user_prompt || raw.text || '').trim();
+function extractTask(raw) {
+  if (raw && typeof raw.prompt === 'string') return raw.prompt;
+  if (raw && typeof raw.user_prompt === 'string') return raw.user_prompt;
+  if (raw && typeof raw.text === 'string') return raw.text;
+  return '';
 }
 
-function postGate(base, token, task) {
-  // 单测夹具：APEX_GATE_FIXTURE=pack|answered|refuse|error 或 JSON 对象字符串，跳过真实 HTTP。
-  const fixture = process.env.APEX_GATE_FIXTURE;
-  if (fixture) {
-    if (fixture === 'error') return Promise.reject(new Error('fixture error'));
-    if (fixture === 'pack') return Promise.resolve({ status: 'pack', pack: { hits: [], note: 'fixture' }, answerConfidence: 0.4 });
-    if (fixture === 'answered')
-      return Promise.resolve({ status: 'answered', reply: 'hook-answered', answerConfidence: 0.99 });
-    if (fixture === 'refuse')
-      return Promise.resolve({ status: 'refuse', conflicts: ['policy'], answerConfidence: 0.1 });
-    try {
-      return Promise.resolve(JSON.parse(fixture));
-    } catch (e) {
-      return Promise.reject(new Error('bad APEX_GATE_FIXTURE'));
-    }
-  }
-  const url = new URL('/v1/gate', base.endsWith('/') ? base : base + '/');
-  const body = JSON.stringify({ task });
-  const lib = url.protocol === 'https:' ? https : http;
-  const headers = {
-    'Content-Type': 'application/json',
-    Accept: 'application/json',
-    'Content-Length': Buffer.byteLength(body),
-  };
-  if (token) headers.Authorization = 'Bearer ' + token;
+function extractFiles(raw) {
+  const files = [];
+  const atts = raw && raw.attachments;
+  if (Array.isArray(atts)) for (const a of atts) if (a && a.file_path) files.push(String(a.file_path));
+  return files;
+}
+
+function extractActual(raw) {
+  if (raw && typeof raw.model === 'string' && raw.model) return raw.model;
+  if (raw && typeof raw.model_id === 'string' && raw.model_id) return raw.model_id;
+  return '';
+}
+
+function stashPath(raw) {
+  const key = String((raw && (raw.cwd || raw.session_id || raw.conversation_id)) || 'default').replace(/[^A-Za-z0-9._-]/g, '_');
+  return path.join(os.tmpdir(), 'apex_presync_' + key + '.json');
+}
+
+function post(base, token, payload) {
   return new Promise((resolve, reject) => {
+    let url;
+    try {
+      url = new URL('/v1/presync', base.endsWith('/') ? base : base + '/');
+    } catch (e) {
+      return reject(e);
+    }
+    const body = JSON.stringify(payload);
+    const lib = url.protocol === 'https:' ? https : http;
     const req = lib.request(
       {
         hostname: url.hostname,
         port: url.port || (url.protocol === 'https:' ? 443 : 80),
         path: url.pathname,
         method: 'POST',
-        headers,
-        timeout: 25000,
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          Authorization: 'Bearer ' + token,
+          'Content-Length': Buffer.byteLength(body),
+        },
       },
       (res) => {
-        const chunks = [];
-        res.on('data', (d) => chunks.push(d));
+        let data = '';
+        res.setEncoding('utf8');
+        res.on('data', (c) => (data += c));
         res.on('end', () => {
-          const text = Buffer.concat(chunks).toString('utf8');
+          if (res.statusCode !== 200) return reject(new Error('HTTP ' + res.statusCode));
           try {
-            resolve(JSON.parse(text));
+            resolve(JSON.parse(data));
           } catch (e) {
-            reject(new Error('gate non-json: ' + text.slice(0, 200)));
+            reject(e);
           }
         });
       }
     );
     req.on('error', reject);
-    req.on('timeout', () => {
-      req.destroy();
-      reject(new Error('gate timeout'));
-    });
+    req.setTimeout(TIMEOUT_MS, () => req.destroy(new Error('presync timeout')));
     req.write(body);
     req.end();
   });
 }
 
-function emit(obj) {
-  process.stdout.write(JSON.stringify(obj));
+function buildInjection(r) {
+  const parts = [];
+  const mem = Array.isArray(r.memory) ? r.memory : [];
+  const rules = Array.isArray(r.rules) ? r.rules : [];
+  if (rules.length || mem.length) {
+    parts.push('本地知识（apex 服务端检索，本轮参考，勿逐字复述）：');
+    if (rules.length) {
+      parts.push('【规则】');
+      for (const x of rules) parts.push('### ' + x.name + '\n' + (x.body || ''));
+    }
+    if (mem.length) {
+      parts.push('【历史经验】');
+      for (const m of mem) parts.push('- (' + m.id + ') ' + String(m.text || '').slice(0, 400));
+    }
+  }
+  if (r.block) parts.push('【统计块】本轮回复末尾请原样附上以下内容：\n' + r.block);
+  return parts.join('\n');
 }
 
 async function main() {
   let raw = {};
   try {
     const stdin = await readStdin();
-    if (stdin.trim()) raw = JSON.parse(stdin);
+    raw = JSON.parse(stdin.replace(/^\uFEFF/, ''));
   } catch (_) {
     raw = {};
   }
-  const prompt = extractPrompt(raw);
-  if (!prompt) {
-    // 无 prompt：放行
-    const client = detectClient(raw);
-    if (client === 'cursor') emit({ continue: true });
-    else emit({});
+  const client = detectClient(raw);
+  const task = extractTask(raw);
+
+  // 无任务：放行
+  if (!task) {
+    process.stdout.write(client === 'cursor' ? JSON.stringify({ continue: true }) : '{}');
     return;
   }
+
   const base = process.env.APEX_BASE || process.env.USEARCH_BASE || 'http://api.ya.com';
   const token = process.env.APEX_TOKEN || process.env.USEARCH_TOKEN || 'sk-default';
-  let gated;
+
+  let r;
   try {
-    gated = await postGate(base, token, prompt);
-  } catch (e) {
-    // 失败开放：不阻断主 LLM
-    const client = detectClient(raw);
-    if (client === 'cursor') emit({ continue: true, user_message: String(e.message || e) });
-    else
-      emit({
-        hookSpecificOutput: {
-          hookEventName: 'UserPromptSubmit',
-          additionalContext: 'gate unavailable: ' + String(e.message || e),
-        },
-      });
+    r = await post(base, token, {
+      task,
+      files: extractFiles(raw),
+      client,
+      actual_model: extractActual(raw),
+    });
+  } catch (_) {
+    // fail-open：服务端不可用/超时 → 直接放行
+    process.stdout.write(client === 'cursor' ? JSON.stringify({ continue: true }) : '{}');
     return;
   }
 
-  const status = gated.status || 'pack';
-  const reply = gated.reply || '';
-  const pack = gated.pack || {};
-  const client = detectClient(raw);
+  const ctx = buildInjection(r);
 
-  if (status === 'answered' && reply) {
-    if (client === 'cursor') {
-      emit({ continue: false, user_message: reply });
-      return;
-    }
-    if (client === 'claude') {
-      emit({ continue: false, stopReason: reply });
-      return;
-    }
-    // Codex：block + reason 展示给用户
-    emit({ decision: 'block', reason: reply });
-    return;
-  }
-
-  if (status === 'refuse') {
-    const why = JSON.stringify(gated.conflicts || gated.reason || 'policy conflict');
-    if (client === 'cursor') {
-      emit({ continue: false, user_message: 'gate refuse: ' + why });
-      return;
-    }
-    if (client === 'claude') {
-      emit({ continue: false, stopReason: 'gate refuse: ' + why });
-      return;
-    }
-    emit({ decision: 'block', reason: 'gate refuse: ' + why });
-    return;
-  }
-
-  // pack：注入上下文后放行主 LLM
-  const ctx = 'gate pack JSON follows:\n' + JSON.stringify(pack).slice(0, 9000);
   if (client === 'cursor') {
-    // Cursor beforeSubmitPrompt 不能注入 additional_context；放行并由 apex 首调 gate
-    emit({ continue: true });
+    // Cursor 此处不能注入：把上下文暂存，交给 postToolUse 注入
+    try {
+      fs.writeFileSync(stashPath(raw), JSON.stringify({ ts: Date.now(), ctx }), 'utf8');
+    } catch (_) {}
+    process.stdout.write(JSON.stringify({ continue: true }));
     return;
   }
-  emit({
-    hookSpecificOutput: {
-      hookEventName: 'UserPromptSubmit',
-      additionalContext: ctx,
-    },
-  });
+
+  // Codex / Claude：直接注入
+  process.stdout.write(
+    JSON.stringify({
+      hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: ctx },
+    })
+  );
 }
 
-main().catch((e) => {
-  process.stderr.write(String(e.stack || e) + '\n');
-  process.stdout.write(JSON.stringify({ continue: true }));
+main().catch(() => {
+  process.stdout.write('{}');
 });

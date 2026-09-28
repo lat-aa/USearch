@@ -178,6 +178,11 @@ static bool agentRun(Runtime& rt, std::string const& modelName, json const& agen
     // 默认关闭：实测 Nanbeige 的 <think> 是特殊 token（166103），llama.cpp 语法采样器会抛
     // "empty grammar stack"。仅在模型不含此类特殊 token 时才用 APEX_AGENT_GRAMMAR=1 打开。
     bool const useGrammar = envStr("APEX_AGENT_GRAMMAR") == "1";
+    // Nanbeige 4.2：模板默认强制 <think>；等价于 enable_thinking=false 的 prefill。
+    // 非 Nanbeige 模型可设 APEX_AGENT_PREFILL= 空串关掉。
+    std::string const prefill = envStr("APEX_AGENT_PREFILL").empty()
+                                    ? std::string("<think>\n\n</think>\n\n")
+                                    : envStr("APEX_AGENT_PREFILL");
     // 允许用文件覆盖语法（调参/试验；生产用内置 kAgentGrammar）。
     std::string grammarText = kAgentGrammar;
     if (std::string gf = envStr("APEX_AGENT_GRAMMAR_FILE"); !gf.empty()) {
@@ -197,11 +202,14 @@ static bool agentRun(Runtime& rt, std::string const& modelName, json const& agen
         float prevTemp = rt.encoder.temperature;
         std::uint32_t prevMax = rt.encoder.maxTokens;
         std::string prevGram = rt.encoder.grammar;
+        std::string prevPre = rt.encoder.assistantPrefix;
         rt.encoder.maxTokens = budget;
+        rt.encoder.assistantPrefix = prefill;
         if (useGrammar)
             rt.encoder.grammar = grammarText;
         raw = rt.encoder.chat(msgs);
         rt.encoder.grammar = std::move(prevGram);
+        rt.encoder.assistantPrefix = std::move(prevPre);
         rt.encoder.maxTokens = prevMax;
         rt.encoder.temperature = prevTemp;
     };
@@ -547,13 +555,24 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
                     }});
         pipe.run(rt, ctx);
 
+        // 复杂任务（decide 判 Strong）直接交上游：本地 3B 在 4G 卡上 ~10s，白跑不值。
+        if (rt.config.agent.skipComplex && route.model == Model::Strong) {
+            rt.agentDelegate.fetch_add(1, std::memory_order_relaxed);
+            std::string up = delegateToUpstream(rt, body["messages"], responses, res);
+            if (!up.empty())
+                cachePut(rt, taskQuery, up, "upstream");
+            return;
+        }
+
         // 本地 CoT agent：检索上下文注入 → 标签隔离解析 + 有界工具循环 → ok / delegate
         static char const* const kAgentSys =
-            "你是本地执行 agent，可调用 MCP 工具（写在 tool_calls）。"
-            "可先推理，但必须在结束前给出结果：一个用 <agent-result>…</agent-result> 包裹的 JSON。"
-            "JSON：{\"status\":\"ok\",\"tool_calls\":[{\"name\":\"工具名\",\"args\":{}}],\"payload\":\"最终回复\"}。"
-            "status=ok：你已完成（payload 即最终回复，可为空）；status=delegate：你无法可靠处理，交给远端大模型。"
-            "示例：<agent-result>{\"status\":\"ok\",\"tool_calls\":[],\"payload\":\"Hello there!\"}</agent-result>";
+            "你是本地执行 agent。第一行就必须给出结果，禁止长篇推理。"
+            "结果是一个用 <agent-result>…</agent-result> 包裹的 JSON："
+            "{\"status\":\"ok\",\"tool_calls\":[{\"name\":\"工具名\",\"args\":{}}],\"payload\":\"最终回复\"}。"
+            "payload 必须极简：最多 2 句或 60 字以内（命令 / 结论 / 短答）；"
+            "凡是需要长解释、教程、多步分析的问题，一律 status=\"delegate\" 交给远端大模型。"
+            "tool_calls 为空数组表示不需要工具。"
+            "示例：<agent-result>{\"status\":\"ok\",\"tool_calls\":[],\"payload\":\"用 git status 查看。\"}</agent-result>";
 
         json agentMsgs = json::array();
         agentMsgs.push_back(textMessage("system", kAgentSys));
@@ -587,6 +606,123 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
     svr.Post("/v1/chat", chat);
     svr.Post("/v1/chat/completions", chat);
     svr.Post("/v1/responses", chat);
+
+    // /v1/presync：三端 hook 的统一前置入口（L1/L2 缓存 → 检索 → 决策 → 注入文本 + 七块）
+    svr.Post("/v1/presync", [gate, &rt](httplib::Request const& req, httplib::Response& res) {
+        if (!gate(req, res))
+            return;
+        auto body = json::parse(req.body, nullptr, false);
+        if (body.is_discarded())
+            return setJson(res, {{"error", {{"message", "bad json"}}}}, 400);
+
+        Rulequery rq = rulequeryFromJson(body);
+        std::string task = rq.task.empty() ? body.value("query", "") : rq.task;
+        rq.task = task;
+        std::string client = body.value("client", "");
+        std::string actual = body.value("actual_model", "");
+
+        // 1) L1 精确缓存
+        json cache = {{"hit", false}, {"kind", nullptr}};
+        if (rt.config.cache.enableL1 && !task.empty()) {
+            std::string payload, source;
+            if (l1Hit(rt, l1Key(rt.policyFp, task), payload, source))
+                cache = {{"hit", true}, {"kind", "L1"}};
+        }
+        // 2) L2 语义缓存
+        if (!cache["hit"].get<bool>() && rt.config.cache.enableL2 && !task.empty()) {
+            std::string payload, source;
+            if (l2Hit(rt, task, payload, source))
+                cache = {{"hit", true}, {"kind", "L2"}};
+        }
+
+        // 3) 决策 + 规则 + 记忆
+        Decideinput in = decideinputFromJson(body);
+        if (in.task.empty())
+            in.task = task;
+        Decision d = rt.decider.decide(in);
+        auto matched = resolveRules(rt, rq);
+
+        int base = rt.decider.sectionsFor(d.compression);
+        float semSum = 0.0f;
+        for (auto const& h : matched)
+            if (h.activation == Activation::Semantic)
+                semSum += (std::max)(h.score, 0.0f);
+        json rules = json::array();
+        std::size_t total = 0, naive = 0, selected = 0, optimized = 0;
+        for (auto const& r : rt.rules) {
+            if (!r.enabled)
+                continue;
+            ++total;
+            naive += estimate(r.body) + estimate(r.description) + estimate(r.name);
+        }
+        std::string ids;
+        std::string inject;
+        for (auto const& h : matched) {
+            int sections = ruleSections(h.activation, h.score, semSum, base);
+            std::string rb = compressSections(h.rule.body, task, static_cast<std::size_t>(sections));
+            selected += estimate(h.rule.body) + estimate(h.rule.description) + estimate(h.rule.name);
+            optimized += estimate(rb) + estimate(h.rule.description) + estimate(h.rule.name);
+            rules.push_back({{"name", h.rule.name},
+                             {"activation", activationName(h.activation)},
+                             {"score", h.score},
+                             {"body", rb}});
+            ids += (ids.empty() ? "" : " · ");
+            ids += h.rule.name;
+            inject += "### " + h.rule.name + "\n" + rb + "\n\n";
+        }
+        json memory = json::array();
+        if (!task.empty()) {
+            auto hits = rt.store.search(rt.encoder.embed(task), rt.decider.topkFor(d.retrieval));
+            for (auto const& [doc, score] : hits) {
+                if (doc.meta.value("kind", "") != "memory" || doc.meta.value("deprecated", false))
+                    continue;
+                memory.push_back({{"id", doc.id}, {"text", doc.text}, {"score", score}});
+                inject += "- (" + doc.id + ") " + doc.text + "\n";
+            }
+        }
+
+        // 4) 七块（服务端权威渲染；纯 MCP 路径无上游费用）
+        char conf[16], retain[16];
+        std::snprintf(conf, sizeof(conf), "%d", static_cast<int>(d.confidence * 100.0f + 0.5f));
+        std::snprintf(retain, sizeof(retain), "%d", static_cast<int>(d.compression * 100.0f + 0.5f));
+        std::string const depthCn = d.depth == Depth::Deep      ? "深层推理"
+                                    : d.depth == Depth::Medium  ? "中层推理"
+                                                                : "浅层推理";
+        std::string const retCn = d.retrieval == Retrieval::L3   ? "深度语义检索"
+                                  : d.retrieval == Retrieval::L2 ? "语义检索"
+                                  : d.retrieval == Retrieval::L1 ? "关键词检索"
+                                                                 : "不做检索";
+        std::string reasonCn = d.reasons.empty() ? "未上报" : d.reasons.front();
+        json blockIn = {{"total", total},
+                        {"matched", matched.size()},
+                        {"naive", naive},
+                        {"selected", selected},
+                        {"optimized", optimized},
+                        {"ids", ids.empty() ? "无" : ids},
+                        {"route", actual},
+                        {"routeNote", actual.empty() ? "建议档 · 未调/v1" : ""},
+                        {"depthCn", depthCn},
+                        {"retCn", retCn},
+                        {"retainPct", d.compression * 100.0f + 0.5f},
+                        {"confPct", d.confidence * 100.0f + 0.5f},
+                        {"totalCost", 0.0},
+                        {"outputCost", 0.0},
+                        {"priceNote", "未调/v1"},
+                        {"cacheNote", cache["hit"].get<bool>() ? "命中缓存" : "未命中缓存"},
+                        {"peakNote", "空闲时段"},
+                        {"reasonCn", reasonCn},
+                        {"biasCn", "token 为估算值"},
+                        {"corpus", ""}};
+        json out = {{"cache", cache},
+                    {"decision", d.toJson()},
+                    {"rules", rules},
+                    {"memory", memory},
+                    {"inject", inject},
+                    {"turn", {{"naive", naive}, {"selected", selected}, {"optimized", optimized}, {"ids", ids}}},
+                    {"block", renderBlock(blockIn)},
+                    {"client", client}};
+        setJson(res, out);
+    });
 
     // GET：只读目录（全部规则）；POST：按 task/files/manual 解析命中。
     svr.Get("/v1/rules", [gate, &rt](httplib::Request const& req, httplib::Response& res) {
@@ -823,6 +959,8 @@ expected_gt<Config> Config::load(fs::path const& path) {
     if (auto* ag = root["agent"].as_table()) {
         if (auto v = (*ag)["enabled"].value<bool>())
             c.agent.enabled = *v;
+        if (auto v = (*ag)["skip_complex"].value<bool>())
+            c.agent.skipComplex = *v;
         if (auto v = (*ag)["max_tool_rounds"].value<std::int64_t>() ; v && *v >= 0)
             c.agent.maxRounds = static_cast<std::size_t>(*v);
         if (auto v = (*ag)["token_budget_ratio"].value<double>())
@@ -844,6 +982,12 @@ expected_gt<Config> Config::load(fs::path const& path) {
         if (auto v = (*ca)["l2_similarity_threshold"].value<double>())
             c.cache.l2Sim = static_cast<float>(*v);
     }
+    if (auto* em = root["embed"].as_table()) {
+        if (auto v = (*em)["gguf"].value<std::string>())
+            c.embed.gguf = *v;
+        if (auto v = (*em)["gpu"].value<std::int64_t>())
+            c.embed.gpu = static_cast<int>(*v);
+    }
     if (auto* rt = root["retrieval"].as_table()) {
         if (auto v = (*rt)["rule_weight_multiplier"].value<double>())
             c.retrieval.ruleWeight = static_cast<float>(*v);
@@ -856,8 +1000,8 @@ expected_gt<Config> Config::load(fs::path const& path) {
         return out.failed("config path or pooling must be non-empty");
     if (c.decide.lexicon.empty())
         return out.failed("decide.lexicon path must be non-empty");
-    if (c.pooling != "lasttoken")
-        return out.failed("pooling must be lasttoken");
+    if (c.pooling != "lasttoken" && c.pooling != "cls" && c.pooling != "mean")
+        return out.failed("pooling must be lasttoken|cls|mean");
     if (c.listen.find(':') == std::string::npos)
         return out.failed("listen must be host:port");
     out.result = std::move(c);
@@ -889,6 +1033,25 @@ expected_gt<Runtime> Runtime::open(fs::path const& root) {
                                       rt.config.chat.temperature, rt.config.chat.max);
         err)
         return out.failed(err.release());
+    // 专用嵌入模型（bge-m3 等）必须在建 Store 之前加载：Store 维度取 encoder.dimensions。
+    // 失败则回退复用 chat 模型（与之前行为一致）。
+    if (!rt.config.embed.gguf.empty()) {
+        fs::path eg = joinRoot(root, rt.config.embed.gguf);
+        int egpu = rt.config.embed.gpu == -1000 ? rt.config.gpu : rt.config.embed.gpu;
+        std::uint32_t ectx = rt.config.ctx ? rt.config.ctx : 1024;
+        if (error_t e = rt.encoder.openEmbed(eg, ectx, egpu, rt.config.pooling); e) {
+            char const* msg = e.release();
+            std::fprintf(stderr, "api: 嵌入模型 GPU 加载失败(%s)\n", msg ? msg : "?");
+            if (egpu != 0) {
+                // 4G 卡常见：chat 模型已占满显存 → 自动回退 CPU，绝不因嵌入模型拖垮服务
+                std::fprintf(stderr, "api: 回退嵌入模型到 CPU (gpu=0)\n");
+                if (error_t e2 = rt.encoder.openEmbed(eg, ectx, 0, rt.config.pooling); e2) {
+                    char const* m2 = e2.release();
+                    std::fprintf(stderr, "api: 嵌入模型 CPU 加载也失败(%s)，复用 chat 模型\n", m2 ? m2 : "?");
+                }
+            }
+        }
+    }
     auto store = Store::make(rt.encoder.dimensions, joinRoot(root, rt.config.index),
                              joinRoot(root, rt.config.base), rt.config.shadow);
     if (!store)

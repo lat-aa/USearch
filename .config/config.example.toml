@@ -2,11 +2,11 @@
 # 缺键启动失败；无产品默认值。命名：单单词键，禁止 _ / -。
 # 复制为 config.toml 后按需修改：cp .config/config.example.toml .config/config.toml
 
-gguf = ".config/models/Nanbeige4.1-3B-Instruct.Q4_K_M.gguf"
+gguf = ".config/models/Nanbeige4.2-3B-Q4_K_M.gguf"
 ctx = 4096
 gpu = -1          # -1 = 全层卸载到 GPU（若可用）
 threads = 0       # 0 = 硬件并发
-pooling = "lasttoken"
+pooling = "cls"          # 嵌入池化：bge-m3 用 cls
 listen = "0.0.0.0:8088"
 index = ".config/index.usearch"
 base = ".config/store.sqlite"
@@ -46,6 +46,7 @@ lexicon = ".config/decide/config.toml"
 [agent]
 # true=先问本地模型（ok 本地作答，否则兜底上游）；false=直接走上游（本地模型不合规/无 GPU 时更快）
 enabled = true
+skip_complex = true   # 复杂任务(decide=Strong) 直接上游，不白跑本地
 max_tool_rounds = 3
 token_budget_ratio = 0.7
 enable_fuse = true
@@ -53,6 +54,10 @@ fuse_fail_threshold = 5
 fuse_recovery_seconds = 300
 
 # 上游兜底（delegate / 解析失败时转发；key 读环境变量）
+[embed]
+# 专用嵌入模型（语义检索/L2 缓存）；缺省复用 chat 模型
+gguf = ".config/models/bge-m3-Q8_0.gguf"
+
 [upstream]
 base_url = "https://api.deepseek.com"
 key_env = "OPENAI_API_KEY"

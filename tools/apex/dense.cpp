@@ -110,12 +110,14 @@ Encoder::~Encoder() { close(); }
 Encoder::Encoder(Encoder&& other) noexcept
     : dimensions(other.dimensions), modelReady(other.modelReady), ggufPath(std::move(other.ggufPath)),
       modelId(std::move(other.modelId)), temperature(other.temperature), maxTokens(other.maxTokens),
-      grammar(std::move(other.grammar)), ctx(other.ctx), gpu(other.gpu), threads(other.threads),
-      model(other.model), context(other.context),
-      chatCtx(other.chatCtx) {
+      grammar(std::move(other.grammar)), assistantPrefix(std::move(other.assistantPrefix)), ctx(other.ctx), gpu(other.gpu), threads(other.threads),
+      pool(std::move(other.pool)), embedPath(std::move(other.embedPath)), embedModel(other.embedModel),
+      embedCtx(other.embedCtx), model(other.model), context(other.context), chatCtx(other.chatCtx) {
     other.model = nullptr;
     other.context = nullptr;
     other.chatCtx = nullptr;
+    other.embedModel = nullptr;
+    other.embedCtx = nullptr;
     other.modelReady = false;
 }
 
@@ -130,15 +132,22 @@ Encoder& Encoder::operator=(Encoder&& other) noexcept {
     temperature = other.temperature;
     maxTokens = other.maxTokens;
     grammar = std::move(other.grammar);
+    assistantPrefix = std::move(other.assistantPrefix);
     ctx = other.ctx;
     gpu = other.gpu;
     threads = other.threads;
     model = other.model;
     context = other.context;
     chatCtx = other.chatCtx;
+    pool = std::move(other.pool);
+    embedPath = std::move(other.embedPath);
+    embedModel = other.embedModel;
+    embedCtx = other.embedCtx;
     other.model = nullptr;
     other.context = nullptr;
     other.chatCtx = nullptr;
+    other.embedModel = nullptr;
+    other.embedCtx = nullptr;
     other.modelReady = false;
     return *this;
 }
@@ -198,12 +207,47 @@ error_t Encoder::open(fs::path const& gguf, std::uint32_t ctxSize, int gpuLayers
     return {};
 }
 
+error_t Encoder::openEmbed(fs::path const& gguf, std::uint32_t ctxSize, int gpuLayers, std::string const& pooling) {
+    if (!fs::is_regular_file(gguf))
+        return "embed gguf not found";
+    llama_model_params mp = llama_model_default_params();
+    mp.n_gpu_layers = gpuLayers;
+    embedModel = llama_model_load_from_file(gguf.string().c_str(), mp);
+    if (!embedModel)
+        return "failed to load embed gguf";
+
+    llama_context_params cp = llama_context_default_params();
+    cp.n_ctx = ctxSize ? ctxSize : 1024;
+    cp.n_batch = 512;
+    cp.n_ubatch = 512;
+    cp.n_threads = threads;
+    cp.n_threads_batch = threads;
+    cp.embeddings = true;
+    cp.pooling_type = pooling == "cls" ? LLAMA_POOLING_TYPE_CLS
+                      : pooling == "mean" ? LLAMA_POOLING_TYPE_MEAN
+                                          : LLAMA_POOLING_TYPE_LAST;
+    embedCtx = llama_init_from_model(embedModel, cp);
+    if (!embedCtx) {
+        llama_model_free(embedModel);
+        embedModel = nullptr;
+        return "failed to create embed context";
+    }
+    embedPath = gguf.string();
+    pool = pooling;
+    dimensions = static_cast<std::size_t>(llama_model_n_embd(embedModel));
+    std::fprintf(stderr, "api: embed model ready %s dim=%zu pooling=%s\n", embedPath.c_str(), dimensions,
+                 pool.c_str());
+    return {};
+}
+
 std::vector<float> Encoder::embed(std::string_view text) {
     std::lock_guard<std::mutex> lock(mutex);
-    if (!modelReady || !model || !context)
+    llama_model* const m = embedModel ? embedModel : model;
+    llama_context* const c = embedCtx ? embedCtx : c;
+    if (!m || !c)
         return hashEmbed(text, dimensions ? dimensions : 1024);
 
-    llama_vocab const* vocab = llama_model_get_vocab(model);
+    llama_vocab const* vocab = llama_model_get_vocab(m);
     std::vector<llama_token> tokens(text.size() + 32);
     int n = llama_tokenize(vocab, text.data(), static_cast<int32_t>(text.size()), tokens.data(),
                           static_cast<int32_t>(tokens.size()), true, true);
@@ -216,31 +260,31 @@ std::vector<float> Encoder::embed(std::string_view text) {
         return hashEmbed(text, dimensions);
     tokens.resize(static_cast<std::size_t>(n));
 
-    int nCtx = static_cast<int>(llama_n_ctx(context));
+    int nCtx = static_cast<int>(llama_n_ctx(c));
     if (n > nCtx)
         tokens.erase(tokens.begin(), tokens.end() - nCtx);
 
-    clearKv(context);
+    clearKv(c);
     {
-        int32_t nBatch = static_cast<int32_t>(llama_n_batch(context));
+        int32_t nBatch = static_cast<int32_t>(llama_n_batch(c));
         for (std::size_t off = 0; off < tokens.size();) {
             std::size_t n = (std::min)(tokens.size() - off, static_cast<std::size_t>(nBatch));
             llama_batch batch = llama_batch_get_one(tokens.data() + off, static_cast<int32_t>(n));
-            if (llama_decode(context, batch) != 0)
+            if (llama_decode(c, batch) != 0)
                 return std::vector<float>(dimensions, 0.0f);
             off += n;
         }
     }
 
-    float const* emb = llama_get_embeddings_seq(context, 0);
+    float const* emb = llama_get_embeddings_seq(c, 0);
     if (!emb)
-        emb = llama_get_embeddings_ith(context, static_cast<int32_t>(tokens.size()) - 1);
+        emb = llama_get_embeddings_ith(c, static_cast<int32_t>(tokens.size()) - 1);
     if (!emb)
         return std::vector<float>(dimensions, 0.0f);
 
     std::vector<float> out(emb, emb + dimensions);
     l2norm(out);
-    clearKv(context);
+    clearKv(c);
     return out;
 }
 
@@ -314,6 +358,14 @@ std::string Encoder::chat(json const& messages, std::function<void(std::string_v
         }
     }
 
+    // 关闭思考 / 预填：llama.cpp 的模板引擎不支持 enable_thinking，这里等价地补一段 assistant 前缀。
+    if (!assistantPrefix.empty()) {
+        static char const* const kAss = "<|im_start|>assistant\n";
+        std::size_t const k = std::strlen(kAss);
+        if (prompt.size() >= k && prompt.compare(prompt.size() - k, k, kAss) == 0)
+            prompt += assistantPrefix;
+    }
+
     if (char const* pd = std::getenv("APEX_PROMPT_RAW"); pd && *pd)
         std::fprintf(stderr, "api: formatted prompt fromTmpl=%d bytes=%zu\n%s\n==PROMPT-END==\n",
                      fromTmpl ? 1 : 0, prompt.size(), prompt.c_str());
@@ -333,6 +385,7 @@ std::string Encoder::chat(json const& messages, std::function<void(std::string_v
     tokens.resize(static_cast<std::size_t>(n));
 
     clearKv(chatCtx);
+    llama_perf_context_reset(chatCtx);
     llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
     llama_sampler* smpl = llama_sampler_chain_init(sparams);
     if (!grammar.empty()) {
@@ -352,6 +405,7 @@ std::string Encoder::chat(json const& messages, std::function<void(std::string_v
     llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
 
     std::string reply;
+    auto const tPrefill0 = std::chrono::steady_clock::now();
     {
         int32_t nBatch = static_cast<int32_t>(llama_n_batch(chatCtx));
         for (std::size_t off = 0; off < tokens.size();) {
@@ -365,6 +419,7 @@ std::string Encoder::chat(json const& messages, std::function<void(std::string_v
             off += nTok;
         }
     }
+    auto const tPrefill1 = std::chrono::steady_clock::now();
     llama_token id = 0;
     std::uint32_t produced = 0;
     while (produced < maxTokens) {
@@ -393,6 +448,23 @@ std::string Encoder::chat(json const& messages, std::function<void(std::string_v
         if (llama_decode(chatCtx, batch) != 0)
             break;
         ++produced;
+    }
+    if (char const* pf = std::getenv("APEX_PERF"); pf && *pf) {
+        auto const tGen1 = std::chrono::steady_clock::now();
+        double const preMs =
+            std::chrono::duration<double, std::milli>(tPrefill1 - tPrefill0).count();
+        double const genMs = std::chrono::duration<double, std::milli>(tGen1 - tPrefill1).count();
+        std::fprintf(stderr, "api: phase prompt=%d tok %.0fms (%.0f tok/s) | gen=%u tok %.0fms (%.1f tok/s)\n",
+                     static_cast<int>(tokens.size()), preMs,
+                     preMs > 0 ? tokens.size() / (preMs / 1000.0) : 0.0, produced, genMs,
+                     genMs > 0 ? static_cast<double>(produced) / (genMs / 1000.0) : 0.0);
+        llama_perf_context_data const pd = llama_perf_context(chatCtx);
+        double const peek = pd.t_p_eval_ms > 0 ? pd.n_p_eval / (pd.t_p_eval_ms / 1000.0) : 0.0;
+        double const dek = pd.t_eval_ms > 0 ? pd.n_eval / (pd.t_eval_ms / 1000.0) : 0.0;
+        std::fprintf(stderr,
+                     "api: perf prompt=%d tok %.0fms (%.0f tok/s) | gen=%d tok %.0fms (%.1f tok/s) | cost=%.2f s\n",
+                     pd.n_p_eval, pd.t_p_eval_ms, peek, pd.n_eval, pd.t_eval_ms, dek,
+                     (pd.t_p_eval_ms + pd.t_eval_ms) / 1000.0);
     }
     llama_sampler_free(smpl);
     clearKv(chatCtx);

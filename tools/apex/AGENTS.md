@@ -26,6 +26,21 @@
 
 部署后 Ingress 探测仍用 `deploy/k3s/depth.sh`。矩阵说明见 [`.config/README.md`](.config/README.md)。
 
+## 前置 Hook（presync）— 三端统一
+
+服务端 `POST /v1/presync`：一次返回 `{cache, decision, rules, memory, inject, turn, block}`。
+`scripts/presync.js` 按 stdin 自动适配三端**实测契约**：
+
+| 客户端 | 事件 | 输出 | 能否注入上下文 |
+|--------|------|------|----------------|
+| Codex | `UserPromptSubmit` | `{hookSpecificOutput:{hookEventName,additionalContext}}` | ✅ |
+| Claude | `UserPromptSubmit` | 同上 | ✅ |
+| Cursor | `beforeSubmitPrompt` | `{continue:true}`（暂存上下文） | ❌（改用下面这条） |
+| Cursor | `postToolUse` | `{additional_context}`（`scripts/posttool.js` 一次性消费） | ✅ |
+
+红线：**fail-open**（服务端不可达/超时 → 直接放行，绝不阻塞输入）。
+注意：改 `hooks.json` / `.claude/settings.json` 后**需重启客户端**才生效。
+
 ## 三平面（冻结）
 
 | 平面 | 选模 | `model` / 🧭 |
@@ -101,7 +116,7 @@ Codex 实模：`.codex/hooks.json` 的 `PreToolUse` 把本轮 `model` 写入 `co
 
 ```text
 ⚡ 规则 **m**/**t** 命中 · token **n → o** · **省 p%**
-🔖 决策 Nanbeige4.1 … · USearch … · SQLite … · 入队 … / 蒸馏 …
+🔖 决策 Nanbeige4.2 … · USearch … · SQLite … · 入队 … / 蒸馏 …
 🧭 路由 … · … · 保留上下文 …% · 置信 …%
 💰 费用 **¥…** · … · 主 LLM 省 **N** 次 · 本地 chat **M**
 🏷️ 命中规则 … · 省量 筛选 **…** ＋ 裁剪 **…** · gate=… · cache=…

@@ -82,6 +82,26 @@ int main() {
         assert(nested.value("payload", "") == "real");
     }
 
+    // 宽松兜底：payload 内含【未转义】的双引号（3B 模型常见）→ 仍能救回
+    {
+        auto bad = extractAgentResult(
+            "<agent-result>{\"status\":\"ok\",\"tool_calls\":[],\"payload\":\"use \"git add <file>...\" to stage\"}</agent-result>");
+        assert(agentOk(bad));
+        assert(bad.value("payload", "").find("git add <file>") != std::string::npos);
+
+        // 正常转义路径仍然走严格 JSON（\n 还原为换行）
+        auto good = extractAgentResult(
+            "<agent-result>{\"status\":\"ok\",\"tool_calls\":[],\"payload\":\"line1\\nline2\"}</agent-result>");
+        assert(agentOk(good));
+        assert(good.value("payload", "") == "line1\nline2");
+
+        // delegate 也要能宽松识别
+        auto del = extractAgentResult(
+            "<agent-result>{\"status\":\"delegate\",\"tool_calls\":[],\"payload\":\"\"}</agent-result>");
+        assert(!agentOk(del));
+        assert(del.value("status", "") == "delegate");
+    }
+
     // Fuse：触发 / 熔断 / 恢复 / 移动语义
     {
         Fuse f;

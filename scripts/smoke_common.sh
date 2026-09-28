@@ -93,6 +93,9 @@ smoke_boot() {
   if [[ ! -f "$SMOKE_API_BIN" && -f "${SMOKE_API_BIN}.exe" ]]; then
     SMOKE_API_BIN="${SMOKE_API_BIN}.exe"
   fi
+  # 记为备份：smoke 会覆盖 config.toml，收尾必须还原，避免污染生产配置
+  SMOKE_CFG_BAK="${TMPDIR:-/tmp}/usearch_smoke_cfg_${SMOKE_PORT}.toml"
+  [ -f "$SMOKE_ROOT/.config/config.toml" ] && cp -f "$SMOKE_ROOT/.config/config.toml" "$SMOKE_CFG_BAK"
   cp "$SMOKE_ROOT/.config/config.example.toml" "$SMOKE_ROOT/.config/config.toml"
   # 绑定 loopback + 固定 Bearer，保证鉴权用例可复现。
   sed -i.bak -E "s|^listen = .*|listen = \"${SMOKE_HOST}:${SMOKE_PORT}\"|" "$SMOKE_ROOT/.config/config.toml"
@@ -193,6 +196,10 @@ smoke_boot() {
 }
 
 smoke_teardown() {
+  # 还原被 smoke 覆盖的 config.toml
+  if [[ -n "${SMOKE_CFG_BAK:-}" && -f "$SMOKE_CFG_BAK" ]]; then
+    cp -f "$SMOKE_CFG_BAK" "$SMOKE_ROOT/.config/config.toml"
+  fi
   if [[ -f "$SMOKE_PID_FILE" ]]; then
     smoke_kill_pid "$(cat "$SMOKE_PID_FILE")"
     rm -f "$SMOKE_PID_FILE"

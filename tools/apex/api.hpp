@@ -95,12 +95,19 @@ struct Decideconfig {
 /** 本地 agent 参数（替代旧 [gate] 路由）。 */
 struct Agentconfig {
     bool enabled = true; ///< false = /v1 直接走上游兜底（本地模型不合规/无 GPU 时用）
+    bool skipComplex = true; ///< decide 判为 Strong(复杂) 时跳过本地，直接上游（省掉本地白跑 ~5-10s）
     std::size_t maxRounds = 3;
     float tokenBudget = 0.7f;
     bool enableFuse = true;
     std::size_t fuseFail = 5;
     std::uint32_t fuseRecover = 300;
 };
+/** 专用嵌入模型（bge-m3 等）；空 = 复用 chat 模型。 */
+struct Embedconfig {
+    std::string gguf;
+    int gpu = -1000; ///< -1000 = 沿用 Config.gpu；0 = CPU（Pod 内 GPU 加载第二模型不稳时用）
+};
+
 /** 上游兜底（delegate 转发到远端大模型）。 */
 struct Upstreamconfig {
     std::string base;
@@ -146,6 +153,7 @@ struct Config {
     Chat chat {};
     Decideconfig decide {};
     Agentconfig agent {};
+    Embedconfig embed {};
     Upstreamconfig upstream {};
     Cacheconfig cache {};
     Retrievalconfig retrieval {};
@@ -215,17 +223,24 @@ struct Encoder {
     std::size_t dimensions = 0;
     bool modelReady = false;
     std::string ggufPath;
-    std::string modelId = "Nanbeige4.1-3B";
+    std::string modelId = "Nanbeige4.2-3B";
     float temperature = 0.0f;
     std::uint32_t maxTokens = 0;
     /// GBNF 语法约束（空 = 不约束）；仅本地 agent 用，保证 <agent-result> 必现
     std::string grammar;
+    /// 追加到 assistant 起始头之后的 prefill（如 Nanbeige 关闭思考：<think>\n\n</think>\n\n）
+    std::string assistantPrefix;
     std::uint32_t ctx = 0;
     int gpu = 0;
     int threads = 0;
     ::llama_model* model = nullptr;
     ::llama_context* context = nullptr;
     ::llama_context* chatCtx = nullptr;
+    /// 专用嵌入模型（空 = 复用 chat 模型）：bge-m3 等
+    std::string pool = "lasttoken"; ///< 池化：cls|mean|lasttoken
+    std::string embedPath;
+    ::llama_model* embedModel = nullptr;
+    ::llama_context* embedCtx = nullptr;
     std::mutex mutex;
     Encoder() = default;
     ~Encoder();
@@ -236,6 +251,8 @@ struct Encoder {
     void close();
     error_t open(fs::path const& gguf, std::uint32_t ctxSize, int gpuLayers, int nThreads, float temp,
                  std::uint32_t maxTok);
+    /** 加载专用嵌入模型（bge-m3 等）；pooling ∈ cls|mean|lasttoken。失败即回退复用 chat 模型。 */
+    error_t openEmbed(fs::path const& gguf, std::uint32_t ctxSize, int gpuLayers, std::string const& pooling);
     std::vector<float> embed(std::string_view text);
     std::string chat(std::string_view system, std::string_view user);
     std::string chat(std::string_view system, std::string_view user, std::function<void(std::string_view)> onDelta);

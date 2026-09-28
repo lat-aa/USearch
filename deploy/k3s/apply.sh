@@ -85,9 +85,9 @@ if [ ! -d .local/lib ] || [ -z "$(ls -A .local/lib 2>/dev/null)" ]; then
   exit 1
 fi
 
-# ---- 模型就位检查（2.44GB GGUF 必须已落盘到 Linux ext4） ----
+# ---- 模型就位检查（~2.57GB GGUF 必须已落盘到 Linux ext4） ----
 MODEL_DIR=/var/lib/usearch/models
-MODEL_FILE="$MODEL_DIR/Nanbeige4.1-3B-Instruct.Q4_K_M.gguf"
+MODEL_FILE="$MODEL_DIR/Nanbeige4.2-3B-Q4_K_M.gguf"
 if [ ! -d "$MODEL_DIR" ] || [ ! -f "$MODEL_FILE" ]; then
   echo "error: model missing: $MODEL_FILE" >&2
   echo "  run: deploy/k3s/fetch-model.sh" >&2
