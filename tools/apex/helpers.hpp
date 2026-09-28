@@ -86,16 +86,48 @@ inline std::string_view metaStr(json const& meta, char const* key) noexcept {
     return {};
 }
 
+/** 去推理包裹/特殊 token（定义见文末；此处前置声明供 parseGateModel 用）。 */
+inline std::string stripThink(std::string text);
+
+/**
+ * 取第一个「大括号平衡且引号感知」的 JSON 对象。
+ * 推理模型正文里常含 `{`（如示例 JSON），用 rfind('}') 会跨段取错。
+ */
 inline std::string extractJsonObject(std::string const& text) {
-    auto start = text.find('{');
-    auto end = text.rfind('}');
-    if (start == std::string::npos || end == std::string::npos || end <= start)
+    std::size_t start = text.find('{');
+    if (start == std::string::npos)
         return {};
-    return text.substr(start, end - start + 1);
+    int depth = 0;
+    bool inStr = false;
+    bool esc = false;
+    for (std::size_t i = start; i < text.size(); ++i) {
+        char const c = text[i];
+        if (inStr) {
+            if (esc)
+                esc = false;
+            else if (c == '\\')
+                esc = true;
+            else if (c == '"')
+                inStr = false;
+            continue;
+        }
+        if (c == '"') {
+            inStr = true;
+            continue;
+        }
+        if (c == '{')
+            ++depth;
+        else if (c == '}') {
+            --depth;
+            if (depth == 0)
+                return text.substr(start, i - start + 1);
+        }
+    }
+    return {};
 }
 
 inline json parseGateModel(std::string const& raw) {
-    std::string slice = extractJsonObject(raw);
+    std::string slice = extractJsonObject(stripThink(raw));
     if (slice.empty())
         return json::object();
     try {
@@ -142,7 +174,7 @@ inline json detectConflicts(std::vector<std::string const*> const& hard,
             for (std::string const* name : hard)
                 conflicts.push_back({{"rule", *name}, {"why", "memory meta.conflict"}});
         }
-        emitRed(scanRed(doc.text));
+        // 注意：不对任意 memory 正文做红色标识扫描——历史/<think> 文本里的连字符会误判冲突
     }
     return conflicts;
 }
@@ -193,6 +225,66 @@ inline json finalizeStatus(json model, float evidence, Gateweights const& g) {
     return model;
 }
 
+/** 去掉模型推理包裹（<think>…</think>）与 llama 特殊 token（<|…|>），得到可落盘的纯文本。 */
+inline std::string stripThink(std::string text) {
+    std::string out;
+    out.reserve(text.size());
+    for (std::size_t i = 0; i < text.size();) {
+        if (text.compare(i, 7, "<think>") == 0) {
+            std::size_t end = text.find("</think>", i);
+            if (end == std::string::npos)
+                break;
+            i = end + 8;
+            continue;
+        }
+        out.push_back(text[i]);
+        ++i;
+    }
+    std::string cleaned;
+    cleaned.reserve(out.size());
+    for (std::size_t i = 0; i < out.size();) {
+        if (out[i] == '<' && i + 1 < out.size() && out[i + 1] == '|') {
+            std::size_t end = out.find("|>", i);
+            if (end != std::string::npos) {
+                i = end + 2;
+                continue;
+            }
+        }
+        cleaned.push_back(out[i]);
+        ++i;
+    }
+    std::size_t b = cleaned.find_first_not_of(" \t\r\n");
+    std::size_t e = cleaned.find_last_not_of(" \t\r\n");
+    if (b == std::string::npos)
+        return {};
+    return cleaned.substr(b, e - b + 1);
+}
+/**
+ * 标签隔离：丢弃全部 <think> 推理，只取 <agent-result>…</agent-result> 内部的 JSON。
+ * 缺失开始/结束标签、截断、JSON 解析失败 → 返回空对象（判失效 → 上层 delegate）。
+ */
+inline json extractAgentResult(std::string_view raw) {
+    std::string text = stripThink(std::string(raw));
+    std::size_t a = text.find("<agent-result>");
+    std::size_t b = text.find("</agent-result>");
+    if (a == std::string::npos || b == std::string::npos || b <= a)
+        return json();
+    std::string inner = text.substr(a + 15, b - a - 15); // len("<agent-result>")==15
+    std::string slice = extractJsonObject(inner);
+    if (slice.empty())
+        return json();
+    try {
+        json j = json::parse(slice);
+        return j.is_object() ? j : json();
+    } catch (...) {
+        return json();
+    }
+}
+
+/** 协议判定：仅 status=="ok" 视为本地完成，其余（delegate/缺失/非法）一律交上游。 */
+inline bool agentOk(json const& j) {
+    return j.is_object() && j.value("status", "") == "ok";
+}
 /** 粗估 token（与 text.cpp estimate 同量级；测试与打包共用，免链 text）。 */
 inline std::size_t estimateLoose(std::string_view text) noexcept {
     return (text.size() + 3) / 4;
@@ -236,6 +328,8 @@ inline json buildPack(Packcfg const& cfg, std::string const& task,
     std::size_t used = 0;
     int const baseSecs = cfg.baseSecs;
     auto tryAdd = [&](std::string id, std::string span, float score, char const* why) {
+        if (id.empty() || span.empty())
+            return;
         if (!seen.insert(id).second)
             return;
         std::size_t cost = estimateLoose(span) + estimateLoose(id) + 8;
@@ -247,19 +341,50 @@ inline json buildPack(Packcfg const& cfg, std::string const& task,
                         {"why", why}});
         used += cost;
     };
+    (void)task;
+    // 1) 硬政策（Always/Glob）作固定前缀；按设计不进排序融合
     for (auto const& r : rules) {
         if (r.activation != 0 && r.activation != 1)
             continue;
-        std::string body = compressLoose(r.body, static_cast<std::size_t>(baseSecs));
-        tryAdd("rule:" + r.name, std::move(body), 1.0f, "hard policy");
+        tryAdd("rule:" + r.name, compressLoose(r.body, static_cast<std::size_t>(baseSecs)), 1.0f,
+               "hard policy");
     }
-    (void)task;
+    // 2) 政策序（Semantic，resolveRules 已按 score 降序）⊕ 记忆序（ANN 序）→ RRF 融合（k=60）
+    constexpr float kRrf = 60.0f;
+    struct Cand {
+        std::string id;
+        std::string span;
+        float score;
+        char const* why;
+        float fused;
+    };
+    std::vector<Cand> cands;
+    cands.reserve(rules.size() + hits.size());
+    std::size_t rank = 0;
+    for (auto const& r : rules) {
+        if (r.activation != 2)
+            continue;
+        std::string span = compressLoose(r.body, static_cast<std::size_t>(baseSecs));
+        if (span.empty())
+            continue;
+        ++rank;
+        cands.push_back({"rule:" + r.name, std::move(span), r.score, "policy", 1.0f / (kRrf + static_cast<float>(rank))});
+    }
+    rank = 0;
     for (auto const& [doc, score] : hits) {
         std::string span = compressLoose(doc.text, 2);
         if (span.size() > 400)
             span.resize(400);
-        tryAdd(doc.id, std::move(span), score, "memory");
+        if (span.empty())
+            continue;
+        ++rank;
+        cands.push_back({doc.id, std::move(span), score, "memory", 1.0f / (kRrf + static_cast<float>(rank))});
     }
+    std::stable_sort(cands.begin(), cands.end(),
+                     [](Cand const& a, Cand const& b) { return a.fused > b.fused; });
+    for (auto& c : cands)
+        tryAdd(std::move(c.id), std::move(c.span), c.score, c.why);
+    // 3) 模型自带 pack 追加在最后
     if (modelPack.is_array()) {
         for (auto const& m : modelPack) {
             if (!m.is_object())
@@ -374,7 +499,7 @@ inline std::string formatCorpusBody(json const& knowledge) {
  * 统计块 corpus：解析 `Local knowledge JSON follows.` 后的 JSON 为人读 markdown。
  * 解析失败时回退原文，避免丢信息。
  */
-inline std::string formatCorpus(std::string const& prompt) {
+inline std::string formatCorpusText(std::string const& prompt) {
     if (prompt.empty())
         return {};
     constexpr char const* kPrefix = "Local knowledge JSON follows.";
@@ -418,6 +543,143 @@ inline std::string formatPrompt(json const& rulesArr, json const& decisionJson, 
             knowledge["pack"] = *packRawOrNull;
     }
     return std::string("Local knowledge JSON follows.\n") + knowledge.dump(2);
+}
+
+// ---- 规范消息：{role, content:[{type:"text", text}]} ----
+
+/** content 展平为文本：字符串直取；数组逐部件取 text；对象取 text。 */
+inline std::string textOf(json const& content) {
+    if (content.is_string())
+        return content.get<std::string>();
+    if (content.is_array()) {
+        std::ostringstream ss;
+        for (auto const& part : content) {
+            if (part.is_string())
+                ss << part.get<std::string>() << '\n';
+            else if (part.is_object() && part.contains("text") && part["text"].is_string())
+                ss << part["text"].get<std::string>() << '\n';
+        }
+        return ss.str();
+    }
+    if (content.is_object() && content.contains("text") && content["text"].is_string())
+        return content["text"].get<std::string>();
+    return content.dump();
+}
+
+/** 规范文本部件：{type:"text", text}。 */
+inline json textPart(std::string text) {
+    json part;
+    part["type"] = "text";
+    part["text"] = std::move(text);
+    return part;
+}
+
+/** 规范消息：{role, content:[{type:"text",text}]}。 */
+inline json textMessage(std::string role, std::string text) {
+    json msg;
+    msg["role"] = std::move(role);
+    msg["content"] = json::array({textPart(std::move(text))});
+    return msg;
+}
+
+/** role 归一：developer 当 system；空当 user。 */
+inline std::string normalizeRole(std::string const& role) {
+    if (role == "developer")
+        return "system";
+    if (role.empty())
+        return "user";
+    return role;
+}
+
+/** content 归一：只保留文本部件 {type:"text",text}，非文本部件丢弃。 */
+inline json normalizeContent(json const& content) {
+    json parts = json::array();
+    if (content.is_string()) {
+        parts.push_back(textPart(content.get<std::string>()));
+    } else if (content.is_array()) {
+        for (auto const& part : content) {
+            if (part.is_string())
+                parts.push_back(textPart(part.get<std::string>()));
+            else if (part.is_object() && part.contains("text") && part["text"].is_string())
+                parts.push_back(textPart(part["text"].get<std::string>()));
+        }
+    } else if (content.is_object() && content.contains("text") && content["text"].is_string()) {
+        parts.push_back(textPart(content["text"].get<std::string>()));
+    }
+    return parts;
+}
+
+/** 规范消息数组：每条 {role, content:[{type:"text",text}]}。 */
+inline json normalizeMessages(json const& messages) {
+    json out = json::array();
+    if (!messages.is_array())
+        return out;
+    for (auto const& m : messages) {
+        if (!m.is_object())
+            continue;
+        json norm;
+        norm["role"] = normalizeRole(m.value("role", ""));
+        norm["content"] = normalizeContent(m.value("content", json()));
+        out.push_back(std::move(norm));
+    }
+    return out;
+}
+
+/** Codex Responses `input` → 规范 chat messages（content 恒为文本部件数组）。 */
+inline json messagesFromResponses(json const& body) {
+    json messages = json::array();
+    if (body.contains("instructions") && body["instructions"].is_string()) {
+        std::string ins = body["instructions"].get<std::string>();
+        if (!ins.empty())
+            messages.push_back(textMessage("system", std::move(ins)));
+    }
+    json input = body.contains("input") ? body["input"] : json();
+    auto push = [&](std::string const& role, json const& content) {
+        json norm;
+        norm["role"] = normalizeRole(role);
+        norm["content"] = normalizeContent(content);
+        messages.push_back(std::move(norm));
+    };
+    if (input.is_string()) {
+        push("user", input.get<std::string>());
+        return messages;
+    }
+    if (!input.is_array())
+        return messages;
+    for (auto const& item : input) {
+        if (item.is_string()) {
+            push("user", item.get<std::string>());
+            continue;
+        }
+        if (!item.is_object())
+            continue;
+        std::string type = item.value("type", "");
+        if (type == "function_call_output")
+            continue;
+        std::string role = item.value("role", type == "message" ? "user" : "");
+        if (item.contains("content"))
+            push(role, item["content"]);
+        else if (item.contains("text") && item["text"].is_string())
+            push(role, item["text"].get<std::string>());
+    }
+    return messages;
+}
+
+/** 统计块 corpus：从规范 messages 取 knowledge 消息文本，生成人读 markdown。 */
+inline std::string formatCorpus(json const& messages) {
+    if (!messages.is_array())
+        return {};
+    constexpr char const* kPrefix = "Local knowledge JSON follows.";
+    for (auto const& m : messages) {
+        if (!m.is_object())
+            continue;
+        std::string text = textOf(m.value("content", json()));
+        if (text.rfind(kPrefix, 0) == 0)
+            return formatCorpusText(text);
+    }
+    if (!messages.empty() && messages.front().is_object())
+        return formatCorpusText(textOf(messages.front().value("content", json())));
+    return {};
 }
 
 } // namespace api

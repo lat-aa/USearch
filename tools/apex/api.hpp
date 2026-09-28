@@ -104,6 +104,20 @@ struct Gateconfig {
     std::size_t minlen = 0;
 };
 
+/** 本地 agent 参数（替代旧 [gate] 路由）。 */
+struct Agentconfig {
+    std::size_t maxRounds = 3;
+    float tokenBudget = 0.7f;
+    bool enableFuse = true;
+    std::size_t fuseFail = 5;
+    std::uint32_t fuseRecover = 300;
+};
+/** 上游兜底（delegate 转发到远端大模型）。 */
+struct Upstreamconfig {
+    std::string base;
+    std::string keyenv;
+};
+
 /** observe 入队行（SQLite queue；不做重活）。 */
 struct Queuerow {
     std::string id;
@@ -130,6 +144,8 @@ struct Config {
     Chat chat {};
     Decideconfig decide {};
     Gateconfig gate {};
+    Agentconfig agent {};
+    Upstreamconfig upstream {};
     std::size_t shadow = 0;
     std::uint32_t rate = 0;
     double refill = 0.0;
@@ -218,6 +234,8 @@ struct Encoder {
     std::vector<float> embed(std::string_view text);
     std::string chat(std::string_view system, std::string_view user);
     std::string chat(std::string_view system, std::string_view user, std::function<void(std::string_view)> onDelta);
+    std::string chat(json const& messages);
+    std::string chat(json const& messages, std::function<void(std::string_view)> onDelta);
 };
 
 /** USearch 图 + SQLite 载荷 + 可选 SQ8；upsert=put→add/save→commit。 */
@@ -525,7 +543,7 @@ struct Turnstats {
     /** gate 返回的 pack 对象；仅 items 非空时写入 prompt.pack。 */
     json packRaw = json::object();
     /** 模型侧命令包：`Local knowledge JSON follows.` + 完整 knowledge JSON（禁止省略 body）。 */
-    std::string prompt;
+    json prompt = json::array();
     /** injected=/v1 notePrompt；rebuild=cost 重建；空=未生成。 */
     std::string source;
     /** 统计块正文：人读 markdown（路由一行 + 规则 ###）；禁止再贴 rules/kept/pack 段。 */
@@ -554,6 +572,16 @@ struct Runtime {
     std::uint64_t l1tick = 0;
     /** 本轮 gate/rules/observe/worker 实测；cost 读出。 */
     Turnstats turn;
+    /** /v1 命中计数（进程级）：确认客户端是否真打到 /v1，以及 gate 结局与注入次数。 */
+    std::atomic<std::uint64_t> v1Responses {0};
+    std::atomic<std::uint64_t> v1Chat {0};
+    std::atomic<std::uint64_t> promptInjected {0};
+    std::atomic<std::uint64_t> gateAnswered {0};
+    std::atomic<std::uint64_t> gatePack {0};
+    std::atomic<std::uint64_t> gateRefuse {0};
+    std::atomic<std::uint64_t> agentOk {0};
+    std::atomic<std::uint64_t> agentDelegate {0};
+    std::atomic<std::uint64_t> agentParsefail {0};
     /** Worker 空转等待；observe 入队后 notify，避免固定 400ms 轮询。 */
     std::mutex workerMutex;
     std::condition_variable workerCv;
@@ -602,7 +630,7 @@ void noteKept(Runtime& rt, std::vector<std::pair<std::string, std::string>> kept
 /** 把 gate 结局记入 turn；localChats=本路径 Nanbeige chat 次数。 */
 void noteGate(Runtime& rt, json const& result, bool didAnn, std::size_t annK, int localChats);
 /** /v1 主路径写入实测命令包；source=injected，覆盖 rebuild。 */
-void notePrompt(Runtime& rt, std::string prompt);
+void notePrompt(Runtime& rt, json prompt);
 /** observe 入队 id。 */
 void noteQueued(Runtime& rt, std::string const& id);
 /** Worker 落盘 memory id；didChat 表示跑过本地蒸馏 chat。 */
@@ -624,6 +652,7 @@ json callTool(Runtime& rt, std::string const& name, json const& args, Mcpclient 
 json mcpHandle(Runtime& rt, json const& req, Mcpclient const& client = {});
 void mountOpenai(httplib::Server& svr, Runtime& rt,
                  std::function<bool(httplib::Request const&, httplib::Response&)> gate);
+void delegateToUpstream(Runtime& rt, json const& messages, bool responses, httplib::Response& res);
 int serve(Runtime& rt);
 int runAgent(Runtime& rt, std::string const& instruction);
 

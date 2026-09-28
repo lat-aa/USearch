@@ -1,6 +1,6 @@
 /**
  *  @file       gate.cpp
- *  @brief      前置门控：L1/L2→政策∥记忆→RRF→Nanbeige 混合置信→answered|pack|refuse；observe 入队与 Worker。
+ *  @brief      前置门控：L1/L2 缓存→政策⊕记忆(RRF 融合进 pack)→Nanbeige 混合置信→answered|pack|refuse；observe 入队与 Worker。
  */
 
 #include "api.hpp"
@@ -99,7 +99,8 @@ void Turnstats::rebuildPrompt(Decision const& d) {
         packtok = 0;
     }
     // prompt = 模型注入契约（JSON）；corpus = 聊天统计块人读摘要，见 rebuildCorpus
-    prompt = formatPrompt(rulesArr, d.toJson(), json::array(), hasGatePack ? &packRaw : nullptr);
+    prompt = json::array(
+        {textMessage("system", formatPrompt(rulesArr, d.toJson(), json::array(), hasGatePack ? &packRaw : nullptr))});
     source = "rebuild";
 }
 
@@ -178,12 +179,13 @@ void noteKept(Runtime& rt, std::vector<std::pair<std::string, std::string>> kept
     rt.turn.rebuildCorpus();
 }
 
-void notePrompt(Runtime& rt, std::string prompt) {
-    if (prompt.empty())
+void notePrompt(Runtime& rt, json prompt) {
+    if (!prompt.is_array() || prompt.empty())
         return;
     std::lock_guard<std::mutex> lock(rt.turn.mutex);
     rt.turn.prompt = std::move(prompt);
     rt.turn.source = "injected";
+    rt.promptInjected.fetch_add(1, std::memory_order_relaxed);
     rt.turn.rebuildCorpus();
 }
 
@@ -295,7 +297,7 @@ std::string policyFingerprint(std::vector<Rule> const& rules) {
  * - 政策指纹用启动缓存 policyFp，免每请求拼规则正文
  * - task 只 embed 一次；L2+记忆合并为一次 ANN，再分区
  * - resolveRules 复用同一 qVec
- * - 去掉对 memoryHits 无效的 RRF（sem 分不进 doc.id）
+ * - 检索层不做融合（sem 分不进 doc.id，旧 RRF 是空转）；政策⊕记忆的 RRF 改在 buildPack 内做
  * - 冲突扫描只传 name 指针，不深拷贝 Rule / 不复制 hits
  */
 json runGate(Runtime& rt, json const& args) {
@@ -393,7 +395,7 @@ json runGateCore(Runtime& rt, json const& args, Gateports& ports) {
         if (docKind(h.first, "memory") || docKind(h.first, "experience"))
             memoryHits.push_back(std::move(h));
     }
-    // ANN 已按距离排序；原先 RRF(semIds, memIds) 的 sem 分从不落到 doc.id，排序是空转，已删除。
+    // ANN 已按距离排序；政策(Semantic)⊕记忆的 RRF 融合改在 buildPack 内，此处只把 ANN 序传入。
 
     // 冲突：命中硬政策 + 全库含「禁止」/names 的规则名指针（不拷 Rule 正文）
     std::vector<std::string const*> hard;
@@ -661,6 +663,7 @@ void workerLoop(Runtime& rt) {
                 try {
                     Encoderguard guard(rt.encoder, 0.0f, 512);
                     distilled = rt.encoder.chat(kSys, user);
+                    distilled = stripThink(std::move(distilled));
                     didChat = !distilled.empty();
                 } catch (...) {
                     distilled.clear();

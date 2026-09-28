@@ -4,6 +4,7 @@
  */
 
 #include "api.hpp"
+#include "helpers.hpp"
 
 #include <llama.h>
 
@@ -19,15 +20,23 @@ namespace api {
 
 namespace {
 
-std::string dryrunChat(std::string_view system, std::string_view user) {
-    std::string low(user);
+std::string dryrunChat(json const& messages) {
+    std::string text;
+    for (auto const& m : messages) {
+        if (!m.is_object())
+            continue;
+        if (!text.empty())
+            text.push_back('\n');
+        text += messageText(m.value("content", json()));
+    }
+    std::string low(text);
     for (char& c : low)
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     if (low.find("summarize") != std::string::npos || low.find("experience") != std::string::npos ||
         low.find("induct") != std::string::npos) {
         return R"({"title":"dryrun","summary":"completed dryrun","tags":["dryrun"],"commands":[],"files":[],"outcome":"ok"})";
     }
-    if (system.find("\"hits\":[]") != std::string::npos || low.find("insufficient") != std::string::npos) {
+    if (text.find("\"hits\":[]") != std::string::npos || low.find("insufficient") != std::string::npos) {
         return R"({"decision":"generate","commands":["echo dryrun"],"summary":"no local hits"})";
     }
     return R"({"decision":"enough","tools":[{"name":"status","arguments":{}}],"summary":"use local tools"})";
@@ -232,22 +241,48 @@ std::string Encoder::chat(std::string_view system, std::string_view user) {
 
 std::string Encoder::chat(std::string_view system, std::string_view user,
                           std::function<void(std::string_view)> onDelta) {
+    json messages = json::array();
+    if (!system.empty())
+        messages.push_back(textMessage("system", std::string(system)));
+    messages.push_back(textMessage("user", std::string(user)));
+    return chat(messages, std::move(onDelta));
+}
+
+std::string Encoder::chat(json const& messages) {
+    return chat(messages, {});
+}
+
+std::string Encoder::chat(json const& messages, std::function<void(std::string_view)> onDelta) {
     std::lock_guard<std::mutex> lock(mutex);
     if (!modelReady || !model || !chatCtx)
-        return dryrunChat(system, user);
+        return dryrunChat(messages);
 
-    std::string sysOwned(system);
-    std::string userOwned(user);
+    std::vector<std::pair<std::string, std::string>> store;
+    store.reserve(messages.size());
+    std::size_t total = 0;
+    for (auto const& m : messages) {
+        if (!m.is_object())
+            continue;
+        std::string role = m.value("role", "user");
+        std::string content = messageText(m.value("content", json()));
+        if (content.empty())
+            continue;
+        total += role.size() + content.size();
+        store.emplace_back(std::move(role), std::move(content));
+    }
+    if (store.empty())
+        return {};
+
     std::vector<llama_chat_message> msgs;
-    if (!sysOwned.empty())
-        msgs.push_back({"system", sysOwned.c_str()});
-    msgs.push_back({"user", userOwned.c_str()});
+    msgs.reserve(store.size());
+    for (auto const& kv : store)
+        msgs.push_back({kv.first.c_str(), kv.second.c_str()});
 
     char const* tmpl = llama_model_chat_template(model, nullptr);
     std::string prompt;
     bool fromTmpl = false;
     if (tmpl && tmpl[0]) {
-        std::vector<char> formatted(std::max<std::size_t>(sysOwned.size() + userOwned.size(), 1) * 2 + 1024);
+        std::vector<char> formatted(std::max<std::size_t>(total, 1) * 2 + 1024);
         int32_t newLen = llama_chat_apply_template(tmpl, msgs.data(), msgs.size(), true, formatted.data(),
                                                    static_cast<int32_t>(formatted.size()));
         if (newLen > 0) {
@@ -263,11 +298,11 @@ std::string Encoder::chat(std::string_view system, std::string_view user,
         }
     }
     if (prompt.empty()) {
-        if (!sysOwned.empty()) {
-            prompt = sysOwned;
-            prompt.push_back('\n');
+        for (auto const& kv : store) {
+            if (!prompt.empty())
+                prompt.push_back('\n');
+            prompt += kv.second;
         }
-        prompt += userOwned;
     }
 
     bool addSpecial = !fromTmpl;

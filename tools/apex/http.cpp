@@ -4,6 +4,7 @@
  */
 
 #include "api.hpp"
+#include "helpers.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -31,19 +32,7 @@ void setJson(httplib::Response& res, json const& body, int status) {
 }
 
 std::string messageText(json const& content) {
-    if (content.is_string())
-        return content.get<std::string>();
-    if (content.is_array()) {
-        std::ostringstream ss;
-        for (auto const& part : content) {
-            if (part.is_string())
-                ss << part.get<std::string>() << '\n';
-            else if (part.contains("text"))
-                ss << part["text"].get<std::string>() << '\n';
-        }
-        return ss.str();
-    }
-    return content.dump();
+    return textOf(content);
 }
 
 Bucket::Bucket(std::uint32_t cap, double refillPerSec)
@@ -122,7 +111,16 @@ int serve(Runtime& rt) {
                       {"dim", rt.encoder.dimensions},
                       {"docs", rt.store.docs.size()},
                       {"rules", rt.rules.size()},
-                      {"shadow", rt.store.quant}});
+                      {"shadow", rt.store.quant},
+                      {"v1", {{"responses", rt.v1Responses.load(std::memory_order_relaxed)},
+                              {"chat", rt.v1Chat.load(std::memory_order_relaxed)},
+                              {"injected", rt.promptInjected.load(std::memory_order_relaxed)},
+                              {"gate", {{"answered", rt.gateAnswered.load(std::memory_order_relaxed)},
+                                        {"pack", rt.gatePack.load(std::memory_order_relaxed)},
+                                        {"refuse", rt.gateRefuse.load(std::memory_order_relaxed)}}},
+                              {"agent", {{"ok", rt.agentOk.load(std::memory_order_relaxed)},
+                                        {"delegate", rt.agentDelegate.load(std::memory_order_relaxed)},
+                                        {"parsefail", rt.agentParsefail.load(std::memory_order_relaxed)}}}}}});
     });
 
     mountOpenai(svr, rt, gate);

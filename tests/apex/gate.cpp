@@ -210,7 +210,10 @@ int main() {
         }
         assert(rt.turn.source == "rebuild");
         assert(rt.turn.corpus.find("路由") != std::string::npos);
-        assert(rt.turn.prompt.find("Local knowledge JSON follows.") == 0);
+        assert(rt.turn.prompt.is_array() && !rt.turn.prompt.empty());
+        assert(rt.turn.prompt[0]["role"] == "system");
+        assert(rt.turn.prompt[0]["content"][0]["type"] == "text");
+        assert(rt.turn.prompt[0]["content"][0]["text"].get<std::string>().find("Local knowledge JSON follows.") == 0);
     }
 
     // observe 入队

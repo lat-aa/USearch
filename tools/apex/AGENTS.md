@@ -80,7 +80,8 @@ Codex 实模：`.codex/hooks.json` 的 `PreToolUse` 把本轮 `model` 写入 `co
   -CtxNaive "<cost.turn.naive>" -CtxPicked "<cost.turn.picked>" -CtxKept "<cost.turn.kept>" \
   -PackTok "<cost.turn.packtok>" -PackN "<cost.turn.packn>" \
   -PromptSource "<cost.turn.source：injected|rebuild>" \
-  -CorpusFile "<cost.turn.corpus 落入的临时文件；人读 markdown，勿贴 turn.prompt JSON>"
+  -PromptFile "<cost.turn.prompt（messages 数组）落入的临时文件；一行一条；渲染会自动剔除 knowledge 行>" \
+  -CorpusFile "<cost.turn.corpus 落入的临时文件；人读 markdown>"
 ```
 
 - 数字与栈动作一律来自工具；禁止编造
@@ -89,14 +90,14 @@ Codex 实模：`.codex/hooks.json` 的 `PreToolUse` 把本轮 `model` 写入 `co
 - `decide.model` 只是建议档（weak/standard/strong），≠ 上游 id、≠ 客户端实模
 - 禁止自绘表格 / 进度条 / ASCII 边框
 - 用户需动手的事写在统计块**之前**
-- 第 7 块：摘要一行 + **人读** `turn.corpus`（仅 `## prompt` markdown）；禁止再贴 `## rules`/`## kept`/`## pack`；**禁止**把 `turn.prompt` 的 knowledge JSON 原样贴进聊天
-- `turn.prompt`：模型注入用完整 JSON（禁止 `"body":"..."`）；`turn.corpus`：路由一行 + `### 规则名` 正文
+- 第 7 块：摘要一行 + **消息行**（仅 `cost.turn.source == injected` 时贴 `-PromptFile` —— `rebuild` 是合成内容、不得冒充真实；渲染自动剔除 `Local knowledge JSON follows` 那条）+ **人读** `turn.corpus`（`-CorpusFile`）；禁止再贴 `## rules`/`## kept`/`## pack`
+- `turn.prompt`：完整 messages 数组 `[{role,content:[{type:"text",text}]}]`，knowledge JSON 在其 system 消息 `content[0].text`（禁止 `"body":"..."`）；`turn.corpus`：路由一行 + `### 规则名` 正文
 - `turn.source`：`injected`（本轮 `/v1` 经 `notePrompt`）或 `rebuild`（仅 `cost` 重建）；摘要行写「注入 source」
 - `turn.rules` / `turn.clip` / `turn.pack` 留给工具 JSON；**不进**统计块粘贴
 - knowledge JSON 必须完整：禁止 `"body":"..."` 省略号；无真实 gate pack 时省略 `pack` 键（`gatePack 0`）
 - 裁剪是否生效只看摘要行 `naive → kept` 与 `裁剪 D`；禁止 `(none)` / 「同 rules」指针段
 
-目标七块（预设 `a`；前六行句式冻结；📦 = 摘要 + 人读 corpus）：
+目标七块（预设 `a`；前六行句式冻结；📦 = 摘要 + 消息行 + 人读 corpus）：
 
 ```text
 ⚡ 规则 **m**/**t** 命中 · token **n → o** · **省 p%**
@@ -107,6 +108,8 @@ Codex 实模：`.codex/hooks.json` 的 `PreToolUse` 把本轮 `model` 写入 `co
 💡 依据 … · …
 📦 上下文 保留 r% · naive N → kept K · 裁剪 D · gatePack M条/Ttok · 注入 source
 ## prompt
+{"content":[{"text":"你是简洁助手","type":"text"}],"role":"system"}
+{"content":[{"text":"…user…","type":"text"}],"role":"user"}
 路由 standard · medium · L2 · 保留 70% · 置信 75%
 hits 无
 规则 default · names

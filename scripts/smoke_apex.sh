@@ -53,7 +53,10 @@ assert t['actual_model']=='Grok 4.6' and 'stack' in t
 assert 'turn' in t and 'gate' in t['turn']
 tr=t['turn']
 c=tr.get('corpus') or ''
-p=tr.get('prompt') or ''
+msgs=tr.get('prompt') or []
+assert isinstance(msgs,list) and msgs and msgs[0].get('role')=='system'
+assert msgs[0]['content'][0]['type']=='text' and msgs[0]['content'][0].get('text')
+p=''.join(part.get('text','') for m in msgs for part in (m.get('content') or []) if isinstance(part,dict))
 assert c and c.startswith('## prompt\n')
 assert '## rules' not in c and '## kept' not in c and '## pack' not in c
 assert 'Local knowledge JSON follows.' in p
@@ -134,7 +137,9 @@ assert tr.get('gate') in ('answered','pack','refuse','none'), tr
 if tr.get('gate')=='answered':
   assert tr.get('saved')==1, tr
 c=tr.get('corpus') or ''
-p=tr.get('prompt') or ''
+msgs=tr.get('prompt') or []
+assert isinstance(msgs,list) and msgs
+p=''.join(part.get('text','') for m in msgs for part in (m.get('content') or []) if isinstance(part,dict))
 assert c and c.startswith('## prompt\n')
 assert '## rules' not in c and '## kept' not in c
 assert 'Local knowledge JSON follows.' in p
@@ -154,7 +159,8 @@ assert t.get('ok') is True and t.get('status')=='pending' and t.get('id')
 print(t['id'])
 ") && smoke_pass "A5 observe enqueue" || smoke_bad "A5 observe" "$(echo "$obs"|head -c200)"
 
-costq=$(curl -fsS --max-time 60 "${MCP[@]}" \
+# observe 后 worker 后台蒸馏 chat 持 Encoder 锁（embed/chat 共用 mutex），cost 可能等待 ~75s
+costq=$(curl -fsS --max-time 180 "${MCP[@]}" \
   -H "X-Apex-Actual-Model: apex-q" -H "X-Apex-Actual-Model-Source: reported" \
   -d '{"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"cost","arguments":{"task":"after observe","files":[],"manual":[]}}}' \
   "$SMOKE_BASE/mcp")
@@ -167,7 +173,8 @@ assert 'turn' in t
 " && smoke_pass "A5 cost after observe" || smoke_bad "A5 cost queued" "fail"
 
 # A6 stats.sh 七块
-hdr=$(curl -fsS --max-time 60 "${MCP[@]}" \
+# observe 后 worker 后台蒸馏 chat 持 Encoder 锁（embed/chat 共用 mutex），cost 可能等待 ~75s
+hdr=$(curl -fsS --max-time 180 "${MCP[@]}" \
   -H "X-Apex-Actual-Model: deepseek-v4-pro" -H "X-Apex-Actual-Model-Source: codex-config" \
   -d '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"cost","arguments":{"task":"refactor large system design architecture concurrency","files":["a.cpp","b.cpp","c.cpp"],"hints":["quality"]}}}' \
   "$SMOKE_BASE/mcp")

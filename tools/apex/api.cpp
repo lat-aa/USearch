@@ -12,6 +12,7 @@
  */
 
 #include "api.hpp"
+#include "helpers.hpp"
 #include "slim.hpp"
 
 #include <cstdio>
@@ -22,48 +23,6 @@
 #include <toml++/toml.hpp>
 
 namespace api {
-namespace {
-
-/** Codex Responses `input` → chat `messages`；缺 role 的片段当 user。 */
-json messagesFromResponses(json const& body) {
-    json messages = json::array();
-    if (body.contains("instructions") && body["instructions"].is_string()) {
-        std::string ins = body["instructions"].get<std::string>();
-        if (!ins.empty())
-            messages.push_back({{"role", "system"}, {"content", ins}});
-    }
-    json input = body.contains("input") ? body["input"] : json();
-    auto push = [&](std::string role, json const& content) {
-        if (role.empty())
-            role = "user";
-        messages.push_back({{"role", std::move(role)}, {"content", content}});
-    };
-    if (input.is_string()) {
-        push("user", input.get<std::string>());
-        return messages;
-    }
-    if (!input.is_array())
-        return messages;
-    for (auto const& item : input) {
-        if (item.is_string()) {
-            push("user", item.get<std::string>());
-            continue;
-        }
-        if (!item.is_object())
-            continue;
-        std::string type = item.value("type", "");
-        if (type == "function_call_output")
-            continue;
-        std::string role = item.value("role", type == "message" ? "user" : "");
-        if (item.contains("content"))
-            push(role, item["content"]);
-        else if (item.contains("text") && item["text"].is_string())
-            push(role.empty() ? "user" : role, item["text"].get<std::string>());
-    }
-    return messages;
-}
-
-} // namespace
 
 void mountOpenai(httplib::Server& svr, Runtime& rt,
                  std::function<bool(httplib::Request const&, httplib::Response&)> gate) {
@@ -178,22 +137,6 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
         setJson(res, {{"deleted", n}});
     });
 
-    // 前置门控：与 MCP gate 同一管线（answered 时可省上游主 LLM）。
-    svr.Post("/v1/gate", [gate, &rt](httplib::Request const& req, httplib::Response& res) {
-        if (!gate(req, res))
-            return;
-        // 固定 schema：轻量抽取，避免 nlohmann 整树 DOM
-        Slimargs slim = parseSlim(req.body);
-        if (!slim.ok)
-            return setJson(res, {{"error", {{"message", "bad json"}}}}, 400);
-        try {
-            setJson(res, runGate(rt, slimToJson(slim)));
-        } catch (std::exception const& ex) {
-            setJson(res, {{"error", {{"message", ex.what()}}}}, 500);
-        } catch (...) {
-            setJson(res, {{"error", {{"message", "gate failed"}}}}, 500);
-        }
-    });
 
     // 路由面：纯决策 + 按 compression 裁剪规则；不加载/不调用 LLM。
     svr.Post("/v1/route", [gate, &rt](httplib::Request const& req, httplib::Response& res) {
@@ -238,6 +181,10 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
             return;
         auto body = json::parse(req.body, nullptr, false);
         bool responses = req.path.find("/responses") != std::string::npos;
+        if (responses)
+            rt.v1Responses.fetch_add(1, std::memory_order_relaxed);
+        else
+            rt.v1Chat.fetch_add(1, std::memory_order_relaxed);
         if (body.is_discarded())
             return setJson(res, {{"error", {{"message", "bad json"}}}}, 400);
         if (responses) {
@@ -250,41 +197,7 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
         }
         if (!body.contains("messages"))
             return setJson(res, {{"error", {{"message", "messages required"}}}}, 400);
-
-        // /v1 网关内短路：gate answered 则本地直接返回，不跑完整 Pipeline+再生成。
-        if (body.value("gate", true)) {
-            std::string q;
-            for (auto const& m : body["messages"])
-                if (m.value("role", "") != "system")
-                    q += messageText(m["content"]);
-            json gated = runGate(rt, {{"task", q}, {"files", body.value("files", json::array())}});
-            if (gated.value("status", "") == "answered") {
-                std::string reply = gated.value("reply", "");
-                if (responses)
-                    return setJson(res, {{"id", "gate"},
-                                         {"object", "response"},
-                                         {"status", "completed"},
-                                         {"model", body.value("model", rt.encoder.modelId)},
-                                         {"output",
-                                          json::array(
-                                              {{{"type", "message"},
-                                                {"role", "assistant"},
-                                                {"content",
-                                                 json::array({{{"type", "output_text"}, {"text", reply}}})}}})},
-                                         {"gate", gated}});
-                return setJson(res, {{"id", "gate"},
-                                     {"object", "chat.completion"},
-                                     {"model", body.value("model", rt.encoder.modelId)},
-                                     {"choices",
-                                      json::array({{{"index", 0},
-                                                    {"message", {{"role", "assistant"}, {"content", reply}}},
-                                                    {"finish_reason", "stop"}}})},
-                                     {"gate", gated}});
-            }
-            // pack/refuse：把 pack 注入后续 system（主路径仍本地 Nanbeige chat）
-            if (gated.contains("pack"))
-                body["_gatepack"] = gated["pack"];
-        }
+        body["messages"] = normalizeMessages(body["messages"]);
 
         json ctx = {{"messages", body["messages"]}, {"query", ""}};
         Decision route {};
@@ -346,160 +259,62 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
                     }});
         pipe.run(rt, ctx);
 
-        std::string system, user;
-        for (auto const& m : body["messages"]) {
-            std::string role = m.value("role", "");
-            std::string content = messageText(m["content"]);
-            if (role == "system") {
-                if (!system.empty())
-                    system.push_back('\n');
-                system += content;
-            } else {
-                if (!user.empty())
-                    user.push_back('\n');
-                user += content;
-            }
-        }
-        if (!system.empty())
-            system.push_back('\n');
-        // 主路径命令包：与 turn.prompt / corpus ## prompt 同源，供统计块原样展示
-        std::string packPrompt = "Local knowledge JSON follows.\n";
-        json knowledge = {{"hits", ctx["hits"]}, {"rules", ctx["rules"]}, {"decision", ctx["decision"]}};
-        if (body.contains("_gatepack"))
-            knowledge["pack"] = body["_gatepack"];
-        packPrompt += knowledge.dump(2);
-        system += packPrompt;
-        notePrompt(rt, packPrompt);
-
+        // 本地 CoT agent：检索上下文注入 → 标签隔离解析 → ok / delegate
         std::string modelName = body.value("model", rt.encoder.modelId);
-        bool stream = body.value("stream", false);
-        float prevTemp = rt.encoder.temperature;
-        std::uint32_t prevMax = rt.encoder.maxTokens;
-        if (body.contains("temperature") && body["temperature"].is_number())
-            rt.encoder.temperature = body["temperature"].get<float>();
-        else
-            rt.encoder.temperature = route.temperature;
-        if (body.contains("max_tokens") && body["max_tokens"].is_number_unsigned())
-            rt.encoder.maxTokens = body["max_tokens"].get<std::uint32_t>();
-        else if (body.contains("max_tokens") && body["max_tokens"].is_number_integer())
-            rt.encoder.maxTokens = static_cast<std::uint32_t>((std::max)(0, body["max_tokens"].get<int>()));
-        if (rt.encoder.maxTokens == 0)
-            rt.encoder.maxTokens = prevMax ? prevMax : 256;
+        static char const* const kAgentSys =
+            "你是本地执行 agent，可调用 MCP 工具。最终只输出一个 JSON 对象，并用"
+            "<agent-result>…</agent-result> 包裹；标签外不得输出正文（推理可放 <think>，会被忽略）。"
+            "结构：{\"status\":\"ok\"|\"delegate\",\"tool_calls\":[{\"name\":..,\"args\":{}}],\"payload\":\"...\"}"
+            "ok：你已完成（工具/代码/命令/解答），payload 放最终回复文本；delegate：你无法可靠处理，交给远端大模型。";
 
-        if (stream) {
-            res.set_header("Cache-Control", "no-cache");
-            res.set_header("Connection", "keep-alive");
-            res.set_chunked_content_provider(
-                "text/event-stream",
-                [&rt, system, user, modelName, prevMax, prevTemp, responses](std::size_t, httplib::DataSink& sink) {
-                    auto emit = [&](json const& chunk) {
-                        std::string line = "data: " + chunk.dump() + "\n\n";
-                        sink.write(line.data(), line.size());
-                    };
-                    auto emitEvent = [&](char const* ev, json const& chunk) {
-                        std::string line = std::string("event: ") + ev + "\ndata: " + chunk.dump() + "\n\n";
-                        sink.write(line.data(), line.size());
-                    };
-                    if (responses) {
-                        // Codex wire_api=responses：事件名必须是 response.*，不能冒充 chat.completion。
-                        json created = {{"id", "resp-1"},
-                                        {"object", "response"},
-                                        {"status", "in_progress"},
-                                        {"model", modelName},
-                                        {"output", json::array()}};
-                        emitEvent("response.created", {{"type", "response.created"}, {"response", created}});
-                        std::string acc;
-                        (void)rt.encoder.chat(system, user, [&](std::string_view piece) {
-                            acc.append(piece.data(), piece.size());
-                            emitEvent("response.output_text.delta",
-                                      {{"type", "response.output_text.delta"},
-                                       {"delta", std::string(piece)}});
-                        });
-                        rt.encoder.maxTokens = prevMax;
-                        rt.encoder.temperature = prevTemp;
-                        json done = {{"id", "resp-1"},
-                                     {"object", "response"},
-                                     {"status", "completed"},
+        json agentMsgs = json::array();
+        agentMsgs.push_back(textMessage("system", kAgentSys));
+        for (auto const& m : body["messages"])
+            agentMsgs.push_back(m);
+        json knowledge = {{"hits", ctx["hits"]}, {"rules", ctx["rules"]}};
+        agentMsgs.push_back(textMessage("user", "Local context (rules + memory, reference only):\n" + knowledge.dump(2)));
+
+        std::string raw;
+        {
+            float prevTemp = rt.encoder.temperature;
+            std::uint32_t prevMax = rt.encoder.maxTokens;
+            std::uint32_t budget = static_cast<std::uint32_t>(static_cast<double>(rt.encoder.ctx ? rt.encoder.ctx : 4096) * rt.config.agent.tokenBudget);
+            if (budget < 256)
+                budget = 256;
+            rt.encoder.maxTokens = budget;
+            raw = rt.encoder.chat(agentMsgs);
+            rt.encoder.maxTokens = prevMax;
+            rt.encoder.temperature = prevTemp;
+        }
+        notePrompt(rt, agentMsgs);
+
+        json decision = extractAgentResult(raw);
+        if (decision.empty()) {
+            rt.agentParsefail.fetch_add(1, std::memory_order_relaxed);
+            rt.agentDelegate.fetch_add(1, std::memory_order_relaxed);
+            delegateToUpstream(rt, body["messages"], responses, res);
+            return;
+        }
+        if (agentOk(decision)) {
+            rt.agentOk.fetch_add(1, std::memory_order_relaxed);
+            std::string payload = decision.value("payload", "");
+            if (responses)
+                return setJson(res, {{"id", "agent"}, {"object", "response"}, {"status", "completed"},
                                      {"model", modelName},
-                                     {"output",
-                                      json::array({{{"type", "message"},
-                                                    {"role", "assistant"},
-                                                    {"content",
-                                                     json::array({{{"type", "output_text"}, {"text", acc}}})}}})}};
-                        emitEvent("response.completed", {{"type", "response.completed"}, {"response", done}});
-                        sink.done();
-                        return true;
-                    }
-                    emit({{"id", "chat-1"},
-                          {"object", "chat.completion.chunk"},
-                          {"model", modelName},
-                          {"choices", json::array({{{"index", 0},
-                                                    {"delta", {{"role", "assistant"}}},
-                                                    {"finish_reason", nullptr}}})}});
-                    (void)rt.encoder.chat(system, user, [&](std::string_view piece) {
-                        emit({{"id", "chat-1"},
-                              {"object", "chat.completion.chunk"},
-                              {"model", modelName},
-                              {"choices", json::array({{{"index", 0},
-                                                        {"delta", {{"content", std::string(piece)}}},
-                                                        {"finish_reason", nullptr}}})}});
-                    });
-                    rt.encoder.maxTokens = prevMax;
-                    rt.encoder.temperature = prevTemp;
-                    emit({{"id", "chat-1"},
-                          {"object", "chat.completion.chunk"},
-                          {"model", modelName},
-                          {"choices",
-                           json::array({{{"index", 0}, {"delta", json::object()}, {"finish_reason", "stop"}}})}});
-                    std::string done = "data: [DONE]\n\n";
-                    sink.write(done.data(), done.size());
-                    sink.done();
-                    return true;
-                });
-            return;
+                                     {"output", json::array({{{"type", "message"}, {"role", "assistant"},
+                                                               {"content", json::array({{{"type", "output_text"}, {"text", payload}}})}}})}});
+            return setJson(res, {{"id", "agent"}, {"object", "chat.completion"}, {"model", modelName},
+                                 {"choices", json::array({{{"index", 0},
+                                                           {"message", {{"role", "assistant"}, {"content", payload}}},
+                                                           {"finish_reason", "stop"}}})}});
         }
-
-        std::string text = rt.encoder.chat(system, user);
-        rt.encoder.maxTokens = prevMax;
-        rt.encoder.temperature = prevTemp;
-        if (responses) {
-            setJson(res, {{"id", "resp-1"},
-                          {"object", "response"},
-                          {"status", "completed"},
-                          {"model", modelName},
-                          {"decision", route.toJson()},
-                          {"output",
-                           json::array({{{"type", "message"},
-                                         {"role", "assistant"},
-                                         {"content",
-                                          json::array({{{"type", "output_text"}, {"text", text}}})}}})}});
-            return;
-        }
-        setJson(res, {{"id", "chat-1"},
-                      {"object", "chat.completion"},
-                      {"model", modelName},
-                      {"decision", route.toJson()},
-                      {"choices",
-                       json::array({{{"index", 0},
-                                     {"message", {{"role", "assistant"}, {"content", text}}},
-                                     {"finish_reason", "stop"}}})}});
+        rt.agentDelegate.fetch_add(1, std::memory_order_relaxed);
+        delegateToUpstream(rt, body["messages"], responses, res);
+        return;
     };
     svr.Post("/v1/chat", chat);
     svr.Post("/v1/chat/completions", chat);
     svr.Post("/v1/responses", chat);
-
-    svr.Get("/v1/rules", [gate, &rt](httplib::Request const& req, httplib::Response& res) {
-        if (!gate(req, res))
-            return;
-        json arr = json::array();
-        for (auto const& r : rt.rules)
-            arr.push_back({{"name", r.name},
-                           {"description", r.description},
-                           {"always", r.always},
-                           {"globs", r.globs},
-                           {"enabled", r.enabled}});
-        setJson(res, {{"rules", arr}});
-    });
 
     svr.Post("/v1/rules", [gate, &rt](httplib::Request const& req, httplib::Response& res) {
         if (!gate(req, res))
@@ -862,7 +677,8 @@ int runAgent(Runtime& rt, std::string const& instruction) {
                                  {"activation", activationName(r.activation)},
                                  {"body", r.rule.body}});
     std::string system = "Local knowledge JSON follows. Decide enough vs generate.\n" + pack.dump();
-    std::string reply = rt.encoder.chat(system, instruction);
+    json runMessages = json::array({textMessage("system", std::move(system)), textMessage("user", instruction)});
+    std::string reply = rt.encoder.chat(runMessages);
     std::cout << reply << '\n';
     Experience exp;
     exp.title = "run";
@@ -906,3 +722,5 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "用法: api serve | api run \"<指令>\"\n");
     return 2;
 }
+
+

@@ -211,7 +211,6 @@ json toolDefs() {
         tool("delete", "按 id 删除文档"),
         tool("recall", "嵌入后检索（search 的一站式别名）"),
         tool("decide", "路由：模型档/深度/检索/压缩/温度；回答前调用（确定性 Features→Decision）"),
-        tool("gate", "前置门控：L1/L2+政策∥记忆+RRF+Nanbeige 混合置信→answered|pack|refuse"),
         tool("observe", "沉淀仅入队 queue；Worker 后台蒸馏写 memory"),
         tool("cost",
              "按规则 token + decide 档位估算费用（CNY）；返回 stack（实测）与 turn（gate/saved/"
@@ -297,8 +296,6 @@ json callTool(Runtime& rt, std::string const& name, json const& args, Mcpclient 
                 arr.push_back({{"id", doc.id}, {"text", doc.text}, {"score", score}, {"meta", doc.meta}});
             return textResult(arr.dump(2));
         }
-        if (tool == "gate")
-            return textResult(runGate(rt, args).dump(2));
         if (tool == "observe")
             return textResult(runObserve(rt, args).dump(2));
         if (tool == "upsert") {

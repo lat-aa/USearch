@@ -17,8 +17,12 @@ using api::detectConflicts;
 using api::evidenceOf;
 using api::finalizeStatus;
 using api::formatCorpus;
+using api::formatCorpusText;
 using api::formatPrompt;
 using api::kindIs;
+using api::stripThink;
+using api::agentOk;
+using api::extractAgentResult;
 using api::metaConflicted;
 using api::metaStr;
 using api::parseGateModel;
@@ -95,6 +99,28 @@ int main() {
                           json {{"retrieval", "L2"}, {"compression", 0.7}}, json::array());
     assert(pack.contains("items") && pack["items"].is_array() && !pack["items"].empty());
 
+    // 政策(Semantic)⊕记忆 的 RRF 融合：硬政策作前缀，其余按 rank 交错
+    {
+        Packcfg c2;
+        c2.packtok = 4096;
+        c2.baseSecs = 2;
+        std::vector<Rulehit> rs;
+        rs.push_back({"hard", "# hard\n\nbody", 0, 0.f});
+        rs.push_back({"semA", "# semA\n\nbody", 2, 0.9f});
+        rs.push_back({"semB", "# semB\n\nbody", 2, 0.5f});
+        std::vector<std::pair<Hitdoc, float>> hs;
+        hs.push_back({Hitdoc {"m1", "mem one", json::object()}, 0.9f});
+        hs.push_back({Hitdoc {"m2", "mem two", json::object()}, 0.8f});
+        auto p = buildPack(c2, "t", hs, rs, json::object(), json::array());
+        auto const& items = p["items"];
+        assert(items.size() == 5);
+        assert(items[0]["id"] == "rule:hard" && items[0]["why"] == "hard policy");
+        assert(items[1]["id"] == "rule:semA" && items[1]["why"] == "policy");
+        assert(items[2]["id"] == "m1" && items[2]["why"] == "memory");
+        assert(items[3]["id"] == "rule:semB" && items[3]["why"] == "policy");
+        assert(items[4]["id"] == "m2" && items[4]["why"] == "memory");
+    }
+
     std::string prompt = formatPrompt(json::array({{{"name", "default"}, {"body", "hello"}}}),
                                       json {{"model", "standard"},
                                             {"depth", "medium"},
@@ -105,12 +131,24 @@ int main() {
                                             {"reasons", json::array({"r1"})}},
                                       json::array(), nullptr);
     assert(prompt.find("Local knowledge JSON follows.") == 0);
-    std::string corpus = formatCorpus(prompt);
+    std::string corpus = formatCorpusText(prompt);
     assert(corpus.find("## prompt\n") == 0);
     assert(corpus.find("Local knowledge JSON follows.") == std::string::npos);
     assert(corpus.find("路由") != std::string::npos);
     assert(corpus.find("### default") != std::string::npos);
 
+    // stripThink：去推理包裹与特殊 token；纯 think 为空
+    assert(stripThink("<think>a\nb</think>hello") == "hello");
+    assert(stripThink("<|im_start|>note").find("<|im_start|>") == std::string::npos);
+    assert(stripThink("<think>only</think>").empty());
+    assert(stripThink("  plain  ") == "plain");
+    // extractAgentResult / agentOk：标签隔离 + 解析兜底
+    assert(agentOk(extractAgentResult("<think>x</think><agent-result>{\"status\":\"ok\",\"payload\":\"hi\"}</agent-result>")));
+    assert(!agentOk(extractAgentResult("<agent-result>{\"status\":\"delegate\"}</agent-result>")));
+    assert(extractAgentResult("<agent-result>{bad json}</agent-result>").empty());
+    assert(extractAgentResult("no tags here").empty());
+    assert(extractAgentResult("<agent-result>{\"a\":1}").empty());          // 缺结束标签
+    assert(extractAgentResult("{\"a\":1}</agent-result>").empty());         // 缺开始标签
     std::puts("apex helpers: ok");
     return 0;
 }

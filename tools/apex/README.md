@@ -48,10 +48,10 @@ MCP gate（服务端统一管线）
           answerConfidence = wevid*evidence + wself*self
           conflicts 非空 → 禁止 answered（fail-closed）
           ├─ answered（≥threshold 且无冲突且 reply 非空）→ 短路出口
-          ├─ pack（置信不足 / 信息不足）→ 证据包 + 主 LLM 仍跑
-          └─ refuse（政策冲突）→ 展示原因，不装可答
+          ├─ pack（置信不足 / 信息不足）→ 证据包 + 主 LLM 仍跑 → 短路出口
+          └─ refuse（政策冲突）→ 展示原因，不装可答 → 短路出口
 
-短路出口（省主 LLM）/ pack 出口 / observe 入队 → Worker 蒸馏写 memory
+短路出口（省主 LLM,提升质量、准确度、性能、减少 token）/ pack 出口 / observe 入队 → Worker 蒸馏写 memory
 ```
 
 ## 自测

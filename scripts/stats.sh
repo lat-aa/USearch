@@ -1,6 +1,6 @@
 #!/bin/sh
 # 将 apex（rules / decide / cost）结果渲染成七块报告。
-# 第 7 块：摘要一行 + 人读 corpus（CorpusFile=turn.corpus markdown；完整 JSON 在 turn.prompt，禁止截断）。
+# 第 7 块：摘要一行 + 消息行（PromptFile=turn.prompt messages，自动剔除 knowledge 行）+ 人读 corpus（CorpusFile）。
 # 前六行句式冻结；Compression = 保留上下文比例。用法见 AGENTS.md。
 set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
@@ -16,12 +16,13 @@ ActualModel=; ActualModelSource=
 ViaV1=0
 CacheHit=0; Peak=0
 EstimateBias=-1
-Nanbeige=; Usearch=; Sqlite=
+Nanbeige=; USearch=; Sqlite=
 # turn 实测：空=未上报（禁止默认 0 冒充）
 Gate=; Cache=; Saved=; Local=; Queued=; Distill=
 Retain=; CtxNaive=; CtxPicked=; CtxKept=; PackTok=; PackN=
 PromptSource=
 CorpusFile=
+PromptFile=
 
 # 读 flag 后一参；缺省为空（Windows 常把 -ActualModel '' 吃掉）
 while [ $# -gt 0 ]; do
@@ -73,6 +74,7 @@ while [ $# -gt 0 ]; do
     -PackN|--pack-n) PackN=$val ;;
     -PromptSource|--prompt-source) PromptSource=$val ;;
     -CorpusFile|--corpus-file) CorpusFile=$val ;;
+    -PromptFile|--prompt-file) PromptFile=$val ;;
     *) echo "unknown arg: $key" >&2; exit 2 ;;
   esac
 done
@@ -265,11 +267,29 @@ fi
 srcCtx=$(fmtOrUnknown "$PromptSource")
 printf '%s 上下文 保留 %s%% · naive %s → kept %s · 裁剪 %s · gatePack %s · 注入 %s  \n' \
   "$ic_ctx" "$ctxRetainPct" "$naiveCtx" "$keptCtx" "$trimCtx" "$packCtx" "$srcCtx"
-if [ -n "$CorpusFile" ] && [ -f "$CorpusFile" ]; then
+shown=0
+# 仅在 source=injected（真实 /v1 注入）时贴消息行；rebuild 是合成内容，不贴
+if [ -n "$PromptFile" ] && [ -f "$PromptFile" ] && [ "$PromptSource" = "injected" ]; then
+  # 消息行：一行一条；剔除 rules-engine 注入的 knowledge 行（以 Local knowledge JSON follows 开头）
+  printf '## prompt\n'
+  grep -v 'Local knowledge JSON follows' "$PromptFile" || true
+  if [ "$(tail -c1 "$PromptFile" | wc -l)" -eq 0 ]; then
+    printf '\n'
+  fi
+  if [ -n "$CorpusFile" ] && [ -f "$CorpusFile" ]; then
+    sed '1{/^## prompt$/d;}' "$CorpusFile"
+    if [ "$(tail -c1 "$CorpusFile" | wc -l)" -eq 0 ]; then
+      printf '\n'
+    fi
+  fi
+  shown=1
+elif [ -n "$CorpusFile" ] && [ -f "$CorpusFile" ]; then
   cat "$CorpusFile"
   if [ "$(tail -c1 "$CorpusFile" | wc -l)" -eq 0 ]; then
     printf '\n'
   fi
-else
+  shown=1
+fi
+if [ "$shown" -eq 0 ]; then
   printf '未上报\n'
 fi
