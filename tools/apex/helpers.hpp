@@ -20,6 +20,11 @@
 
 #include <nlohmann/json.hpp>
 
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <unordered_map>
+
 namespace api {
 
 using json = nlohmann::json;
@@ -108,7 +113,7 @@ inline json extractAgentResult(std::string_view raw) {
     std::size_t b = text.find("</agent-result>");
     if (a == std::string::npos || b == std::string::npos || b <= a)
         return json();
-    std::string inner = text.substr(a + 15, b - a - 15); // len("<agent-result>")==15
+    std::string inner = text.substr(a + 14, b - a - 14); // len("<agent-result>")==14
     std::string slice = extractJsonObject(inner);
     if (slice.empty())
         return json();
@@ -435,5 +440,93 @@ inline std::string formatCorpus(json const& messages) {
         return formatCorpusText(textOf(messages.front().value("content", json())));
     return {};
 }
+
+
+/** L1 精确缓存条目（进程内；键含政策指纹）。tick 越大越新，超容量按 LRU 驱逐。 */
+struct L1entry {
+    std::string reply;        ///< 最终回复 payload（本地或上游）
+    std::string source;       ///< "local" | "upstream"
+    std::string fingerprint;  ///< 写入时的政策指纹
+    std::int64_t expiresAtMs = 0; ///< 0 = 无 TTL（毫秒，单调时钟）
+    std::uint64_t tick = 0;
+};
+
+/** L1 槽位上限；满则驱逐 tick 最小者，禁止整表 clear。 */
+inline constexpr std::size_t l1cap = 256;
+
+/** 单调毫秒（进程内），用于 L1 TTL 与熔断恢复计时。 */
+inline std::int64_t steadyNowMs() {
+    return static_cast<std::int64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+}
+
+/**
+ * 写入 L1：更新已有键或插入新键；满容且键不存在时踢掉 tick 最小条目。
+ * 调用方须已持有 l1Mutex（或单线程测试）。ttlSeconds <= 0 表示不过期。
+ */
+inline void l1Insert(std::unordered_map<std::string, L1entry>& l1, std::uint64_t& tick, std::string const& key,
+                     std::string reply, std::string source, std::string const& fp, std::uint32_t ttlSeconds) {
+    while (l1.size() >= l1cap && l1.find(key) == l1.end()) {
+        auto victim = l1.begin();
+        for (auto it = l1.begin(); it != l1.end(); ++it)
+            if (it->second.tick < victim->second.tick)
+                victim = it;
+        l1.erase(victim);
+    }
+    L1entry e;
+    e.reply = std::move(reply);
+    e.source = std::move(source);
+    e.fingerprint = fp;
+    e.tick = ++tick;
+    if (ttlSeconds > 0)
+        e.expiresAtMs = steadyNowMs() + static_cast<std::int64_t>(ttlSeconds) * 1000;
+    l1[key] = std::move(e);
+}
+
+/** 轻量熔断：连续解析失败达到阈值后跳过本地 agent，直走上游兜底；到期自动半开。 */
+struct Fuse {
+    std::atomic<std::size_t> consecutiveFails {0};
+    std::atomic<std::int64_t> openedAtMs {0}; ///< 0 = 关闭
+
+    Fuse() = default;
+    Fuse(Fuse const&) = delete;
+    Fuse& operator=(Fuse const&) = delete;
+    Fuse(Fuse&& o) noexcept
+        : consecutiveFails(o.consecutiveFails.load(std::memory_order_acquire)),
+          openedAtMs(o.openedAtMs.load(std::memory_order_acquire)) {}
+    Fuse& operator=(Fuse&& o) noexcept {
+        consecutiveFails.store(o.consecutiveFails.load(std::memory_order_acquire), std::memory_order_release);
+        openedAtMs.store(o.openedAtMs.load(std::memory_order_acquire), std::memory_order_release);
+        return *this;
+    }
+
+    /** 当前是否处于熔断（含未到期）状态。 */
+    bool tripped(std::size_t failThreshold, std::uint32_t recoverSeconds) const {
+        (void)failThreshold;
+        std::int64_t opened = openedAtMs.load(std::memory_order_acquire);
+        if (opened == 0)
+            return false;
+        if (recoverSeconds == 0)
+            return true;
+        return steadyNowMs() - opened < static_cast<std::int64_t>(recoverSeconds) * 1000;
+    }
+    /** 记录一次失败；达到阈值即打开熔断。 */
+    void fail(std::size_t failThreshold, std::uint32_t recoverSeconds) {
+        (void)recoverSeconds;
+        if (failThreshold == 0)
+            return;
+        std::size_t n = consecutiveFails.fetch_add(1, std::memory_order_acq_rel) + 1;
+        if (n >= failThreshold) {
+            consecutiveFails.store(0, std::memory_order_release);
+            openedAtMs.store(steadyNowMs(), std::memory_order_release);
+        }
+    }
+    /** 成功一次即复位。 */
+    void ok() {
+        consecutiveFails.store(0, std::memory_order_release);
+        openedAtMs.store(0, std::memory_order_release);
+    }
+};
 
 } // namespace api

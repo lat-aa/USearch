@@ -24,6 +24,181 @@
 
 namespace api {
 
+// ---- 本地 agent 纯短路 / 缓存 / 熔断辅助（本 TU 私有） ----
+
+/** 以标准 /v1 双 wire 返回文本 payload。 */
+static void replyText(httplib::Response& res, std::string const& id, std::string const& model,
+                      std::string const& payload, bool responses) {
+    if (responses)
+        setJson(res, {{"id", id},
+                      {"object", "response"},
+                      {"status", "completed"},
+                      {"model", model},
+                      {"output",
+                       json::array({{{"type", "message"},
+                                     {"role", "assistant"},
+                                     {"content", json::array({{{"type", "output_text"}, {"text", payload}}})}}})}});
+    else
+        setJson(res, {{"id", id},
+                      {"object", "chat.completion"},
+                      {"model", model},
+                      {"choices",
+                       json::array({{{"index", 0},
+                                     {"message", {{"role", "assistant"}, {"content", payload}}},
+                                     {"finish_reason", "stop"}}})}});
+}
+
+/** L1 精确缓存键：政策指纹 + 任务哈希。 */
+static std::string l1Key(std::string const& policyFp, std::string const& task) {
+    std::string t = task;
+    std::size_t b = t.find_first_not_of(" \t\r\n");
+    std::size_t e = t.find_last_not_of(" \t\r\n");
+    if (b == std::string::npos)
+        t.clear();
+    else
+        t = t.substr(b, e - b + 1);
+    return policyFp + ":" + std::to_string(fnv1a64(t));
+}
+
+/** L1 命中返回 payload/source；未命中/过期返回 false。 */
+static bool l1Hit(Runtime& rt, std::string const& key, std::string& payload, std::string& source) {
+    std::lock_guard<std::mutex> lock(rt.l1Mutex);
+    auto it = rt.l1.find(key);
+    if (it == rt.l1.end())
+        return false;
+    if (it->second.fingerprint != rt.policyFp)
+        return false;
+    if (it->second.expiresAtMs != 0 && steadyNowMs() >= it->second.expiresAtMs)
+        return false;
+    payload = it->second.reply;
+    source = it->second.source;
+    return true;
+}
+
+/** L2 语义缓存命中：kind=cache + 政策指纹一致 + 余弦相似度 >= 阈值。 */
+static bool l2Hit(Runtime& rt, std::string const& task, std::string& payload, std::string& source) {
+    if (task.empty())
+        return false;
+    auto q = rt.encoder.embed(task);
+    auto hits = rt.store.search(q, 8);
+    float minSim = rt.config.cache.l2Sim;
+    for (auto const& [doc, score] : hits) {
+        if (doc.meta.value("kind", "") != "cache")
+            continue;
+        if (doc.meta.value("fingerprint", "") != rt.policyFp)
+            continue;
+        float sim = 1.0f - score; // cos 距离 → 相似度
+        if (sim >= minSim) {
+            payload = doc.text;
+            source = doc.meta.value("source", "local");
+            return true;
+        }
+    }
+    return false;
+}
+
+/** 本地 ok / 上游结果都入 L1+L2；失败只记日志不阻断应答。 */
+static void cachePut(Runtime& rt, std::string const& task, std::string const& payload, std::string const& source) {
+    if (payload.empty())
+        return;
+    if (rt.config.cache.enableL1) {
+        std::lock_guard<std::mutex> lock(rt.l1Mutex);
+        l1Insert(rt.l1, rt.l1tick, l1Key(rt.policyFp, task), payload, source, rt.policyFp, rt.config.cache.l1Ttl);
+    }
+    if (rt.config.cache.enableL2 && !task.empty()) {
+        Doc doc;
+        doc.id = "cache-" + std::to_string(fnv1a64(task));
+        doc.text = payload;
+        doc.meta = {{"kind", "cache"}, {"fingerprint", rt.policyFp}, {"source", source}};
+        auto vec = rt.encoder.embed(task);
+        if (error_t err = rt.store.upsert(std::move(doc), vec); err)
+            (void)err.release();
+    }
+}
+
+/**
+ * 有界本地 agent：标签隔离解析 + MCP 工具循环。
+ * 返回 true 且填 payload = status ok；返回 false = delegate 上游（含解析失败/超轮/超预算）。
+ * 熔断计数：仅解析失败/无法收敛计失败，正常 delegate 不计。
+ */
+static bool agentRun(Runtime& rt, std::string const& modelName, json const& agentMsgs, std::string& payload) {
+    (void)modelName;
+    auto const& cfg = rt.config.agent;
+    std::uint32_t ctx = rt.encoder.ctx ? rt.encoder.ctx : 4096;
+    std::uint32_t budget = static_cast<std::uint32_t>(static_cast<double>(ctx) * cfg.tokenBudget);
+    if (budget < 256)
+        budget = 256;
+
+    json msgs = agentMsgs; // 复制；工具结果追加进会话
+    std::size_t used = 0;
+    std::size_t rounds = 0;
+
+    auto infer = [&](std::string& raw) {
+        float prevTemp = rt.encoder.temperature;
+        std::uint32_t prevMax = rt.encoder.maxTokens;
+        rt.encoder.maxTokens = budget;
+        raw = rt.encoder.chat(msgs);
+        rt.encoder.maxTokens = prevMax;
+        rt.encoder.temperature = prevTemp;
+    };
+    auto fail = [&]() {
+        rt.agentParsefail.fetch_add(1, std::memory_order_relaxed);
+        if (cfg.enableFuse)
+            rt.fuse.fail(cfg.fuseFail, cfg.fuseRecover);
+    };
+
+    while (true) {
+        std::string raw;
+        infer(raw);
+        used += estimate(raw);
+
+        json decision = extractAgentResult(raw);
+        if (decision.empty()) {
+            fail();
+            return false;
+        }
+        if (agentOk(decision)) {
+            json calls = decision.value("tool_calls", json::array());
+            if (!calls.is_array() || calls.empty()) {
+                rt.agentOk.fetch_add(1, std::memory_order_relaxed);
+                if (cfg.enableFuse)
+                    rt.fuse.ok();
+                payload = decision.value("payload", "");
+                return true;
+            }
+            // ok 却带 tool_calls：协议矛盾，仍执行一轮工具后继续。
+        } else if (decision.value("status", "") == "delegate") {
+            return false; // 正常委托，不计失败
+        }
+
+        json calls = decision.value("tool_calls", json::array());
+        if (!calls.is_array() || calls.empty()) {
+            fail();
+            return false;
+        }
+        for (auto const& tc : calls) {
+            if (!tc.is_object())
+                continue;
+            std::string name = tc.value("name", "");
+            if (name.empty())
+                continue;
+            json args = tc.value("args", json::object());
+            json result = callTool(rt, name, args, Mcpclient{});
+            std::string text;
+            if (result.contains("content") && result["content"].is_array() && !result["content"].empty())
+                text = result["content"][0].value("text", "");
+            bool isErr = result.value("isError", false);
+            msgs.push_back(textMessage("user", "tool result (" + name + (isErr ? ", error" : "") + "):\n" + text));
+        }
+        ++rounds;
+        rt.agentRounds.fetch_add(1, std::memory_order_relaxed);
+        if (rounds >= cfg.maxRounds || used >= budget) {
+            // 有工具却无法在预算内收敛 → 委托；不计入熔断失败（属正常边界）。
+            return false;
+        }
+    }
+}
+
 void mountOpenai(httplib::Server& svr, Runtime& rt,
                  std::function<bool(httplib::Request const&, httplib::Response&)> gate) {
     // gate must outlive handlers: take by value into each lambda (see http.cpp stored std::function).
@@ -199,6 +374,39 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
             return setJson(res, {{"error", {{"message", "messages required"}}}}, 400);
         body["messages"] = normalizeMessages(body["messages"]);
 
+        // 任务文本（非 system 消息拼接），供 L1/L2 缓存与 decide 共用。
+        std::string taskQuery;
+        for (auto const& m : body["messages"])
+            if (m.value("role", "") != "system")
+                taskQuery += messageText(m["content"]);
+
+        std::string modelName = body.value("model", rt.encoder.modelId);
+
+        // L1 精确缓存：纯短路，命中即返回（不评分、不建上下文）。
+        if (rt.config.cache.enableL1) {
+            std::string payload, source;
+            if (l1Hit(rt, l1Key(rt.policyFp, taskQuery), payload, source)) {
+                rt.cacheL1.fetch_add(1, std::memory_order_relaxed);
+                return replyText(res, "cache", modelName, payload, responses);
+            }
+        }
+        // L2 语义缓存：USearch kind=cache + 指纹 + 相似度阈值。
+        if (rt.config.cache.enableL2) {
+            std::string payload, source;
+            if (l2Hit(rt, taskQuery, payload, source)) {
+                rt.cacheL2.fetch_add(1, std::memory_order_relaxed);
+                return replyText(res, "cache", modelName, payload, responses);
+            }
+        }
+        // 熔断：连续解析失败达到阈值后跳过本地 agent，直走上游。
+        if (rt.config.agent.enableFuse && rt.fuse.tripped(rt.config.agent.fuseFail, rt.config.agent.fuseRecover)) {
+            rt.agentDelegate.fetch_add(1, std::memory_order_relaxed);
+            std::string up = delegateToUpstream(rt, body["messages"], responses, res);
+            if (!up.empty())
+                cachePut(rt, taskQuery, up, "upstream");
+            return;
+        }
+
         json ctx = {{"messages", body["messages"]}, {"query", ""}};
         Decision route {};
 
@@ -250,17 +458,25 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
             .stage({"recall",
                     [&](Runtime& r, json& c) {
                         std::size_t k = r.decider.topkFor(route.retrieval);
-                        auto hits = r.store.search(r.encoder.embed(c["query"].get<std::string>()), k);
+                        // 多取一截再过滤：只回灌 kind=memory 且未被版本化弃用的记忆。
+                        auto hits = r.store.search(r.encoder.embed(c["query"].get<std::string>()), k * 2);
                         json arr = json::array();
-                        for (auto const& [doc, score] : hits)
+                        std::size_t kept = 0;
+                        for (auto const& [doc, score] : hits) {
+                            if (doc.meta.value("kind", "") != "memory")
+                                continue;
+                            if (doc.meta.value("deprecated", false))
+                                continue;
                             arr.push_back({{"id", doc.id}, {"text", doc.text}, {"score", score}});
+                            if (++kept >= k)
+                                break;
+                        }
                         c["hits"] = arr;
                         return true;
                     }});
         pipe.run(rt, ctx);
 
-        // 本地 CoT agent：检索上下文注入 → 标签隔离解析 → ok / delegate
-        std::string modelName = body.value("model", rt.encoder.modelId);
+        // 本地 CoT agent：检索上下文注入 → 标签隔离解析 + 有界工具循环 → ok / delegate
         static char const* const kAgentSys =
             "你是本地执行 agent，可调用 MCP 工具。最终只输出一个 JSON 对象，并用"
             "<agent-result>…</agent-result> 包裹；标签外不得输出正文（推理可放 <think>，会被忽略）。"
@@ -273,43 +489,17 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
             agentMsgs.push_back(m);
         json knowledge = {{"hits", ctx["hits"]}, {"rules", ctx["rules"]}};
         agentMsgs.push_back(textMessage("user", "Local context (rules + memory, reference only):\n" + knowledge.dump(2)));
-
-        std::string raw;
-        {
-            float prevTemp = rt.encoder.temperature;
-            std::uint32_t prevMax = rt.encoder.maxTokens;
-            std::uint32_t budget = static_cast<std::uint32_t>(static_cast<double>(rt.encoder.ctx ? rt.encoder.ctx : 4096) * rt.config.agent.tokenBudget);
-            if (budget < 256)
-                budget = 256;
-            rt.encoder.maxTokens = budget;
-            raw = rt.encoder.chat(agentMsgs);
-            rt.encoder.maxTokens = prevMax;
-            rt.encoder.temperature = prevTemp;
-        }
         notePrompt(rt, agentMsgs);
 
-        json decision = extractAgentResult(raw);
-        if (decision.empty()) {
-            rt.agentParsefail.fetch_add(1, std::memory_order_relaxed);
-            rt.agentDelegate.fetch_add(1, std::memory_order_relaxed);
-            delegateToUpstream(rt, body["messages"], responses, res);
-            return;
-        }
-        if (agentOk(decision)) {
-            rt.agentOk.fetch_add(1, std::memory_order_relaxed);
-            std::string payload = decision.value("payload", "");
-            if (responses)
-                return setJson(res, {{"id", "agent"}, {"object", "response"}, {"status", "completed"},
-                                     {"model", modelName},
-                                     {"output", json::array({{{"type", "message"}, {"role", "assistant"},
-                                                               {"content", json::array({{{"type", "output_text"}, {"text", payload}}})}}})}});
-            return setJson(res, {{"id", "agent"}, {"object", "chat.completion"}, {"model", modelName},
-                                 {"choices", json::array({{{"index", 0},
-                                                           {"message", {{"role", "assistant"}, {"content", payload}}},
-                                                           {"finish_reason", "stop"}}})}});
+        std::string payload;
+        if (agentRun(rt, modelName, agentMsgs, payload)) {
+            cachePut(rt, taskQuery, payload, "local");
+            return replyText(res, "agent", modelName, payload, responses);
         }
         rt.agentDelegate.fetch_add(1, std::memory_order_relaxed);
-        delegateToUpstream(rt, body["messages"], responses, res);
+        std::string up = delegateToUpstream(rt, body["messages"], responses, res);
+        if (!up.empty())
+            cachePut(rt, taskQuery, up, "upstream");
         return;
     };
     svr.Post("/v1/chat", chat);
@@ -396,7 +586,7 @@ expected_gt<Config> Config::load(fs::path const& path) {
 
     char const* required[] = {"gguf",   "ctx",      "gpu",     "threads", "pooling", "listen", "index",
                               "base",   "knowledge", "rules",   "workspace", "token",  "shadow", "rate",
-                              "refill", "chat",     "decide",  "gate"};
+                              "refill", "chat",     "decide"};
     for (char const* key : required) {
         if (!root.contains(key))
             return out.failed("config missing required key");

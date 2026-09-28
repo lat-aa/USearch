@@ -10,7 +10,7 @@
 
 namespace api {
 
-void delegateToUpstream(Runtime& rt, json const& messages, bool responses, httplib::Response& res) {
+std::string delegateToUpstream(Runtime& rt, json const& messages, bool responses, httplib::Response& res) {
     std::string base = rt.config.upstream.base;
     if (base.empty())
         base = "https://api.deepseek.com";
@@ -39,7 +39,7 @@ void delegateToUpstream(Runtime& rt, json const& messages, bool responses, httpl
 
     if (!key || !*key) {
         setJson(res, {{"error", {{"message", "local delegate failed and no upstream key configured"}}}}, 502);
-        return;
+        return {};
     }
 
     // 拆 scheme/host/path
@@ -77,12 +77,12 @@ void delegateToUpstream(Runtime& rt, json const& messages, bool responses, httpl
                        body.dump(), "application/json");
     if (!up) {
         setJson(res, {{"error", {{"message", "upstream unreachable"}}}}, 502);
-        return;
+        return {};
     }
     if (up->status != 200) {
         res.status = up->status;
         res.set_content(up->body, "application/json");
-        return;
+        return {};
     }
 
     std::string reply;
@@ -113,6 +113,7 @@ void delegateToUpstream(Runtime& rt, json const& messages, bool responses, httpl
                        json::array({{{"index", 0},
                                      {"message", {{"role", "assistant"}, {"content", reply}}},
                                      {"finish_reason", "stop"}}})}});
+    return reply;
 }
 
 } // namespace api

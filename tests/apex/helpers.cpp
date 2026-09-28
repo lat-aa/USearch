@@ -7,14 +7,21 @@
 
 #include <cassert>
 #include <cstdio>
+#include <string>
+#include <unordered_map>
 
 using api::agentOk;
 using api::extractAgentResult;
 using api::formatCorpusText;
 using api::formatPrompt;
+using api::Fuse;
 using api::json;
+using api::l1cap;
+using api::L1entry;
+using api::l1Insert;
 using api::parseSlim;
 using api::slimToJson;
+using api::steadyNowMs;
 using api::stripThink;
 
 int main() {
@@ -56,6 +63,58 @@ int main() {
     assert(extractAgentResult("no tags here").empty());
     assert(extractAgentResult("<agent-result>{\"a\":1}").empty());
     assert(extractAgentResult("{\"a\":1}</agent-result>").empty());
+
+    // Fuse：触发 / 熔断 / 恢复 / 移动语义
+    {
+        Fuse f;
+        assert(!f.tripped(5, 300));
+        for (int i = 0; i < 4; ++i)
+            f.fail(5, 300);
+        assert(!f.tripped(5, 300));
+        f.fail(5, 300); // 第 5 次打开熔断
+        assert(f.tripped(5, 300));
+        Fuse g = std::move(f);
+        assert(g.tripped(5, 300));
+        g.ok();
+        assert(!g.tripped(5, 300));
+        // recoverSeconds=0：一旦打开永不自动恢复（需显式 ok）
+        g.fail(1, 0);
+        assert(g.tripped(1, 0));
+        // failThreshold=0：不计失败，永不打开
+        Fuse h;
+        for (int i = 0; i < 10; ++i)
+            h.fail(0, 1);
+        assert(!h.tripped(0, 1));
+    }
+
+    // L1：插入 / 覆盖 / TTL / LRU 淘汰
+    {
+        std::unordered_map<std::string, L1entry> l1;
+        std::uint64_t tick = 0;
+        l1Insert(l1, tick, "k", "v1", "local", "fp", 0);
+        assert(l1.at("k").reply == "v1");
+        assert(l1.at("k").source == "local");
+        assert(l1.at("k").fingerprint == "fp");
+        assert(l1.at("k").expiresAtMs == 0);
+        l1Insert(l1, tick, "k", "v2", "upstream", "fp2", 0);
+        assert(l1.at("k").reply == "v2");
+        assert(l1.at("k").source == "upstream");
+
+        l1Insert(l1, tick, "ttl", "v", "local", "fp", 1);
+        assert(l1.at("ttl").expiresAtMs > steadyNowMs());
+        assert(l1.at("ttl").expiresAtMs <= steadyNowMs() + 1000);
+
+        // 填满 l1cap 后插入新键，驱逐 tick 最小者（最早插入的 "k"）
+        std::unordered_map<std::string, L1entry> big;
+        std::uint64_t bt = 0;
+        for (std::size_t i = 0; i < l1cap; ++i)
+            l1Insert(big, bt, "key" + std::to_string(i), "v", "local", "fp", 0);
+        assert(big.size() == l1cap);
+        l1Insert(big, bt, "overflow", "v", "local", "fp", 0);
+        assert(big.size() == l1cap);
+        assert(big.find("key0") == big.end());
+        assert(big.find("overflow") != big.end());
+    }
 
     std::puts("apex helpers: ok");
     return 0;

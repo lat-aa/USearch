@@ -120,7 +120,11 @@ int serve(Runtime& rt) {
                                         {"refuse", rt.gateRefuse.load(std::memory_order_relaxed)}}},
                               {"agent", {{"ok", rt.agentOk.load(std::memory_order_relaxed)},
                                         {"delegate", rt.agentDelegate.load(std::memory_order_relaxed)},
-                                        {"parsefail", rt.agentParsefail.load(std::memory_order_relaxed)}}}}}});
+                                        {"parsefail", rt.agentParsefail.load(std::memory_order_relaxed)},
+                                        {"rounds", rt.agentRounds.load(std::memory_order_relaxed)},
+                                        {"cache_l1", rt.cacheL1.load(std::memory_order_relaxed)},
+                                        {"cache_l2", rt.cacheL2.load(std::memory_order_relaxed)},
+                                        {"fuse", rt.fuse.openedAtMs.load(std::memory_order_relaxed) != 0}}}}}});
     });
 
     mountOpenai(svr, rt, gate);

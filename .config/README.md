@@ -34,6 +34,10 @@ HTTP/MCP 线协议仍为 JSON；仅进程配置与 decide 词表用 TOML。
 | `rate` / `refill` | 令牌桶；rate=0 关闭 |
 | `chat.temperature` / `chat.max` | 采样 |
 | `decide.*` | 级联路由阈值；`lexicon` → `.config/decide/config.toml`（含 `complex` / `medium`） |
+| `upstream.base_url` / `upstream.key_env` | 上游兜底地址与密钥环境变量（缺省 `https://api.deepseek.com` / `DEEPSEEK_API_KEY`） |
+| `agent.*` | 本地 agent：`max_tool_rounds` / `token_budget_ratio` / `enable_fuse` / `fuse_fail_threshold` / `fuse_recovery_seconds` |
+| `cache.*` | 短路缓存：`enable_l1` / `l1_ttl_seconds` / `enable_l2` / `l2_similarity_threshold` |
+| `retrieval.*` | 检索重排：`rule_weight_multiplier` / `top_k` |
 
 ## 启动（WSL Ubuntu）
 
@@ -64,9 +68,9 @@ NumKong 单元门禁（与 CI `quality.yml` / Ubuntu GCC 对齐）：见 `CONTRI
 | 层 | 脚本 | 覆盖 | CI |
 |----|------|------|-----|
 | L0 | `scripts/smoke_mcp.sh` | MCP 握手 / Auth / GET·POST SSE / `tools/list`（含 Codex 别名） | prerelease |
-| L1 | `scripts/smoke_v1.sh` | `/v1` models·embed·memory·route·rules·gate·chat·responses·流式·负向 | prerelease（无 GGUF 时生成类 SKIP） |
-| L2 | `scripts/smoke_apex.sh` | rules→decide→cost→gate→observe→aliases→`stats.sh` | nightly |
-| L3 | `scripts/test_hooks.js` | `presync.js` + `injectmodel.js`（Cursor/Codex/Claude stdin；默认 `APEX_GATE_FIXTURE` 夹具） | prerelease |
+| L1 | `scripts/smoke_v1.sh` | `/v1` models·embed·memory·route·rules·chat·responses·流式·负向 | prerelease（无 GGUF 时生成类 SKIP） |
+| L2 | `scripts/smoke_apex.sh` | rules→decide→cost→observe→aliases→`stats.sh` | nightly |
+| L3 | `scripts/test_hooks.js` | `injectmodel.js`（实际模型上报；`presync.js` gate 已移除） | prerelease |
 | L4 | `scripts/smoke_nightly.sh` | L1 cache / conflict / Worker / 短路与长流式 | nightly |
 | 部署 | `deploy/k3s/depth.sh` | Ingress/NodePort 探测（不替代本地 smoke） | 手工 |
 

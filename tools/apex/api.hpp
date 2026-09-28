@@ -38,6 +38,7 @@
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 #include <dense/dense.hpp>
+#include "helpers.hpp"
 
 struct llama_model;
 struct llama_context;
@@ -483,32 +484,6 @@ struct Decider {
 
 expected_gt<Lexicon> loadLexicon(fs::path const& path);
 
-/** L1 精确缓存条目（进程内；键含政策指纹）。tick 越大越新，超容量按 LRU 驱逐。 */
-struct L1entry {
-    std::string reply;
-    std::string fingerprint;
-    std::uint64_t tick = 0;
-};
-
-/** L1 槽位上限；满则驱逐 tick 最小者，禁止整表 clear。 */
-inline constexpr std::size_t l1cap = 256;
-
-/**
- * 写入 L1：更新已有键或插入新键；满容且键不存在时踢掉 tick 最小条目。
- * 调用方须已持有 l1Mutex（或单线程测试）。
- */
-inline void l1Insert(std::unordered_map<std::string, L1entry>& l1, std::uint64_t& tick, std::string const& key,
-                     std::string reply, std::string const& fp) {
-    while (l1.size() >= l1cap && l1.find(key) == l1.end()) {
-        auto victim = l1.begin();
-        for (auto it = l1.begin(); it != l1.end(); ++it)
-            if (it->second.tick < victim->second.tick)
-                victim = it;
-        l1.erase(victim);
-    }
-    l1[key] = L1entry {std::move(reply), fp, ++tick};
-}
-
 /**
  * 本轮实测计数（进程内）。
  * 供 `cost.turn` / 🔖 叙事；缺测字段在 toJson 中省略，禁止用 0 冒充未上报。
@@ -582,6 +557,10 @@ struct Runtime {
     std::atomic<std::uint64_t> agentOk {0};
     std::atomic<std::uint64_t> agentDelegate {0};
     std::atomic<std::uint64_t> agentParsefail {0};
+    std::atomic<std::uint64_t> agentRounds {0}; ///< 本地 agent 实际执行的工具轮次
+    std::atomic<std::uint64_t> cacheL1 {0};     ///< L1 精确缓存命中
+    std::atomic<std::uint64_t> cacheL2 {0};     ///< L2 语义缓存命中
+    Fuse fuse;                                  ///< 本地 agent 解析熔断
     /** Worker 空转等待；observe 入队后 notify，避免固定 400ms 轮询。 */
     std::mutex workerMutex;
     std::condition_variable workerCv;
@@ -634,7 +613,7 @@ json callTool(Runtime& rt, std::string const& name, json const& args, Mcpclient 
 json mcpHandle(Runtime& rt, json const& req, Mcpclient const& client = {});
 void mountOpenai(httplib::Server& svr, Runtime& rt,
                  std::function<bool(httplib::Request const&, httplib::Response&)> gate);
-void delegateToUpstream(Runtime& rt, json const& messages, bool responses, httplib::Response& res);
+std::string delegateToUpstream(Runtime& rt, json const& messages, bool responses, httplib::Response& res);
 int serve(Runtime& rt);
 int runAgent(Runtime& rt, std::string const& instruction);
 

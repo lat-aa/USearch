@@ -7,6 +7,7 @@
 #include "helpers.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <sstream>
 #include <thread>
@@ -266,23 +267,61 @@ void workerLoop(Runtime& rt) {
                 bool const conflict = distilled.find("CONFLICT") != std::string::npos;
 
                 std::string const memId = "mem-" + row.id;
+
+                // 版本化合并：同 title 的旧 memory 标记 deprecated，保留最新高置信版本。
+                std::size_t version = 1;
+                {
+                    std::lock_guard<std::mutex> lock(rt.store.mutex);
+                    std::size_t maxv = 0;
+                    for (auto& kv : rt.store.docs) {
+                        auto& old = kv.second;
+                        if (old.meta.value("kind", "") != "memory")
+                            continue;
+                        if (old.meta.value("title", "") != title)
+                            continue;
+                        std::size_t v = old.meta.value("version", static_cast<std::size_t>(0));
+                        if (v > maxv)
+                            maxv = v;
+                        old.meta["deprecated"] = true;
+                        (void)rt.store.base.put(old, Store::keyOf(old.id));
+                    }
+                    version = maxv + 1;
+                }
+
                 Doc doc;
                 doc.id = memId;
                 doc.text = std::move(distilled);
                 doc.meta = {{"kind", "memory"},
+                            {"title", title},
+                            {"version", version},
+                            {"deprecated", false},
                             {"conflict", conflict},
                             {"source", row.id},
                             {"outcome", std::move(outcome)}};
                 auto vec = rt.encoder.embed(doc.text);
-                if (error_t err = rt.store.upsert(std::move(doc), vec); err) {
-                    std::lock_guard<std::mutex> lock(rt.store.mutex);
-                    (void)rt.store.base.finish(row.id, "fail");
-                } else {
+
+                // 指数退避重试：USearch 写失败重试 3 次（100/200/400ms），仍失败落 fail 队列。
+                bool stored = false;
+                for (int attempt = 0; attempt < 3 && !stored; ++attempt) {
+                    error_t err = rt.store.upsert(doc, vec);
+                    if (!err) {
+                        stored = true;
+                    } else {
+                        (void)err.release();
+                        if (attempt < 2)
+                            std::this_thread::sleep_for(std::chrono::milliseconds(100u << attempt));
+                    }
+                }
+                if (stored) {
                     noteDistill(rt, memId, didChat);
                     std::lock_guard<std::mutex> lock(rt.store.mutex);
                     if (conflict)
                         (void)rt.store.base.auditPut(row.id, "conflict", {{"id", row.id}});
                     (void)rt.store.base.finish(row.id, "done");
+                } else {
+                    std::lock_guard<std::mutex> lock(rt.store.mutex);
+                    (void)rt.store.base.auditPut(row.id, "fail", {{"reason", "upsert retry exhausted"}});
+                    (void)rt.store.base.finish(row.id, "fail");
                 }
             } catch (...) {
                 std::lock_guard<std::mutex> lock(rt.store.mutex);
@@ -305,7 +344,7 @@ Runtime::Runtime(Runtime&& other) noexcept
     : root(std::move(other.root)), config(std::move(other.config)), encoder(std::move(other.encoder)),
       store(std::move(other.store)), rules(std::move(other.rules)), policyFp(std::move(other.policyFp)),
       decider(std::move(other.decider)), l1(std::move(other.l1)), l1tick(other.l1tick),
-      workerStop(other.workerStop.load()), worker(std::move(other.worker)) {
+      fuse(std::move(other.fuse)), workerStop(other.workerStop.load()), worker(std::move(other.worker)) {
     other.l1tick = 0;
     other.workerStop.store(true);
 }
@@ -327,6 +366,7 @@ Runtime& Runtime::operator=(Runtime&& other) noexcept {
         l1tick = other.l1tick;
         other.l1tick = 0;
     }
+    fuse = std::move(other.fuse);
     workerStop.store(other.workerStop.load());
     worker = std::move(other.worker);
     other.workerStop.store(true);
