@@ -241,7 +241,7 @@ function getLastcall(base, token) {
     } catch (_) {}
   }
   // 回合后当轮补块：presync 已注入输入侧块（模型照抄），这里补上"只有回合结束才知道"的
-  // 真值：实际输入 token / 输出 token / 省下的主 LLM api 调用。默认开（APEX_POSTSYNC_BLOCK=0 关）。
+  // 真值：实际输入 token / 输出 token / 主 LLM api 调用账本（省下 vs 实调）。默认开（APEX_POSTSYNC_BLOCK=0 关）。
   try {
     const wantBlock = process.env.APEX_POSTSYNC_BLOCK !== '0';
     const block = typeof stash.block === 'string' ? stash.block : '';
@@ -255,15 +255,7 @@ function getLastcall(base, token) {
           '📝 输入 ' + (lc.inTok || 0) + ' tok · 输出 ' + (lc.outTok || 0) + ' tok' + (lc.real === true ? '' : '(est)')
         );
         outLines.push(
-          '♻️ 省主 LLM api 调用 **' +
-            (lc.saved || 0) +
-            '** 次（缓存 L1 **' +
-            (lc.savedL1 || 0) +
-            '** · L2 **' +
-            (lc.savedL2 || 0) +
-            '** · 本地直答 **' +
-            (lc.savedLocal || 0) +
-            '**）'
+          '♻️ 省主 LLM api **' + (lc.saved || 0) + '** 次，主 LLM api 实际调用 **' + (lc.upstream || 0) + '** 次'
         );
       }
       // ② 输入侧：hook 注入的整块（模型漏抄时才补）

@@ -44,14 +44,14 @@ void writeReply(httplib::Response& res, std::string const& id, std::string const
     replyText(res, id, model, payload, responses, usage);
 }
 
-/** 省下的主 LLM api 调用（累计真值）：L1 精确缓存 + L2 语义缓存 + 本地直答。
- *  三个计数即 /ready 的 v1.agent.{cache_l1,cache_l2,ok}，不另立口径。 */
+/** 主 LLM api 调用账本（累计真值）：省下的 L1 缓存 + L2 缓存 + 本地直答，以及真正打到上游的次数。
+ *  前三个计数即 /ready 的 v1.agent.{cache_l1,cache_l2,ok}，末一个即 v1.agent.upstream，不另立口径。 */
 static std::string savedCallsLine(Runtime& rt) {
     std::uint64_t const l1 = rt.cacheL1.load(std::memory_order_relaxed);
     std::uint64_t const l2 = rt.cacheL2.load(std::memory_order_relaxed);
     std::uint64_t const ok = rt.agentOk.load(std::memory_order_relaxed);
-    return "\n♻️ 省主 LLM api 调用 **" + std::to_string(l1 + l2 + ok) + "** 次（缓存 L1 **" + std::to_string(l1) +
-           "** · L2 **" + std::to_string(l2) + "** · 本地直答 **" + std::to_string(ok) + "**）";
+    return "\n♻️ 省主 LLM api **" + std::to_string(l1 + l2 + ok) + "** 次，主 LLM api 实际调用 **" +
+           std::to_string(rt.upstreamCalls.load(std::memory_order_relaxed)) + "** 次";
 }
 
 /** 统一统计块渲染（presync 与 /v1 回包共用）：真 token / 实时栈 / 人读 corpus / 实际注入。
@@ -672,6 +672,7 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
         lc["savedL1"] = l1;
         lc["savedL2"] = l2;
         lc["savedLocal"] = ok;
+        lc["upstream"] = rt.upstreamCalls.load(std::memory_order_relaxed);
         setJson(res, lc);
     });
 

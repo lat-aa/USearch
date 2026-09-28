@@ -85,6 +85,7 @@ std::string delegateToUpstream(Runtime& rt, json const& messages, bool responses
     msgs.push_back(textMessage("user", user.empty() ? " " : user));
     json body = {{"model", model}, {"messages", std::move(msgs)}, {"stream", false}};
 
+    rt.upstreamCalls.fetch_add(1, std::memory_order_relaxed);
     auto up = cli.Post(path, {{"Authorization", std::string("Bearer ") + key}, {"Content-Type", "application/json"}},
                        body.dump(), "application/json");
     if (!up) {

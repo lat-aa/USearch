@@ -154,6 +154,7 @@ int serve(Runtime& rt) {
                           {"rounds", rt.agentRounds.load(std::memory_order_relaxed)},
                           {"cache_l1", rt.cacheL1.load(std::memory_order_relaxed)},
                           {"cache_l2", rt.cacheL2.load(std::memory_order_relaxed)},
+                          {"upstream", rt.upstreamCalls.load(std::memory_order_relaxed)},
                           {"fuse", rt.fuse.openedAtMs.load(std::memory_order_relaxed) != 0},
                           {"chatBusy", rt.encoder.chatBusy.load(std::memory_order_relaxed)}}}}}});
     });

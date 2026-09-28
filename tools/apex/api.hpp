@@ -62,14 +62,15 @@ struct Runtime {
     std::atomic<std::uint64_t> agentOk{0};
     std::atomic<std::uint64_t> agentDelegate{0};
     std::atomic<std::uint64_t> agentParsefail{0};
-    std::atomic<std::uint64_t> agentRounds{0};  ///< 本地 agent 实际执行的工具轮次
-    std::atomic<std::int64_t> lastUserMs{0};    ///< 最近一次用户请求时刻（Worker 让路用）
-    std::atomic<std::uint64_t> presyncCalls{0}; ///< 仅 /v1/presync
-    std::atomic<std::uint64_t> observeCalls{0}; ///< MCP observe 入队次数（沉淀）
-    std::atomic<std::uint64_t> yieldSkip{0};    ///< Worker 因用户活跃跳过 claim/chat
-    std::atomic<std::uint64_t> cacheL1{0};      ///< L1 精确缓存命中
-    std::atomic<std::uint64_t> cacheL2{0};      ///< L2 语义缓存命中
-    Fuse fuse;                                  ///< 本地 agent 解析熔断
+    std::atomic<std::uint64_t> agentRounds{0};   ///< 本地 agent 实际执行的工具轮次
+    std::atomic<std::int64_t> lastUserMs{0};     ///< 最近一次用户请求时刻（Worker 让路用）
+    std::atomic<std::uint64_t> presyncCalls{0};  ///< 仅 /v1/presync
+    std::atomic<std::uint64_t> observeCalls{0};  ///< MCP observe 入队次数（沉淀）
+    std::atomic<std::uint64_t> yieldSkip{0};     ///< Worker 因用户活跃跳过 claim/chat
+    std::atomic<std::uint64_t> cacheL1{0};       ///< L1 精确缓存命中
+    std::atomic<std::uint64_t> cacheL2{0};       ///< L2 语义缓存命中
+    std::atomic<std::uint64_t> upstreamCalls{0}; ///< 真实上游 /chat/completions 调用次数（短路/缓存命中不计）
+    Fuse fuse;                                   ///< 本地 agent 解析熔断
     /** 最近一次 /v1 模型调用真值（in/out token + 输出文本）。 */
     Lastcall lastCall;
     /** Worker 空转等待；observe 入队后 notify，避免固定 400ms 轮询。 */
