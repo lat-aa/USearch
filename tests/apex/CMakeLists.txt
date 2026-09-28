@@ -38,6 +38,13 @@ set_tests_properties(apexturn PROPERTIES LABELS "apex;unit" TIMEOUT 30)
 # 否则 ASan/UBSan/TSan 矩阵与 lcov 覆盖率都覆盖不到 apex 纯逻辑。
 foreach(_apex_tgt apexdecide apexhelpers apexturn)
     usearch_apply_sanitizers(${_apex_tgt})
+    # 这些测试全部用 assert 校验；CI 用 RelWithDebInfo(-DNDEBUG) 会把断言剥成空操作，
+    # 导致测试"跑过但什么都没断言"。这里为测试目标关掉 NDEBUG，保证断言在任何构建档都生效。
+    if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_compile_options(${_apex_tgt} PRIVATE -UNDEBUG)
+    elseif (CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+        target_compile_options(${_apex_tgt} PRIVATE /UNDEBUG)
+    endif ()
     if (USEARCH_APEX_WERROR)
         if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
             target_compile_options(${_apex_tgt} PRIVATE -Wall -Wextra -Werror)

@@ -47,34 +47,20 @@ static Depth depthDowngrade(Depth d) noexcept {
     return Depth::Shallow;
 }
 
-// Release（NDEBUG）下 assert 会被剥掉 → 函数看似未用；改用显式 CHECK，测试在任意构建档都真跑。
-static int failures = 0;
-#define CHECK(cond)                                                                                                    \
-    do {                                                                                                               \
-        if (!(cond)) {                                                                                                 \
-            std::fprintf(stderr, "FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond);                                       \
-            ++failures;                                                                                                \
-        }                                                                                                              \
-    } while (0)
-
 int main() {
-    CHECK(std::strcmp(modelName(Model::Weak), "weak") == 0);
-    CHECK(std::strcmp(modelName(Model::Strong), "strong") == 0);
-    CHECK(modelDowngrade(Model::Strong) == Model::Standard);
-    CHECK(modelDowngrade(Model::Standard) == Model::Weak);
-    CHECK(modelDowngrade(Model::Weak) == Model::Weak);
+    assert(std::strcmp(modelName(Model::Weak), "weak") == 0);
+    assert(std::strcmp(modelName(Model::Strong), "strong") == 0);
+    assert(modelDowngrade(Model::Strong) == Model::Standard);
+    assert(modelDowngrade(Model::Standard) == Model::Weak);
+    assert(modelDowngrade(Model::Weak) == Model::Weak);
 
-    CHECK(std::strcmp(depthName(Depth::Deep), "deep") == 0);
-    CHECK(depthDowngrade(Depth::Deep) == Depth::Medium);
-    CHECK(depthDowngrade(Depth::Shallow) == Depth::Shallow);
+    assert(std::strcmp(depthName(Depth::Deep), "deep") == 0);
+    assert(depthDowngrade(Depth::Deep) == Depth::Medium);
+    assert(depthDowngrade(Depth::Shallow) == Depth::Shallow);
 
-    CHECK(static_cast<int>(Retrieval::L0) == 0);
-    CHECK(static_cast<int>(Retrieval::L3) == 3);
+    assert(static_cast<int>(Retrieval::L0) == 0);
+    assert(static_cast<int>(Retrieval::L3) == 3);
 
-    if (failures) {
-        std::fprintf(stderr, "apex decide: %d failure(s)\n", failures);
-        return 1;
-    }
     std::puts("apex decide: ok");
     return 0;
 }
