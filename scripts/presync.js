@@ -167,7 +167,11 @@ async function main() {
 
   // 三端都暂存：Cursor 用它做 postToolUse 注入；所有端都用它给 postsync 提供 block（回合后补块）
   try {
-    fs.writeFileSync(stashPath(raw), JSON.stringify({ ts: Date.now(), ctx, task, block: r.block || '' }), 'utf8');
+    fs.writeFileSync(
+    stashPath(raw),
+    JSON.stringify({ ts: Date.now(), ctx, task, block: r.block || '', inject: r.inject || '' }),
+    'utf8'
+  );
   } catch (_) {}
 
   if (client === 'cursor') {

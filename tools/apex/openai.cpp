@@ -45,7 +45,7 @@ void writeReply(httplib::Response& res, std::string const& id, std::string const
 }
 
 /** 统一统计块渲染（presync 与 /v1 回包共用）：真 token / 实时栈 / 人读 corpus / 实际注入。
- *  usage 非空时追加 `🔤 实际输入 · 输出` 与 `📝 输出内容`（回合结束才知道的真值）。 */
+ *  usage 非空时追加 `📝 输入 · 输出`、`📥 输入内容` 与 `📤 输出内容`（回合结束才知道的真值）。 */
 static std::string renderTurnBlock(Runtime& rt, Decision const& d, json const& rulesJson, json const& hitsJson,
                                    std::string const& inject, json const& usage, std::string const& replyText,
                                    char const* source, std::string const& routeLabel) {
@@ -113,31 +113,30 @@ static std::string renderTurnBlock(Runtime& rt, Decision const& d, json const& r
     if (!usage.empty()) {
         std::uint64_t const i = usage.value("prompt_tokens", usage.value("input_tokens", std::uint64_t{0}));
         std::uint64_t const o = usage.value("completion_tokens", usage.value("output_tokens", std::uint64_t{0}));
-        out += "\n🔤 输入内容[json] " +
-               json({{"prompt_tokens", i}, {"completion_tokens", o}, {"mode", tokReal ? "real" : "estimate"}}).dump() +
-               "  ";
-        out += "\n📝 输出内容[json] " + json(replyOnly(replyText)).dump();
+        out += "\n📝 输入 " + std::to_string(i) + " tok · 输出 " + std::to_string(o) + " tok" +
+               (tokReal ? "" : "(est)") + "  ";
+        out += "\n📥 输入内容「json」 " + json(truncChars(inject, 200)).dump();
+        out += "\n📤 输出内容「json」 " + json(replyOnly(replyText)).dump();
     }
     return out;
 }
 
-/** 回包末尾追块：缺 🔤/📝 输出行就补行；整块也缺就补整块 + 行。返回待追加文本（含前导换行）。 */
+/** 回包末尾追块：缺 📝/📥/📤 行就补行；整块也缺就补整块 + 行。返回待追加文本（含前导换行）。 */
 static std::string wrapBlock(Runtime& rt, Decision const& d, json const& rulesJson, json const& hitsJson,
                              std::string const& inject, json const& usage, std::string const& shown, char const* source,
                              std::string const& routeLabel) {
-    if (shown.find("🔤 实际输入") != std::string::npos)
+    if (shown.find("📥 输入内容") != std::string::npos)
         return {};
     std::uint64_t const i = usage.value("prompt_tokens", usage.value("input_tokens", std::uint64_t{0}));
     std::uint64_t const o = usage.value("completion_tokens", usage.value("output_tokens", std::uint64_t{0}));
-    std::string const lines =
-        "🔤 输入内容[json] " +
-        json({{"prompt_tokens", i}, {"completion_tokens", o}, {"mode", rt.tokensReal() ? "real" : "estimate"}}).dump() +
-        "  \n📝 输出内容[json] " + json(replyOnly(shown)).dump();
+    std::string const lines = "📝 输入 " + std::to_string(i) + " tok · 输出 " + std::to_string(o) + " tok" +
+                              (rt.tokensReal() ? "" : "(est)") + "  \n📥 输入内容「json」 " +
+                              json(truncChars(inject, 200)).dump() + "\n📤 输出内容「json」 " +
+                              json(replyOnly(shown)).dump();
     if (shown.find("⚡ 规则") != std::string::npos)
         return "\n" + lines;
     return "\n\n" + renderTurnBlock(rt, d, rulesJson, hitsJson, inject, usage, shown, source, routeLabel);
 }
-
 void mountOpenai(httplib::Server& svr, Runtime& rt,
                  std::function<bool(httplib::Request const&, httplib::Response&)> gate) {
     // gate must outlive handlers: take by value into each lambda (see http.cpp stored std::function).

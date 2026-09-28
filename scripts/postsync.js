@@ -252,21 +252,18 @@ function getLastcall(base, token) {
       const outLines = [];
       if (hasCall) {
         outLines.push(
-          '🔤 输入内容[json] ' +
-            JSON.stringify({
-              prompt_tokens: lc.inTok || 0,
-              completion_tokens: lc.outTok || 0,
-              mode: lc.real === true ? 'real' : 'estimate',
-            })
+          '📝 输入 ' + (lc.inTok || 0) + ' tok · 输出 ' + (lc.outTok || 0) + ' tok' + (lc.real === true ? '' : '(est)')
         );
+        const inj = String(stash.inject || '').replace(/\s+/g, ' ').trim();
+        if (inj) outLines.push('📥 输入内容「json」 ' + JSON.stringify(inj.slice(0, 200)));
         let snip = String(lc.replyTrunc || lc.reply || '').trim();
         const bi = snip.indexOf('⚡ 规则');
         if (bi !== -1) snip = snip.slice(0, bi).trim();
-        if (snip) outLines.push('📝 输出内容[json] ' + JSON.stringify(snip));
+        if (snip) outLines.push('📤 输出内容「json」 ' + JSON.stringify(snip));
       }
       // ② 输入侧：hook 注入的整块（模型漏抄时才补）
       const hasBlock = answer.includes('⚡ 规则');
-      const hasOut = answer.includes('🔤 输入内容[json]');
+      const hasOut = answer.includes('📥 输入内容');
       const addBlock = !hasBlock && !!block;
       const addOut = !hasOut && outLines.length > 0;
       if (addBlock || addOut) {
