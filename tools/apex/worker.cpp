@@ -24,6 +24,24 @@ bool userHot(Runtime const& rt) {
 }
 } // namespace
 
+void Lastcall::put(std::uint64_t in, std::uint64_t out, std::string rep, std::string mdl, std::string src, bool isReal,
+                   std::int64_t stamp) {
+    std::lock_guard<std::mutex> lock(mutex);
+    inTok = in;
+    outTok = out;
+    reply = std::move(rep);
+    model = std::move(mdl);
+    source = std::move(src);
+    real = isReal;
+    ts = stamp;
+}
+
+json Lastcall::toJson() {
+    std::lock_guard<std::mutex> lock(mutex);
+    return {{"inTok", inTok}, {"outTok", outTok}, {"reply", reply}, {"replyTrunc", truncChars(reply, 200)},
+            {"model", model}, {"source", source}, {"ts", ts},       {"real", real}};
+}
+
 Turnscope::Turnscope() : prev(tlsTurn) { tlsTurn = &local; }
 Turnscope::~Turnscope() { tlsTurn = prev; }
 

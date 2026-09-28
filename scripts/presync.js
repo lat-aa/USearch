@@ -18,7 +18,7 @@ const os = require('os');
 const path = require('path');
 const { URL } = require('url');
 
-const TIMEOUT_MS = Number(process.env.APEX_PRESYNC_TIMEOUT_MS || 1500);
+const TIMEOUT_MS = Number(process.env.APEX_PRESYNC_TIMEOUT_MS || 4000);
 const STASH_TTL_MS = 120000;
 
 function readStdin() {

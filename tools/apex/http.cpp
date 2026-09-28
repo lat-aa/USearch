@@ -132,12 +132,14 @@ int serve(Runtime& rt) {
     svr.Get("/ready", [&](httplib::Request const& req, httplib::Response& res) {
         if (!gate(req, res))
             return;
+        Storestats const st = rt.store.stats();
         setJson(res, {{"ok", true},
                       {"model", rt.encoder.modelReady},
                       {"dim", rt.encoder.dimensions},
-                      {"docs", rt.store.docs.size()},
+                      {"tokenMode", rt.tokensReal() ? "real" : "estimate"},
+                      {"docs", st.docs},
                       {"rules", rt.rules.size()},
-                      {"shadow", rt.store.quant},
+                      {"shadow", st.quant},
                       {"v1",
                        {{"responses", rt.v1Responses.load(std::memory_order_relaxed)},
                         {"chat", rt.v1Chat.load(std::memory_order_relaxed)},

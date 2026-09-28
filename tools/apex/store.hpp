@@ -34,6 +34,13 @@ struct Base {
     error_t auditPut(std::string const& id, std::string const& kind, json const& detail);
 };
 
+/** Store 观测快照（持锁读取）。 */
+struct Storestats {
+    std::size_t rows = 0;
+    std::size_t docs = 0;
+    bool quant = false;
+};
+
 /** USearch 图 + SQLite 载荷 + 可选 SQ8；upsert=put→add/save→commit。 */
 struct Store {
     Dense index;
@@ -63,6 +70,8 @@ struct Store {
     error_t upsert(Doc doc, std::vector<float> const& vector);
     error_t remove(std::string const& id);
     std::vector<std::pair<Doc, float>> search(std::vector<float> const& query, std::size_t k);
+    /** 观测快照：行数 / 文档数 / 是否 SQ8 影子（持 mutex）。 */
+    Storestats stats();
 };
 
 } // namespace api

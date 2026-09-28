@@ -40,6 +40,9 @@ struct Encoder {
     std::atomic<std::uint64_t> lockWaitSumMs{0};
     std::atomic<std::int64_t> lockWaitMaxMs{0};
     std::atomic<std::uint64_t> stealChat{0}; ///< Worker try_lock chat 失败次数（活跃期应为 0）
+    /// 最近一次 chat 的真实 token（输入=prompt eval 词数，输出=生成词数）；供 /v1 usage 与统计块。
+    std::atomic<std::uint64_t> lastPromptTok{0};
+    std::atomic<std::uint64_t> lastGenTok{0};
     Encoder() = default;
     ~Encoder();
     Encoder(Encoder const&) = delete;
@@ -58,6 +61,10 @@ struct Encoder {
     std::vector<float> embedImpl(std::string_view text);
     /** 是否有独立 embed 上下文：是则可与 distill chat 并行。 */
     bool dedicatedEmbed() const noexcept;
+    /** 真实分词（chat 模型 vocab，add_special=false）；未加载模型返回 0（调用方回退 estimate）。 */
+    std::size_t countTokens(std::string_view text) const;
+    /** 真分词器是否可用（= 已加载 chat 模型）。 */
+    bool tokensReal() const noexcept;
     std::mutex& embedLock() noexcept;
     std::string chat(std::string_view system, std::string_view user);
     std::string chat(std::string_view system, std::string_view user, std::function<void(std::string_view)> onDelta);

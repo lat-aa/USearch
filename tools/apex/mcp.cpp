@@ -15,6 +15,10 @@ namespace {
 /** 规则统计信封：对齐 apex.mdc / stats.sh（totalRules、token 三档、entries[].id）。 */
 json rulesEnvelope(Runtime& rt, Rulequery const& rq, float compression) {
     auto matched = resolveRules(rt, rq);
+    // 真分词器（有模型）或 estimate 回退；tokenMode 让上层如实标注 (est)。
+    auto tok = [&](std::string_view s) -> std::size_t {
+        return rt.tokensReal() ? rt.encoder.countTokens(s) : estimate(s);
+    };
     // 同步全文进 turn.rules（工具消费）；统计块只贴 prompt，不重复粘贴 rules
     noteRules(rt, matched);
     std::size_t total = 0;
@@ -23,12 +27,12 @@ json rulesEnvelope(Runtime& rt, Rulequery const& rq, float compression) {
         if (!r.enabled)
             continue;
         ++total;
-        naive += estimate(r.body) + estimate(r.description) + estimate(r.name);
+        naive += tok(r.body) + tok(r.description) + tok(r.name);
     }
     std::size_t selected = 0;
     float semSum = 0.0f;
     for (auto const& r : matched) {
-        selected += estimate(r.rule.body) + estimate(r.rule.description) + estimate(r.rule.name);
+        selected += tok(r.rule.body) + tok(r.rule.description) + tok(r.rule.name);
         if (r.activation == Activation::Semantic)
             semSum += (std::max)(r.score, 0.0f);
     }
@@ -40,7 +44,7 @@ json rulesEnvelope(Runtime& rt, Rulequery const& rq, float compression) {
     for (auto const& r : matched) {
         int sections = ruleSections(r.activation, r.score, semSum, base);
         std::string body = compressSections(r.rule.body, rq.task, static_cast<std::size_t>(sections));
-        optimized += estimate(body) + estimate(r.rule.description) + estimate(r.rule.name);
+        optimized += tok(body) + tok(r.rule.description) + tok(r.rule.name);
         if (!body.empty())
             clipped.emplace_back(r.rule.name, body);
         json item = r.toJson();
@@ -51,8 +55,13 @@ json rulesEnvelope(Runtime& rt, Rulequery const& rq, float compression) {
     }
     // clip / rebuildPrompt.rules 用裁剪后正文（与 inject 一致）
     noteKept(rt, std::move(clipped));
-    return {{"totalRules", total},        {"matched", matched.size()},    {"naiveTokens", naive},
-            {"selectedTokens", selected}, {"optimizedTokens", optimized}, {"entries", std::move(entries)}};
+    return {{"totalRules", total},
+            {"matched", matched.size()},
+            {"naiveTokens", naive},
+            {"selectedTokens", selected},
+            {"optimizedTokens", optimized},
+            {"entries", std::move(entries)},
+            {"tokenMode", rt.tokensReal() ? "real" : "estimate"}};
 }
 
 double roundMoney(double x) { return std::round(x * 1e6) / 1e6; }
@@ -98,29 +107,19 @@ bool resolveActual(json const& args, Mcpclient const& client, std::string& actua
 /**
  * 本轮栈职责（给 🔖 行）：只陈述 turn 实测，禁止用 decide.retrieval 预测冒充 ANN/回填。
  */
-json stackOf(Runtime& rt, Decision const& /*d*/) {
-    Turnstats& t = activeTurn(rt);
-    std::lock_guard<std::mutex> lock(t.mutex);
-    std::string nanbeige;
-    std::string usearch;
-    std::string sqlite;
+} // namespace
 
-    if (t.sawRules) {
-        if (rt.encoder.modelReady)
-            nanbeige = "语义规则嵌入 dim=" + std::to_string(rt.encoder.dimensions);
-        else
-            nanbeige = "hash 回退 dim=" + std::to_string(rt.encoder.dimensions ? rt.encoder.dimensions : 1024);
-        usearch = "跳过";
-        sqlite = "待命";
-    } else {
-        nanbeige = rt.encoder.modelReady ? "待命" : "hash 回退";
-        usearch = "跳过";
-        sqlite = "待命";
-    }
+/** 平面栈实时状态：真分词器/嵌入、USearch 行数与量化、SQLite 文档数（均取实时快照）。 */
+json stackOf(Runtime& rt, Decision const& /*d*/) {
+    std::string const nanbeige =
+        rt.encoder.tokensReal()
+            ? ("语义嵌入 dim=" + std::to_string(rt.encoder.dimensions))
+            : ("hash 回退 dim=" + std::to_string(rt.encoder.dimensions ? rt.encoder.dimensions : 1024));
+    Storestats const st = rt.store.stats();
+    std::string const usearch = st.rows ? ("图 " + std::to_string(st.rows) + (st.quant ? " · SQ8" : " · f32")) : "空";
+    std::string const sqlite = "docs " + std::to_string(st.docs);
     return {{"nanbeige", nanbeige}, {"usearch", usearch}, {"sqlite", sqlite}};
 }
-
-} // namespace
 
 json toolDefs() {
     auto tool = [](char const* name, char const* description) {
@@ -341,6 +340,12 @@ json callTool(Runtime& rt, std::string const& name, json const& args, Mcpclient 
                 if (t.cache == "L1" || t.cache == "L2")
                     cacheHit = true;
                 turnJson = t.toJson();
+                json const lc = rt.lastCall.toJson();
+                turnJson["inTok"] = lc.value("inTok", std::uint64_t{0});
+                turnJson["outTok"] = lc.value("outTok", std::uint64_t{0});
+                turnJson["reply"] = lc.value("reply", "");
+                turnJson["replyTrunc"] = lc.value("replyTrunc", "");
+                turnJson["tokenMode"] = rt.tokensReal() ? "real" : "estimate";
             }
 
             std::string priced = priceModelFrom(d, args.value("model", ""));

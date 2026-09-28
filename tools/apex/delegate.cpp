@@ -17,7 +17,8 @@ std::string delegateToUpstream(Runtime& rt, json const& messages, bool responses
     // 测试 seam：SMOKE_UPSTREAM_FIXTURE 设置时短路网络，返回固定文本（无 key 也可跑）。
     if (char const* uf = std::getenv("SMOKE_UPSTREAM_FIXTURE"); uf && *uf) {
         std::string reply = uf;
-        writeReply(res, "upstream", model, reply, responses, stream);
+        rt.lastCall.put(0, 0, reply, model, "upstream", false, steadyNowMs());
+        writeReply(res, "upstream", model, reply, responses, stream, json::object());
         return reply;
     }
 
@@ -96,17 +97,31 @@ std::string delegateToUpstream(Runtime& rt, json const& messages, bool responses
     }
 
     std::string reply;
+    json usage = json::object();
     try {
         auto j = json::parse(up->body);
         if (j.contains("choices") && j["choices"].is_array() && !j["choices"].empty())
             reply = j["choices"][0].value("message", json::object()).value("content", "");
+        auto u64 = [](json const& o, char const* k) -> std::uint64_t {
+            auto it = o.find(k);
+            if (it == o.end() || !it->is_number())
+                return 0;
+            return static_cast<std::uint64_t>((std::max)(0.0, it->get<double>()));
+        };
+        if (j.contains("usage") && j["usage"].is_object()) {
+            std::uint64_t const i = u64(j["usage"], "prompt_tokens");
+            std::uint64_t const o = u64(j["usage"], "completion_tokens");
+            usage = {{"prompt_tokens", i}, {"completion_tokens", o}, {"total_tokens", i + o}};
+        }
     } catch (...) {
         reply.clear();
     }
     if (reply.empty())
         reply = up->body;
 
-    writeReply(res, "upstream", model, reply, responses, stream);
+    rt.lastCall.put(usage.value("prompt_tokens", std::uint64_t{0}), usage.value("completion_tokens", std::uint64_t{0}),
+                    reply, model, "upstream", !usage.empty(), steadyNowMs());
+    writeReply(res, "upstream", model, reply, responses, stream, usage);
     return reply;
 }
 

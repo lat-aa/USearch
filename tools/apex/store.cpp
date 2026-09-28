@@ -163,6 +163,15 @@ error_t Store::upsert(Doc doc, std::vector<float> const& vector) {
     return {};
 }
 
+Storestats Store::stats() {
+    std::lock_guard<std::mutex> lock(mutex);
+    Storestats out;
+    out.rows = order.size();
+    out.docs = docs.size();
+    out.quant = quant;
+    return out;
+}
+
 error_t Store::remove(std::string const& id) {
     std::lock_guard<std::mutex> lock(mutex);
     if (error_t e = base.begin(); e)

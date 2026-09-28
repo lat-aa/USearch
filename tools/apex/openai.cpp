@@ -11,9 +11,10 @@
 namespace api {
 namespace {
 static void replyText(httplib::Response& res, std::string const& id, std::string const& model,
-                      std::string const& payload, bool responses) {
+                      std::string const& payload, bool responses, json const& usage = json::object()) {
     if (responses)
         setJson(res, {{"id", id},
+                      {"usage", usage},
                       {"object", "response"},
                       {"status", "completed"},
                       {"model", model},
@@ -23,6 +24,7 @@ static void replyText(httplib::Response& res, std::string const& id, std::string
                                      {"content", json::array({{{"type", "output_text"}, {"text", payload}}})}}})}});
     else
         setJson(res, {{"id", id},
+                      {"usage", usage},
                       {"object", "chat.completion"},
                       {"model", model},
                       {"choices", json::array({{{"index", 0},
@@ -32,13 +34,92 @@ static void replyText(httplib::Response& res, std::string const& id, std::string
 } // namespace
 
 void writeReply(httplib::Response& res, std::string const& id, std::string const& model, std::string const& payload,
-                bool responses, bool stream) {
+                bool responses, bool stream, json const& usageIn) {
+    json const usage = usageForWire(usageIn, responses);
     if (stream) {
-        res.set_content(responses ? sseResponses(id, model, payload) : sseChat(id, model, payload),
+        res.set_content(responses ? sseResponses(id, model, payload, usage) : sseChat(id, model, payload, usage),
                         "text/event-stream");
         return;
     }
-    replyText(res, id, model, payload, responses);
+    replyText(res, id, model, payload, responses, usage);
+}
+
+/** 统一统计块渲染（presync 与 /v1 回包共用）：真 token / 实时栈 / 人读 corpus / 实际注入。
+ *  usage 非空时追加 `🔤 实际输入 · 输出` 与 `📝 输出内容`（回合结束才知道的真值）。 */
+static std::string renderTurnBlock(Runtime& rt, Decision const& d, json const& rulesJson, json const& hitsJson,
+                                   std::string const& inject, json const& usage, std::string const& replyText,
+                                   char const* source, std::string const& routeLabel) {
+    bool const tokReal = rt.tokensReal();
+    auto tok = [&](std::string_view s) -> std::size_t { return tokReal ? rt.encoder.countTokens(s) : estimate(s); };
+    std::size_t total = 0, naive = 0, selected = 0, optimized = 0;
+    for (auto const& r : rt.rules) {
+        if (!r.enabled)
+            continue;
+        ++total;
+        naive += tok(r.body) + tok(r.description) + tok(r.name);
+    }
+    std::string ids;
+    float semSum = 0.0f;
+    for (auto const& h : hitsJson)
+        if (h.value("activation", "") == "semantic")
+            semSum += (std::max)(h.value("score", 0.0f), 0.0f);
+    int const base = rt.decider.sectionsFor(d.compression);
+    for (auto const& h : rulesJson) {
+        Rule probe;
+        probe.name = h.value("name", "");
+        probe.description = h.value("description", "");
+        probe.body = h.value("body", "");
+        selected += tok(probe.body) + tok(probe.description) + tok(probe.name);
+        optimized += tok(probe.body) + tok(probe.description) + tok(probe.name);
+        ids += (ids.empty() ? "" : " · ");
+        ids += probe.name;
+    }
+    (void)base;
+    (void)semSum;
+    json const stk = stackOf(rt, d);
+    json knowledge = {{"decision", d.toJson()}, {"hits", hitsJson}, {"rules", rulesJson}};
+    std::size_t const injectTok = tok(inject);
+    long long const retainPct = static_cast<long long>(std::lround(d.compression * 100.0f));
+    std::string const corpus = "## prompt\n" + formatCorpusBody(knowledge);
+    json blockIn = {{"total", total},
+                    {"matched", rulesJson.size()},
+                    {"naive", naive},
+                    {"selected", selected},
+                    {"optimized", optimized},
+                    {"ids", ids.empty() ? "无" : ids},
+                    {"route", routeLabel},
+                    {"routeNote", ""},
+                    {"depthCn", d.depth == Depth::Deep     ? "深层推理"
+                                : d.depth == Depth::Medium ? "中层推理"
+                                                           : "浅层推理"},
+                    {"retCn", d.retrieval == Retrieval::L3   ? "深度语义检索"
+                              : d.retrieval == Retrieval::L2 ? "语义检索"
+                              : d.retrieval == Retrieval::L1 ? "关键词检索"
+                                                             : "不做检索"},
+                    {"retainPct", d.compression * 100.0f + 0.5f},
+                    {"confPct", d.confidence * 100.0f + 0.5f},
+                    {"costText", "本机推理（无上游费用）"},
+                    {"cacheNote", "未命中缓存"},
+                    {"peakNote", "空闲时段"},
+                    {"reasonCn", d.reasons.empty() ? "未上报" : d.reasons.front()},
+                    {"tokReal", tokReal},
+                    {"nanbeige", stk["nanbeige"]},
+                    {"usearch", stk["usearch"]},
+                    {"sqlite", stk["sqlite"]},
+                    {"summary", blockSummary(injectTok, tokReal, retainPct, naive, optimized,
+                                             selected > optimized ? selected - optimized : 0, 0, 0, source)},
+                    {"corpus", corpus}};
+    std::string out = renderBlock(blockIn);
+    if (!usage.empty()) {
+        bool const real = usage.contains("prompt_tokens") ? tokReal : true;
+        std::uint64_t const i = usage.value("prompt_tokens", usage.value("input_tokens", std::uint64_t{0}));
+        std::uint64_t const o = usage.value("completion_tokens", usage.value("output_tokens", std::uint64_t{0}));
+        out += "\n🔤 实际输入 " + std::to_string(i) + " tok · 输出 " + std::to_string(o) + " tok" +
+               (real ? "" : "(est)") + "  ";
+        if (!replyText.empty())
+            out += "\n📝 输出内容「" + truncChars(replyText, 200) + "」";
+    }
+    return out;
 }
 
 void mountOpenai(httplib::Server& svr, Runtime& rt,
@@ -226,12 +307,38 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
         // Codex 用 wire_api=responses 且默认 stream=true；必须回 SSE 并以 response.completed 收尾。
         bool const streamReq = body.value("stream", false);
 
+        // 真值 usage：优先真分词器（无模型则空 → 客户端不显示 usage）。
+        std::string promptText;
+        for (auto const& m : body["messages"])
+            promptText += messageText(m["content"]);
+        auto usageFor = [&](std::string const& out) -> json {
+            if (!rt.tokensReal())
+                return json::object();
+            std::uint64_t const i = rt.encoder.countTokens(promptText);
+            std::uint64_t const o = rt.encoder.countTokens(out);
+            return json{{"prompt_tokens", i}, {"completion_tokens", o}, {"total_tokens", i + o}};
+        };
+        auto lastUsage = [&](std::string const& out) -> json {
+            std::uint64_t i = rt.encoder.lastPromptTok.load(std::memory_order_relaxed);
+            std::uint64_t o = rt.encoder.lastGenTok.load(std::memory_order_relaxed);
+            if (i == 0 && o == 0)
+                return usageFor(out);
+            return json{{"prompt_tokens", i}, {"completion_tokens", o}, {"total_tokens", i + o}};
+        };
+        auto record = [&](char const* src, json const& usage, std::string const& reply, bool real) {
+            rt.lastCall.put(usage.value("prompt_tokens", std::uint64_t{0}),
+                            usage.value("completion_tokens", std::uint64_t{0}), reply, modelName, src, real,
+                            steadyNowMs());
+        };
+
         // L1 精确缓存：纯短路，命中即返回（不评分、不建上下文）。
         if (rt.config.cache.enableL1) {
             std::string payload, source;
             if (l1Hit(rt, l1Key(rt.policyFp, taskQuery), payload, source)) {
                 rt.cacheL1.fetch_add(1, std::memory_order_relaxed);
-                return writeReply(res, "cache", modelName, payload, responses, streamReq);
+                json const usage = usageFor(payload);
+                record("cache", usage, payload, rt.tokensReal());
+                return writeReply(res, "cache", modelName, payload, responses, streamReq, usage);
             }
         }
         // L2 语义缓存：USearch kind=cache + 指纹 + 相似度阈值。
@@ -239,7 +346,9 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
             std::string payload, source;
             if (l2Hit(rt, taskQuery, payload, source)) {
                 rt.cacheL2.fetch_add(1, std::memory_order_relaxed);
-                return writeReply(res, "cache", modelName, payload, responses, streamReq);
+                json const usage = usageFor(payload);
+                record("cache", usage, payload, rt.tokensReal());
+                return writeReply(res, "cache", modelName, payload, responses, streamReq, usage);
             }
         }
         // 本地 agent 关闭 / 熔断：跳过本地，直走上游兜底。
@@ -363,8 +472,26 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
             localOk = false;
         }
         if (localOk) {
+            json const usage = lastUsage(payload);
+            std::string const shown = payload;
+            // 输出侧（实际输入/输出 token + 输出内容）只有回合结束才知道：网关确定性补齐。
+            // 模型已抄 presync 块（无 🔤）→ 只补两行；整块都缺 → 补整块 + 两行。
+            if (payload.find("🔤 实际输入") == std::string::npos) {
+                std::uint64_t const i2 = usage.value("prompt_tokens", std::uint64_t{0});
+                std::uint64_t const o2 = usage.value("completion_tokens", std::uint64_t{0});
+                std::string const lines = "🔤 实际输入 " + std::to_string(i2) + " tok · 输出 " + std::to_string(o2) +
+                                          " tok" + (rt.tokensReal() ? "" : "(est)") + "  \n" + "📝 输出内容「" +
+                                          truncChars(shown, 200) + "」";
+                if (payload.find("⚡ 规则") != std::string::npos)
+                    payload += "\n" + lines;
+                else
+                    payload += "\n\n" + renderTurnBlock(rt, route, ctx.value("rules", json::array()),
+                                                        ctx.value("hits", json::array()), knowledge.dump(), usage,
+                                                        shown, "agent", modelName);
+            }
             cachePut(rt, taskQuery, payload, "local");
-            return writeReply(res, "agent", modelName, payload, responses, streamReq);
+            record("local", usage, payload, rt.tokensReal());
+            return writeReply(res, "agent", modelName, payload, responses, streamReq, usage);
         }
         rt.agentDelegate.fetch_add(1, std::memory_order_relaxed);
         std::string up = delegateToUpstream(rt, body["messages"], responses, res, streamReq);
@@ -420,20 +547,23 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
             if (h.activation == Activation::Semantic)
                 semSum += (std::max)(h.score, 0.0f);
         json rules = json::array();
+        auto tok = [&](std::string_view s) -> std::size_t {
+            return rt.tokensReal() ? rt.encoder.countTokens(s) : estimate(s);
+        };
         std::size_t total = 0, naive = 0, selected = 0, optimized = 0;
         for (auto const& r : rt.rules) {
             if (!r.enabled)
                 continue;
             ++total;
-            naive += estimate(r.body) + estimate(r.description) + estimate(r.name);
+            naive += tok(r.body) + tok(r.description) + tok(r.name);
         }
         std::string ids;
         std::string inject;
         for (auto const& h : matched) {
             int sections = ruleSections(h.activation, h.score, semSum, base);
             std::string rb = compressSections(h.rule.body, task, static_cast<std::size_t>(sections));
-            selected += estimate(h.rule.body) + estimate(h.rule.description) + estimate(h.rule.name);
-            optimized += estimate(rb) + estimate(h.rule.description) + estimate(h.rule.name);
+            selected += tok(h.rule.body) + tok(h.rule.description) + tok(h.rule.name);
+            optimized += tok(rb) + tok(h.rule.description) + tok(h.rule.name);
             rules.push_back({{"name", h.rule.name},
                              {"activation", activationName(h.activation)},
                              {"score", h.score},
@@ -469,6 +599,15 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
                                   : d.retrieval == Retrieval::L1 ? "关键词检索"
                                                                  : "不做检索";
         std::string reasonCn = d.reasons.empty() ? "未上报" : d.reasons.front();
+        // 真值：栈状态（实时）+ 人读 corpus + 实际注入口径 + 无费用说明
+        bool const tokReal = rt.tokensReal();
+        std::size_t const injectTok = tokReal ? rt.encoder.countTokens(inject) : estimate(inject);
+        json const stack = stackOf(rt, d);
+        json knowledge = {{"decision", d.toJson()}, {"hits", json::array()}, {"rules", json::array()}};
+        for (auto const& r : rules)
+            knowledge["rules"].push_back({{"name", r["name"]}, {"body", r["body"]}});
+        std::string const corpus = "## prompt\n" + formatCorpusBody(knowledge);
+        long long const retainPct = static_cast<long long>(std::lround(d.compression * 100.0f));
         json blockIn = {{"total", total},
                         {"matched", matched.size()},
                         {"naive", naive},
@@ -481,23 +620,36 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
                         {"retCn", retCn},
                         {"retainPct", d.compression * 100.0f + 0.5f},
                         {"confPct", d.confidence * 100.0f + 0.5f},
-                        {"totalCost", 0.0},
-                        {"outputCost", 0.0},
                         {"priceNote", "未调/v1"},
+                        {"costText", "未调/v1 · 无上游费用"},
                         {"cacheNote", cache["hit"].get<bool>() ? "命中缓存" : "未命中缓存"},
                         {"peakNote", "空闲时段"},
                         {"reasonCn", reasonCn},
-                        {"biasCn", "token 为估算值"},
-                        {"corpus", ""}};
+                        {"tokReal", tokReal},
+                        {"nanbeige", stack["nanbeige"]},
+                        {"usearch", stack["usearch"]},
+                        {"sqlite", stack["sqlite"]},
+                        {"summary", blockSummary(injectTok, tokReal, retainPct, naive, optimized,
+                                                 selected > optimized ? selected - optimized : 0, 0, 0, "presync")},
+                        {"corpus", corpus}};
         json out = {{"cache", cache},
                     {"decision", d.toJson()},
                     {"rules", rules},
                     {"memory", memory},
                     {"inject", inject},
+                    {"injectTok", injectTok},
+                    {"tokenMode", tokReal ? "real" : "estimate"},
                     {"turn", {{"naive", naive}, {"selected", selected}, {"optimized", optimized}, {"ids", ids}}},
                     {"block", renderBlock(blockIn)},
                     {"client", client}};
         setJson(res, out);
+    });
+
+    // 最近一次 /v1 模型调用的真值（in/out token + 输出文本）：供 Stop hook 当轮补块。
+    svr.Get("/v1/lastcall", [gate, &rt](httplib::Request const& req, httplib::Response& res) {
+        if (!gate(req, res))
+            return;
+        setJson(res, rt.lastCall.toJson());
     });
 
     // GET：只读目录（全部规则）；POST：按 task/files/manual 解析命中。

@@ -533,8 +533,27 @@ std::string Encoder::chat(json const& messages, std::function<void(std::string_v
     }
     llama_sampler_free(smpl);
     clearKv(chatCtx);
+    lastPromptTok.store(tokens.size(), std::memory_order_relaxed);
+    lastGenTok.store(produced, std::memory_order_relaxed);
     return reply;
 }
+
+std::size_t Encoder::countTokens(std::string_view text) const {
+    if (!model || text.empty())
+        return 0;
+    llama_vocab const* vocab = llama_model_get_vocab(model);
+    std::vector<llama_token> tokens(text.size() + 32);
+    int n = llama_tokenize(vocab, text.data(), static_cast<int32_t>(text.size()), tokens.data(),
+                           static_cast<int32_t>(tokens.size()), false, true);
+    if (n < 0) {
+        tokens.resize(static_cast<std::size_t>(-n));
+        n = llama_tokenize(vocab, text.data(), static_cast<int32_t>(text.size()), tokens.data(),
+                           static_cast<int32_t>(tokens.size()), false, true);
+    }
+    return n > 0 ? static_cast<std::size_t>(n) : 0;
+}
+
+bool Encoder::tokensReal() const noexcept { return model != nullptr && modelReady; }
 
 std::string Encoder::distillChat(std::string_view system, std::string_view user, float temp, std::uint32_t maxTok) {
     json messages = json::array();

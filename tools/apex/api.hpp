@@ -24,6 +24,22 @@
 
 namespace api {
 
+/** 最近一次 /v1 模型调用的真值快照（供 /v1/lastcall 与统计块）。 */
+struct Lastcall {
+    std::mutex mutex;
+    std::uint64_t inTok = 0;  ///< 真实输入 token（本地=prompt eval；上游=usage.prompt_tokens）
+    std::uint64_t outTok = 0; ///< 真实输出 token
+    std::string reply;        ///< 完整输出文本
+    std::string model;        ///< 上游/本地 model 名
+    std::string source;       ///< local|upstream|cache
+    std::int64_t ts = 0;      ///< steadyNowMs
+    bool real = false;        ///< 计数是否来自真分词器 / 上游 usage
+    /** 写入一次调用快照（替换旧值）。 */
+    void put(std::uint64_t in, std::uint64_t out, std::string rep, std::string mdl, std::string src, bool isReal,
+             std::int64_t stamp);
+    json toJson();
+};
+
 struct Runtime {
     fs::path root;
     Config config;
@@ -54,6 +70,8 @@ struct Runtime {
     std::atomic<std::uint64_t> cacheL1{0};      ///< L1 精确缓存命中
     std::atomic<std::uint64_t> cacheL2{0};      ///< L2 语义缓存命中
     Fuse fuse;                                  ///< 本地 agent 解析熔断
+    /** 最近一次 /v1 模型调用真值（in/out token + 输出文本）。 */
+    Lastcall lastCall;
     /** Worker 空转等待；observe 入队后 notify，避免固定 400ms 轮询。 */
     std::mutex workerMutex;
     std::condition_variable workerCv;
@@ -71,6 +89,8 @@ struct Runtime {
     expected_gt<json> saveExperience(Experience const& exp);
     void startWorker();
     void stopWorker();
+    /** 真分词器是否可用（透传 Encoder）。 */
+    bool tokensReal() const { return encoder.tokensReal(); }
 };
 
 int runAgent(Runtime& rt, std::string const& instruction);

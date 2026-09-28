@@ -149,6 +149,42 @@ function postMcp(base, token, name, args) {
   });
 }
 
+function getLastcall(base, token) {
+  return new Promise((resolve) => {
+    let url;
+    try {
+      url = new URL('/v1/lastcall', base.endsWith('/') ? base : base + '/');
+    } catch (_) {
+      return resolve(null);
+    }
+    const lib = url.protocol === 'https:' ? https : http;
+    const req = lib.request(
+      {
+        hostname: url.hostname,
+        port: url.port || (url.protocol === 'https:' ? 443 : 80),
+        path: url.pathname,
+        method: 'GET',
+        headers: { Accept: 'application/json', Authorization: 'Bearer ' + token },
+      },
+      (res) => {
+        let data = '';
+        res.setEncoding('utf8');
+        res.on('data', (c) => (data += c));
+        res.on('end', () => {
+          try {
+            resolve(res.statusCode === 200 ? JSON.parse(data) : null);
+          } catch (_) {
+            resolve(null);
+          }
+        });
+      }
+    );
+    req.on('error', () => resolve(null));
+    req.setTimeout(TIMEOUT_MS, () => req.destroy(new Error('lastcall timeout')));
+    req.end();
+  });
+}
+
 (async () => {
   let raw = {};
   try {
@@ -204,20 +240,38 @@ function postMcp(base, token, name, args) {
       fs.appendFileSync(path.join(os.tmpdir(), 'apex_postsync.log'), new Date().toISOString() + ' observe failed\n');
     } catch (_) {}
   }
-  // 回合后反馈补块（opt-in）：块本应由 presync 注入让模型照抄；若模型漏了，
-  // 可用一次"新回合"把它带出来。默认关（要多花一个回合）。
+  // 回合后当轮补块：presync 已注入输入侧块（模型照抄），这里补上"只有回合结束才知道"的
+  // 真值：实际输入 token / 输出 token / 输出内容。默认开（APEX_POSTSYNC_BLOCK=0 关）。
   try {
-    const wantBlock = process.env.APEX_POSTSYNC_BLOCK === '1';
+    const wantBlock = process.env.APEX_POSTSYNC_BLOCK !== '0';
     const block = typeof stash.block === 'string' ? stash.block : '';
-    if (wantBlock && block && client !== 'cursor' && !answer.includes('⚡ 规则')) {
-      const reason = '请在回复末尾原样附上以下统计块（勿改写）：\n' + block;
-      process.stdout.write(JSON.stringify({ decision: 'block', reason }));
-      return;
-    }
-    if (wantBlock && block && client === 'cursor' && !answer.includes('⚡ 规则')) {
-      // Cursor 只能通过 followup_message 开一个新回合把块带出来
-      process.stdout.write(JSON.stringify({ followup_message: block }));
-      return;
+    if (wantBlock) {
+      // ① 输出侧：只有回合结束才知道的真值（输入/输出 token + 输出内容）
+      const lc = await getLastcall(base, token);
+      const hasCall = !!(lc && (lc.inTok || lc.outTok || lc.reply));
+      const outLines = [];
+      if (hasCall) {
+        const est = lc.real === true ? '' : '(est)';
+        outLines.push('🔤 实际输入 ' + (lc.inTok || 0) + ' tok · 输出 ' + (lc.outTok || 0) + ' tok' + est);
+        const snip = String(lc.replyTrunc || lc.reply || '').replace(/\s+/g, ' ').trim();
+        if (snip) outLines.push('📝 输出内容「' + snip + '」');
+      }
+      // ② 输入侧：hook 注入的整块（模型漏抄时才补）
+      const hasBlock = answer.includes('⚡ 规则');
+      const hasOut = answer.includes('🔤 实际输入');
+      const addBlock = !hasBlock && !!block;
+      const addOut = !hasOut && outLines.length > 0;
+      if (addBlock || addOut) {
+        const body =
+          (addBlock ? block : '') + (addBlock && addOut ? '\n' : '') + (addOut ? outLines.join('\n') : '');
+        if (client === 'cursor') {
+          process.stdout.write(JSON.stringify({ followup_message: body }));
+          return;
+        }
+        const reason = '请在回复末尾原样附上以下内容（勿改写）：\n' + body;
+        process.stdout.write(JSON.stringify({ decision: 'block', reason }));
+        return;
+      }
     }
   } catch (_) {}
   // 默认：绝不输出 followup_message / decision，避免自循环

@@ -16,6 +16,9 @@ struct Mcpclient {
     std::string actualModelSource; ///< X-Apex-Actual-Model-Source
 };
 
+/** 平面栈状态（实时）：本地语义嵌入 / USearch 行数 / SQLite 文档数。 */
+json stackOf(Runtime& rt, Decision const& d);
+
 json toolDefs();
 json callTool(Runtime& rt, std::string const& name, json const& args, Mcpclient const& client = {});
 json mcpHandle(Runtime& rt, json const& req, Mcpclient const& client = {});

@@ -175,13 +175,15 @@ function debugTail() { try { return fsm.readFileSync(debugLog, 'utf8').trim().sp
   else bad('回合后补块 Codex', r.out.slice(0, 160));
 }
 
-// 14) 模型已带块 → 不重复补（不浪费回合）
+// 14) 模型已带块 → 只可能追加 🔤/📝，绝不重复贴整块
 {
   const r = runHook('postsync.js',
     { hook_event_name: 'Stop', session_id: 'smoke-block-2', cwd: ROOT, transcript_path: tfPath('with-block') },
     { APEX_POSTSYNC_BLOCK: '1' });
   const j = parse(r.out);
-  if (j && !j.decision && !j.followup_message) ok('回合后补块 · 已含块则不补（不浪费回合）');
+  const blocked = !!(j && j.decision === 'block');
+  const noDup = !blocked || typeof j.reason !== 'string' || !j.reason.includes('⚡ 规则');
+  if (!blocked || noDup) ok('回合后补块 · 已含块则不重复块');
   else bad('回合后补块 已含', r.out.slice(0, 160));
 }
 
@@ -194,12 +196,14 @@ function debugTail() { try { return fsm.readFileSync(debugLog, 'utf8').trim().sp
   else bad('回合后补块 Cursor', r.out.slice(0, 160));
 }
 
-// 16) 默认关：不发任何追加/新回合
+// 16) 显式关（APEX_POSTSYNC_BLOCK=0）：不发任何追加/新回合
 {
-  const r = runHook('postsync.js', { hook_event_name: 'Stop', session_id: 'smoke-block-3', cwd: ROOT, transcript_path: tfPath('no-block') });
+  const r = runHook('postsync.js',
+    { hook_event_name: 'Stop', session_id: 'smoke-block-3', cwd: ROOT, transcript_path: tfPath('no-block') },
+    { APEX_POSTSYNC_BLOCK: '0' });
   const j = parse(r.out);
-  if (j && !j.decision && !j.followup_message) ok('回合后补块 · 默认关（不产生额外回合）');
-  else bad('回合后补块 默认', r.out.slice(0, 160));
+  if (j && !j.decision && !j.followup_message) ok('回合后补块 · 显式关（不产生额外回合）');
+  else bad('回合后补块 关闭', r.out.slice(0, 160));
 }
 
 console.log('\n======== SUMMARY pass=' + pass + ' fail=' + fail + ' ========');

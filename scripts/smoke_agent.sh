@@ -40,13 +40,13 @@ boot_mode ok ""
 out=$(post_chat)
 echo "$out" | python3 -c "
 import sys,json
-assert json.load(sys.stdin)['choices'][0]['message']['content']=='fixture-ok', 'payload mismatch'
+assert json.load(sys.stdin)['choices'][0]['message']['content'].startswith('fixture-ok'), 'payload mismatch'
 " && smoke_pass "A1 ok 本地直答 fixture-ok" || smoke_bad "A1 ok" "$(echo "$out"|head -c200)"
 
 out2=$(post_chat) # 完全相同任务 → L1 精确命中
 echo "$out2" | python3 -c "
 import sys,json
-assert json.load(sys.stdin)['choices'][0]['message']['content']=='fixture-ok'
+assert json.load(sys.stdin)['choices'][0]['message']['content'].startswith('fixture-ok')
 " && smoke_pass "A2 L1 缓存二次命中" || smoke_bad "A2 cache" "$(echo "$out2"|head -c200)"
 
 n=$(agent_field cache_l1)
@@ -57,7 +57,7 @@ boot_mode tools ""
 out3=$(post_chat)
 echo "$out3" | python3 -c "
 import sys,json
-assert json.load(sys.stdin)['choices'][0]['message']['content']=='fixture-tools-ok'
+assert json.load(sys.stdin)['choices'][0]['message']['content'].startswith('fixture-tools-ok')
 " && smoke_pass "A4 有界工具循环收敛" || smoke_bad "A4 tools" "$(echo "$out3"|head -c200)"
 r=$(agent_field rounds)
 [[ "$r" -ge 1 ]] && smoke_pass "A5 /ready agent.rounds=$r" || smoke_bad "A5 rounds" "$r"
@@ -67,7 +67,7 @@ boot_mode delegate "upstream-ok"
 out4=$(post_chat)
 echo "$out4" | python3 -c "
 import sys,json
-assert json.load(sys.stdin)['choices'][0]['message']['content']=='upstream-ok'
+assert json.load(sys.stdin)['choices'][0]['message']['content'].startswith('upstream-ok')
 " && smoke_pass "A6 delegate→上游兜底" || smoke_bad "A6 delegate" "$(echo "$out4"|head -c200)"
 
 # ---------- A7/A8：截断 → 上游兜底 ----------
@@ -75,7 +75,7 @@ boot_mode truncated "upstream-ok"
 out5=$(post_chat)
 echo "$out5" | python3 -c "
 import sys,json
-assert json.load(sys.stdin)['choices'][0]['message']['content']=='upstream-ok'
+assert json.load(sys.stdin)['choices'][0]['message']['content'].startswith('upstream-ok')
 " && smoke_pass "A7 截断→上游兜底" || smoke_bad "A7 truncated" "$(echo "$out5"|head -c200)"
 p=$(agent_field parsefail)
 [[ "$p" -ge 1 ]] && smoke_pass "A8 /ready parsefail=$p" || smoke_bad "A8 parsefail" "$p"

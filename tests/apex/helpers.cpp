@@ -172,6 +172,35 @@ int main() {
         assert(cs.find("data: [DONE]") != std::string::npos);
     }
 
+    // 统计块：真/估算标注、无费用口径、实际注入、UTF-8 安全截断
+    {
+        json base = {{"total", 2},       {"matched", 1},    {"naive", 313},
+                     {"optimized", 111}, {"selected", 313}, {"ids", "default"},
+                     {"retainPct", 40},  {"confPct", 90},   {"reasonCn", "complexity 21 < 40 (low)"}};
+        json estIn = base;
+        estIn["tokReal"] = false;
+        std::string const est = api::renderBlock(estIn);
+        assert(est.find("(est)") != std::string::npos);
+        assert(est.find("token 为估算值") != std::string::npos);
+
+        json realIn = base;
+        realIn["tokReal"] = true;
+        realIn["costText"] = "未调/v1 · 无上游费用";
+        std::string const real = api::renderBlock(realIn);
+        assert(real.find("(est)") == std::string::npos);
+        assert(real.find("token 实测") != std::string::npos);
+        assert(real.find("未调/v1 · 无上游费用") != std::string::npos);
+        assert(real.find("¥0.000000") == std::string::npos);
+
+        std::string const sum = api::blockSummary(271, true, 40, 313, 111, 202, 0, 0, "presync");
+        assert(sum.find("实际注入 271 tok") != std::string::npos);
+        assert(sum.find("注入 presync") != std::string::npos);
+        assert(api::blockSummary(271, false, 40, 313, 111, 202, 0, 0, "presync").find("(est)") != std::string::npos);
+
+        assert(api::truncChars(std::string("一二三四五"), 3) == std::string("一二三…"));
+        assert(api::truncChars(std::string("abc"), 5) == std::string("abc"));
+    }
+
     std::puts("apex helpers: ok");
     return 0;
 }

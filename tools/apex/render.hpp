@@ -630,22 +630,38 @@ inline void priceRates(std::string const& model, bool cacheHit, bool peak, doubl
 // ---- 七块统计渲染（服务端权威；与 scripts/stats.sh 同格式，供三端 hook 注入）----
 
 /** 用 /v1/presync 的字段渲染七块 markdown。缺失字段写「未上报」，禁止用 0 冒充。 */
+/** UTF-8 安全截断到 maxChars 个码点；超长补 `…`（避免截断多字节序列）。 */
+inline std::string truncChars(std::string const& s, std::size_t maxChars) {
+    std::size_t chars = 0, i = 0;
+    while (i < s.size() && chars < maxChars) {
+        unsigned char const c = static_cast<unsigned char>(s[i]);
+        i += c < 0x80 ? 1 : ((c & 0xE0) == 0xC0 ? 2 : ((c & 0xF0) == 0xE0 ? 3 : 4));
+        ++chars;
+    }
+    if (i >= s.size())
+        return s;
+    return s.substr(0, i) + "…";
+}
+
 /**
  * OpenAI Responses 流式帧（单发，纯文本）：以 `response.completed` 收尾。
  * Codex 用 wire_api=responses 且默认 stream=true；缺此帧即报
  * "stream closed before response.completed"。
  */
-inline std::string sseResponses(std::string const& id, std::string const& model, std::string const& text) {
+inline std::string sseResponses(std::string const& id, std::string const& model, std::string const& text,
+                                json const& usage = json::object()) {
     auto ev = [](std::string const& name, json const& d) { return "event: " + name + "\ndata: " + d.dump() + "\n\n"; };
     std::string const item = "msg-" + id;
     json const content = json::array({{{"type", "output_text"}, {"text", text}}});
     json const message = {
         {"id", item}, {"type", "message"}, {"role", "assistant"}, {"status", "completed"}, {"content", content}};
-    json const resp = {{"id", id},
-                       {"object", "response"},
-                       {"status", "completed"},
-                       {"model", model},
-                       {"output", json::array({message})}};
+    json resp = {{"id", id},
+                 {"object", "response"},
+                 {"status", "completed"},
+                 {"model", model},
+                 {"output", json::array({message})}};
+    if (!usage.empty())
+        resp["usage"] = usage;
     std::string out;
     out += ev("response.created", {{"type", "response.created"},
                                    {"response",
@@ -689,18 +705,42 @@ inline std::string sseResponses(std::string const& id, std::string const& model,
 }
 
 /** OpenAI Chat 流式帧（单发）：一个 delta + 一个 stop，以 `[DONE]` 收尾。 */
-inline std::string sseChat(std::string const& id, std::string const& model, std::string const& text) {
+inline std::string sseChat(std::string const& id, std::string const& model, std::string const& text,
+                           json const& usage = json::object()) {
     json const head = {
         {"id", id},
         {"object", "chat.completion.chunk"},
         {"model", model},
         {"choices", json::array({{{"index", 0}, {"delta", {{"content", text}}}, {"finish_reason", nullptr}}})}};
-    json const tail = {
-        {"id", id},
-        {"object", "chat.completion.chunk"},
-        {"model", model},
-        {"choices", json::array({{{"index", 0}, {"delta", json::object()}, {"finish_reason", "stop"}}})}};
+    json tail = {{"id", id},
+                 {"object", "chat.completion.chunk"},
+                 {"model", model},
+                 {"choices", json::array({{{"index", 0}, {"delta", json::object()}, {"finish_reason", "stop"}}})}};
+    if (!usage.empty())
+        tail["usage"] = usage;
     return "data: " + head.dump() + "\n\ndata: " + tail.dump() + "\n\ndata: [DONE]\n\n";
+}
+
+/** usage 按 wire 归一：Responses 用 input_tokens/output_tokens，Chat 用 prompt_tokens/completion_tokens。 */
+inline json usageForWire(json const& usage, bool responses) {
+    if (usage.empty() || !responses)
+        return usage;
+    std::uint64_t const i = usage.value("prompt_tokens", std::uint64_t{0});
+    std::uint64_t const o = usage.value("completion_tokens", std::uint64_t{0});
+    return json{{"input_tokens", i}, {"output_tokens", o}, {"total_tokens", i + o}};
+}
+
+/** 📦 摘要一行（纯函数）：实际注入量 + 保留比 + 裁剪 + 注入来源。 */
+inline std::string blockSummary(std::size_t injectTok, bool tokReal, long long retainPct, std::size_t naive,
+                                std::size_t kept, std::size_t trim, std::size_t packN, std::size_t packTok,
+                                std::string const& source) {
+    std::ostringstream o;
+    o << "📦 ";
+    if (injectTok != 0)
+        o << "实际注入 " << injectTok << " tok" << (tokReal ? "" : "(est)") << " · ";
+    o << "保留 " << retainPct << "% · naive " << naive << " → kept " << kept << " · 裁剪 " << trim << " · gatePack "
+      << packN << "条/" << packTok << "tok · 注入 " << source;
+    return o.str();
 }
 
 inline std::string renderBlock(json const& in) {
@@ -719,12 +759,14 @@ inline std::string renderBlock(json const& in) {
     double const savedPct = naive > 0 ? (static_cast<double>(naive - optimized) / naive) * 100.0 : 0.0;
     long long const retainPct = num("retainPct"), confPct = num("confPct");
 
+    bool const tokReal = in.value("tokReal", false);
+    char const* estSuffix = tokReal ? "" : "(est)";
     char pctBuf[32];
     std::snprintf(pctBuf, sizeof(pctBuf), "%.1f", savedPct);
 
     std::ostringstream o;
-    o << "⚡ 规则 **" << matched << "**/**" << total << "** 命中 · token **" << naive << " → " << optimized
-      << "** · **省 " << pctBuf << "%**  \n";
+    o << "⚡ 规则 **" << matched << "**/**" << total << "** 命中 · token **" << naive << estSuffix << " → " << optimized
+      << estSuffix << "** · **省 " << pctBuf << "%**  \n";
     o << "🔖 决策 Nanbeige4.2 " << str("nanbeige", "未上报") << " · USearch " << str("usearch", "未上报")
       << " · SQLite " << str("sqlite", "未上报") << str("stackExtra") << "  \n";
     std::string const route = str("route"), routeNote = str("routeNote");
@@ -737,14 +779,23 @@ inline std::string renderBlock(json const& in) {
         o << routeNote;
     o << " · " << str("depthCn", "浅层推理") << " · " << str("retCn", "不做检索") << " · 保留上下文 " << retainPct
       << "% · 置信 " << confPct << "%  \n";
-    char costBuf[32], outBuf[32];
-    std::snprintf(costBuf, sizeof(costBuf), "%.6f", in.value("totalCost", 0.0));
-    std::snprintf(outBuf, sizeof(outBuf), "%.6f", in.value("outputCost", 0.0));
-    o << "💰 费用 **¥" << costBuf << "** · " << str("priceNote", "未调/v1") << " · " << str("cacheNote", "未命中缓存")
-      << " · " << str("peakNote", "空闲时段") << " · 输出 ¥" << outBuf << str("costExtra") << "  \n";
+    std::string const costText = str("costText");
+    if (!costText.empty()) {
+        // 无上游调用的轮次：明确"无费用"，不显示 ¥0.000000（避免"花了 0 元"的误导）。
+        o << "💰 " << costText << " · " << str("cacheNote", "未命中缓存") << " · " << str("peakNote", "空闲时段")
+          << str("costExtra") << "  \n";
+    } else {
+        char costBuf[32], outBuf[32];
+        std::snprintf(costBuf, sizeof(costBuf), "%.6f", in.value("totalCost", 0.0));
+        std::snprintf(outBuf, sizeof(outBuf), "%.6f", in.value("outputCost", 0.0));
+        o << "💰 费用 **¥" << costBuf << "** · " << str("priceNote", "未调/v1") << " · "
+          << str("cacheNote", "未命中缓存") << " · " << str("peakNote", "空闲时段") << " · 输出 ¥" << outBuf
+          << str("costExtra") << "  \n";
+    }
     o << "🏷️ 命中规则 " << str("ids", "无") << " · 省量 筛选 **" << pickSaved << "** ＋ 裁剪 **" << trimSaved << "**"
       << str("hitExtra") << "  \n";
-    o << "💡 依据 " << str("reasonCn", "未上报") << " · " << str("biasCn", "token 为估算值") << "  \n";
+    o << "💡 依据 " << str("reasonCn", "未上报") << " · " << str("biasCn", tokReal ? "token 实测" : "token 为估算值")
+      << "  \n";
     o << str("summary", "📦 上下文 未上报") << "\n";
     if (auto c = in.find("corpus"); c != in.end() && c->is_string() && !c->get_ref<std::string const&>().empty())
         o << c->get_ref<std::string const&>() << "\n";
