@@ -79,14 +79,14 @@ Codex 实模：`.codex/hooks.json` 的 `PreToolUse` 把本轮 `model` 写入 `co
 1. `rules`（无文件则 `files=[]`、`manual=[]`；统计轮优先 `body=none`；默认吃 `decide.compression`）
 2. `decide`（档位 / 检索 / 保留上下文比例）
 3. `cost` — **每轮必调**；`actual_model` 优先 hook（Codex=`codex-config`，Cursor=`cursor-state`），否则请求头 / 显式 `reported`；禁止沿用上轮旧名、禁止编造、禁止本机读库脚本
-4. **统计块：直接原样粘贴 Hook 注入的块**。presync 已把**真值**块放进上下文（`【统计块】…`：真分词器 token、`🔖` 实时栈、`💰` 无费用口径、`📦 实际注入 N tok` + 人读 corpus）；回合结束 Stop 会再补 `🔤 实际输入 N tok · 输出 M tok` 与 `📝 输出内容「…」` 两行。**禁止**用 `scripts/stats.sh` 自行重渲染（会造成"未上报 / token 为估算值"漂移、与真值不一致）。**仅当**上下文里确实没有注入块时，才用 `scripts/stats.sh` 兜底（有调 `/v1` → `-ViaV1 true` 且 `-CostModel` 对齐上游 `model`；否则 `-ViaV1 false`，🧭 = `cost.actual_model`）
+4. **统计块：直接原样粘贴 Hook 注入的块**。presync 已把**真值**块放进上下文（`【统计块】…`：真分词器 token、`🔖` 实时栈、`💰` 无费用口径、`📦 实际注入 N tok` + 人读 corpus）；回合结束 Stop 会再补 `🔤 输入内容[json] {"prompt_tokens":N,"completion_tokens":M,"mode":"real|estimate"}` 与 `📝 输出内容[json] "<输出文本>"` 两行。**禁止**用 `scripts/stats.sh` 自行重渲染（会造成"未上报 / token 为估算值"漂移、与真值不一致）。**仅当**上下文里确实没有注入块时，才用 `scripts/stats.sh` 兜底（有调 `/v1` → `-ViaV1 true` 且 `-CostModel` 对齐上游 `model`；否则 `-ViaV1 false`，🧭 = `cost.actual_model`）
 5. 任务成功后调 `observe`（或 `save`）仅入队，不做重活
 
 禁止以「太简单」跳过。失败则整链重试一次；仍失败写**工具名 + 错误原文**。禁止谎称已调用或「工具返回空」。
 
 ## 渲染
 
-**首选：原样粘贴 Hook 注入的块**（presync 块 + Stop 补的 `🔤`/`📝` 两行）——它是全真值。
+**首选：原样粘贴 Hook 注入的块**（presync 块 + Stop 补的 `🔤 输入内容[json]`/`📝 输出内容[json]` 两行）——它是全真值。
 下面的 `scripts/stats.sh` 模板**仅作无 hook 时的兜底**；自渲染会丢失真 token / 实时栈 / 输出内容。
 
 ``` sh

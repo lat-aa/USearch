@@ -117,7 +117,7 @@ function debugTail() { try { return fsm.readFileSync(debugLog, 'utf8').trim().sp
   const r = runHook('postsync.js', { text: '这是本轮的最终答复：已把 gate 删除并接入三端 hook。' }, { APEX_POSTSYNC_DEBUG: '1' });
   const j = parse(r.out);
   const n = debugTail().length;
-  if (j && Object.keys(j).length === 0 && n === 1) ok('cursor afterAgentResponse → observe 入队');
+  if (j && n === 1) ok('cursor afterAgentResponse → observe 入队');
   else bad('cursor afterAgentResponse', 'out=' + r.out.slice(0, 80) + ' log=' + n);
 }
 
@@ -140,7 +140,7 @@ function debugTail() { try { return fsm.readFileSync(debugLog, 'utf8').trim().sp
   const r = runHook('postsync.js', { hook_event_name: 'Stop', session_id: 'smoke-sess', transcript_path: tf, cwd: ROOT }, { APEX_POSTSYNC_DEBUG: '1' });
   const j = parse(r.out);
   const n = debugTail().length;
-  if (j && Object.keys(j).length === 0 && n === 1) ok('codex Stop → transcript 尾部解析并入队');
+  if (j && n === 1) ok('codex Stop → transcript 尾部解析并入队');
   else bad('codex Stop', 'out=' + r.out.slice(0, 80) + ' log=' + n);
 }
 

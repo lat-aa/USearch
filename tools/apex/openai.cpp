@@ -111,13 +111,12 @@ static std::string renderTurnBlock(Runtime& rt, Decision const& d, json const& r
                     {"corpus", corpus}};
     std::string out = renderBlock(blockIn);
     if (!usage.empty()) {
-        bool const real = usage.contains("prompt_tokens") ? tokReal : true;
         std::uint64_t const i = usage.value("prompt_tokens", usage.value("input_tokens", std::uint64_t{0}));
         std::uint64_t const o = usage.value("completion_tokens", usage.value("output_tokens", std::uint64_t{0}));
-        out += "\n🔤 实际输入 " + std::to_string(i) + " tok · 输出 " + std::to_string(o) + " tok" +
-               (real ? "" : "(est)") + "  ";
-        if (!replyText.empty())
-            out += "\n📝 输出内容「" + truncChars(replyText, 200) + "」";
+        out += "\n🔤 输入内容[json] " +
+               json({{"prompt_tokens", i}, {"completion_tokens", o}, {"mode", tokReal ? "real" : "estimate"}}).dump() +
+               "  ";
+        out += "\n📝 输出内容[json] " + json(replyOnly(replyText)).dump();
     }
     return out;
 }
@@ -130,8 +129,10 @@ static std::string wrapBlock(Runtime& rt, Decision const& d, json const& rulesJs
         return {};
     std::uint64_t const i = usage.value("prompt_tokens", usage.value("input_tokens", std::uint64_t{0}));
     std::uint64_t const o = usage.value("completion_tokens", usage.value("output_tokens", std::uint64_t{0}));
-    std::string const lines = "🔤 实际输入 " + std::to_string(i) + " tok · 输出 " + std::to_string(o) + " tok" +
-                              (rt.tokensReal() ? "" : "(est)") + "  \n📝 输出内容「" + truncChars(shown, 200) + "」";
+    std::string const lines =
+        "🔤 输入内容[json] " +
+        json({{"prompt_tokens", i}, {"completion_tokens", o}, {"mode", rt.tokensReal() ? "real" : "estimate"}}).dump() +
+        "  \n📝 输出内容[json] " + json(replyOnly(shown)).dump();
     if (shown.find("⚡ 规则") != std::string::npos)
         return "\n" + lines;
     return "\n\n" + renderTurnBlock(rt, d, rulesJson, hitsJson, inject, usage, shown, source, routeLabel);
