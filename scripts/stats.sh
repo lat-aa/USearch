@@ -1,9 +1,10 @@
 #!/bin/sh
+# shellcheck disable=SC2034  # 保留契约 flag（ActualModelSource/CtxPicked）由渲染器消费，本脚本暂不渲染
 # 将 apex（rules / decide / cost）结果渲染成七块报告。
 # 第 7 块：摘要一行 + 消息行（PromptFile=turn.prompt messages，自动剔除 knowledge 行）+ 人读 corpus（CorpusFile）。
 # 前六行句式冻结；Compression = 保留上下文比例。用法见 AGENTS.md。
 set -eu
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+SCRIPT_DIR=$(cd -- "$(dirname "$0")" && pwd)
 
 Style=clear
 IconPreset=a

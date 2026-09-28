@@ -75,7 +75,7 @@ NumKong 单元门禁（与 CI `quality.yml` / Ubuntu GCC 对齐）：见 `CONTRI
 | Hooks | `scripts/smoke_hooks.js` | 三端 presync/posttool/postsync 契约 + 幂等 + 防自循环 + fail-open（12 例） | prerelease |
 | L1b | `scripts/smoke_agent.sh` | 本地 agent ok/delegate/truncated 三路径 + 工具循环 + L1 缓存 + observe→Worker | prerelease（确定性，无 GGUF/上游 key） |
 | L2 | `scripts/smoke_apex.sh` | rules→decide→cost→observe→aliases→`stats.sh` | nightly |
-| L3 | `scripts/test_hooks.js` | `injectmodel.js`（实际模型上报；`presync.js` gate 已移除） | prerelease |
+| L3 | `scripts/smoke_hooks.js` | `presync/posttool/postsync.js`（三端注入/入队契约 + fail-open，16 例） | prerelease |
 | L4 | `scripts/smoke_nightly.sh` | L1 cache / conflict / Worker / 短路与长流式 | nightly |
 | 部署 | `deploy/k3s/depth.sh` | Ingress/NodePort 探测（不替代本地 smoke） | 手工 |
 
@@ -89,7 +89,7 @@ API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_v1.sh
 node scripts/smoke_hooks.js
 API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_agent.sh
 API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_apex.sh
-node scripts/test_hooks.js
+node scripts/smoke_hooks.js
 API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_nightly.sh
 ```
 

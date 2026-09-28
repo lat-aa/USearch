@@ -145,12 +145,11 @@ assert '(none)' not in c
 obs=$(curl -fsS --max-time 30 "${MCP[@]}" \
   -d '{"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"observe","arguments":{"title":"apex-smoke","summary":"queue worker smoke","outcome":"ok"}}}' \
   "$SMOKE_BASE/mcp")
-oid=$(echo "$obs" | python3 -c "
+echo "$obs" | python3 -c "
 import sys,json
 t=json.loads(json.load(sys.stdin)['result']['content'][0]['text'])
 assert t.get('ok') is True and t.get('status')=='pending' and t.get('id')
-print(t['id'])
-") && smoke_pass "A5 observe enqueue" || smoke_bad "A5 observe" "$(echo "$obs"|head -c200)"
+" && smoke_pass "A5 observe enqueue" || smoke_bad "A5 observe" "$(echo "$obs"|head -c200)"
 
 # observe 后 worker 后台蒸馏 chat 持 Encoder 锁（embed/chat 共用 mutex），cost 可能等待 ~75s
 costq=$(curl -fsS --max-time 180 "${MCP[@]}" \

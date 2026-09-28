@@ -14,7 +14,7 @@ cp -a /home/fei/usearch-build/api "$ROOT/.local/api" 2>/dev/null || \
 cp -a "$ROOT/scripts/smoke_common.sh" "$ROOT/scripts/smoke_mcp.sh" \
   "$ROOT/scripts/smoke_v1.sh" "$ROOT/scripts/smoke_apex.sh" \
   "$ROOT/scripts/smoke_nightly.sh" "$ROOT/scripts/stats.sh" \
-  "$ROOT/scripts/test_hooks.js" "$ROOT/scripts/presync.js" \
+  "$ROOT/scripts/smoke_hooks.js" "$ROOT/scripts/presync.js" \
   "$ROOT/scripts/injectmodel.js" "$DST/scripts/"
 cp -a "$ROOT/.config/config.example.toml" "$DST/.config/"
 cp -a "$ROOT/.config/rules" "$DST/.config/"
@@ -37,7 +37,7 @@ sed -i -E 's|^token = .*|token = "sk-default"|' .config/config.toml
 sed -i -E 's|^gguf = .*|gguf = ".config/models/MISSING-smoke.gguf"|' .config/config.toml
 "$API_BIN" serve >/tmp/tools_probe.log 2>&1 &
 pid=$!
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
   curl -fsS -m 1 -H "Authorization: Bearer sk-default" http://127.0.0.1:18999/ready && break
   sleep 0.3
 done
@@ -54,10 +54,10 @@ PORT=18092 ./scripts/smoke_v1.sh
 echo "==== smoke_apex ===="
 PORT=18093 ./scripts/smoke_apex.sh
 if command -v node >/dev/null 2>&1; then
-  echo "==== test_hooks ===="
-  node scripts/test_hooks.js
+  echo "==== smoke_hooks ===="
+  node scripts/smoke_hooks.js
 else
   # 用 Windows node 经 /mnt 也可；此处跳过
-  echo "SKIP test_hooks (no node); run on host: node scripts/test_hooks.js"
+  echo "SKIP smoke_hooks (no node); run on host: node scripts/smoke_hooks.js"
 fi
 echo "==== ALL LOCAL SMOKE OK ===="

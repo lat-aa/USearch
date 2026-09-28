@@ -232,7 +232,11 @@ smoke_summary() {
 
 # AUTH / JSON / MCP 数组供 curl 展开
 smoke_auth_headers() {
+  # 共享数组：由 sourcing 的 smoke_*.sh 消费（shellcheck 在库内看不到调用方）。
+  # shellcheck disable=SC2034
   AUTH=(-H "Authorization: Bearer ${SMOKE_TOKEN}")
+  # shellcheck disable=SC2034
   JSON=(-H "Content-Type: application/json" -H "Accept: application/json")
+  # shellcheck disable=SC2034
   MCP=(-H "Authorization: Bearer ${SMOKE_TOKEN}" -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream")
 }

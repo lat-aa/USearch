@@ -21,7 +21,7 @@
 | L1 `/v1` 网关 | `API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_v1.sh` |
 | L1b agent 三路径 | `API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_agent.sh` |
 | L2 Apex 回合 | `API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_apex.sh` |
-| L3 Hooks | `node scripts/test_hooks.js` |
+| L3 Hooks | `node scripts/smoke_hooks.js` |
 | L4 nightly | `API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_nightly.sh` |
 
 部署后 Ingress 探测仍用 `deploy/k3s/depth.sh`。矩阵说明见 [`.config/README.md`](.config/README.md)。

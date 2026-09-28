@@ -8,7 +8,7 @@
 #   ./scripts/sync_upstream.sh           # fetch + checkout upstream headers
 #   ./scripts/sync_upstream.sh --check   # 仅 diff，不改工作区
 set -euo pipefail
-ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd -- "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 REMOTE="${UPSTREAM_REMOTE:-upstream}"

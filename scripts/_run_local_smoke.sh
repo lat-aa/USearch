@@ -41,10 +41,10 @@ echo "==== smoke_v1 L1 port 18092 ===="
 PORT=18092 ./scripts/smoke_v1.sh
 echo "==== smoke_apex L2 port 18093 ===="
 PORT=18093 ./scripts/smoke_apex.sh
-echo "==== test_hooks L3 ===="
+echo "==== smoke_hooks L3 ===="
 if command -v node >/dev/null 2>&1; then
-  node scripts/test_hooks.js
+  node scripts/smoke_hooks.js
 else
-  echo "SKIP test_hooks (no node in WSL)"
+  echo "SKIP smoke_hooks (no node in WSL)"
 fi
 echo "==== ALL LOCAL SMOKE OK ===="
