@@ -133,7 +133,9 @@ assert 'turn' in t and 'gate' in t['turn']
 # 唯一真源：corpus 仅 ## prompt；source=rebuild（无 /v1 notePrompt）
 tr=t['turn']
 c=tr.get('corpus') or ''
-p=tr.get('prompt') or ''
+msgs=tr.get('prompt') or []
+assert isinstance(msgs,list) and msgs
+p=''.join(part.get('text','') for m in msgs for part in (m.get('content') or []) if isinstance(part,dict))
 assert c and c.startswith('## prompt\n')
 assert '## rules' not in c and '## kept' not in c and '## pack' not in c
 assert 'Local knowledge JSON follows.' in p

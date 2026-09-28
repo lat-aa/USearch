@@ -57,6 +57,7 @@ fuse_recovery_seconds = 300
 [embed]
 # 专用嵌入模型（语义检索/L2 缓存）；缺省复用 chat 模型
 gguf = ".config/models/bge-m3-Q8_0.gguf"
+gpu = 0           # bge-m3 与 chat 抢同一张卡会加载失败（auto 回退仍报错）；专用嵌入固定 CPU
 
 [upstream]
 base_url = "https://api.deepseek.com"

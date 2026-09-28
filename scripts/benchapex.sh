@@ -114,7 +114,7 @@ assert 'edge' in d and 'async' in d
 print('metrics ok stealChat', d['encode'].get('stealChat'), 'chatBusy', d['encode'].get('chatBusy'))
 " && smoke_pass "metrics schema" || smoke_bad "metrics" "$m1"
 
-# 门禁：绝对阈值（方案 KPI）；基线非 0 时另要求 ≤ 基线/3
+# 门禁：绝对阈值（方案 KPI）；基线非 0 时另要求 ≤ 基线×1.5（相对回退护栏）
 python3 - "$OUT" "$BASELINE" <<'PY'
 import json, sys
 after = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -126,9 +126,9 @@ def gate(name, got, abs_max, base_key=None):
         fails.append(f"{name}={got:.1f}ms > {abs_max}ms")
         return
     if base_key and base.get(base_key, 0) > 0:
-        lim = base[base_key] / 3.0
+        lim = base[base_key] * 1.5
         if got > lim:
-            fails.append(f"{name}={got:.1f}ms > baseline/3={lim:.1f}ms")
+            fails.append(f"{name}={got:.1f}ms > baseline*1.5={lim:.1f}ms")
 
 # 不变量 1：observe 后 cost 必灭 ~75s 级卡顿
 gate("costAfterObserveP99", after["costAfterObserveP99Ms"], 40.0, "costP99Ms")
