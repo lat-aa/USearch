@@ -206,7 +206,7 @@ if "local" in tr:
   cmd += ["-Local",str(tr["local"])]
 out=subprocess.check_output(cmd,text=True)
 os.unlink(path)
-assert "🔖 决策 Nanbeige4.2" in out
+assert "🔖 决策 " in out and "USearch" in out
 assert "📦 上下文" in out
 assert "naive" in out and "kept" in out and "gatePack" in out
 assert "注入" in out

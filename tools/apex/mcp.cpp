@@ -110,11 +110,28 @@ bool resolveActual(json const& args, Mcpclient const& client, std::string& actua
 } // namespace
 
 /** 平面栈实时状态：真分词器/嵌入、USearch 行数与量化、SQLite 文档数（均取实时快照）。 */
+/** 取路径 basename 并去扩展名：把 config 里的 gguf 路径显示成人读模型名。 */
+static std::string modelName(std::string const& path) {
+    std::size_t const slash = path.find_last_of("/\\");
+    std::string base = slash == std::string::npos ? path : path.substr(slash + 1);
+    std::size_t const dot = base.find_last_of('.');
+    if (dot != std::string::npos && dot > 0)
+        base = base.substr(0, dot);
+    return base;
+}
+
 json stackOf(Runtime& rt, Decision const& /*d*/) {
-    std::string const nanbeige =
-        rt.encoder.tokensReal()
-            ? ("语义嵌入 dim=" + std::to_string(rt.encoder.dimensions))
-            : ("hash 回退 dim=" + std::to_string(rt.encoder.dimensions ? rt.encoder.dimensions : 1024));
+    std::string nanbeige;
+    if (rt.encoder.tokensReal()) {
+        std::string const chat = modelName(rt.config.gguf);
+        std::string const embed = rt.config.embed.gguf.empty()
+                                      ? (chat.empty() ? std::string("未上报") : chat + "（复用 chat）")
+                                      : modelName(rt.config.embed.gguf);
+        nanbeige = (chat.empty() ? std::string("chat 未上报") : chat) + " · 嵌入 " + embed +
+                   " dim=" + std::to_string(rt.encoder.dimensions);
+    } else {
+        nanbeige = "hash 回退 dim=" + std::to_string(rt.encoder.dimensions ? rt.encoder.dimensions : 1024);
+    }
     Storestats const st = rt.store.stats();
     std::string const usearch = st.rows ? ("图 " + std::to_string(st.rows) + (st.quant ? " · SQ8" : " · f32")) : "空";
     std::string const sqlite = "docs " + std::to_string(st.docs);

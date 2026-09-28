@@ -149,7 +149,7 @@ fi
 if [ "$Style" = plain ]; then
   printf 'totalRules = %s\nmatched = %s\nmatchedIds = %s\nnaiveTokens = %s\nselectedTokens = %s\noptimizedTokens = %s\nsavedTokens = %s (selection %s + trim %s)\nsavedPercent = %s\n' \
     "$Total" "$Matched" "$(printf '%s' "$Ids" | tr ' ' ',')" "$Naive" "$Selected" "$Optimized" "$saved" "$pickSaved" "$trimSaved" "$savedPct"
-  printf 'stack = Nanbeige4.2 %s · USearch %s · SQLite %s\n' "$Nanbeige" "$USearch" "$Sqlite"
+  printf 'stack = %s · USearch %s · SQLite %s\n' "$Nanbeige" "$USearch" "$Sqlite"
   printf 'decision = model=%s depth=%s retrieval=%s confidence=%s contextRetention=%s\nreason = %s\n' \
     "$Model" "$Depth" "$Retrieval" "$Confidence" "$Compression" "$Reason"
   printf 'cost = naive:%s optimized:%s saved:%s output:%s total:%s CNY (%s; %s; %s)\n' \
@@ -230,7 +230,7 @@ fi
 # Markdown 聊天会吞单换行：行尾两空格强制硬换行
 printf '%s 规则 **%s**/**%s** 命中 · token **%s → %s** · **省 %s%%**  \n' \
   "$ic_stat" "$Matched" "$Total" "$Naive" "$Optimized" "$savedPct"
-printf '%s 决策 Nanbeige4.2 %s · USearch %s · SQLite %s%s  \n' \
+printf '%s 决策 %s · USearch %s · SQLite %s%s  \n' \
   "$ic_stack" "$Nanbeige" "$USearch" "$Sqlite" "$stackExtra"
 if [ -n "$routeName" ] && [ -n "$modelCn" ]; then
   printf '%s 路由 %s（%s） · %s · %s · 保留上下文 %s%% · 置信 %s%%  \n' \
