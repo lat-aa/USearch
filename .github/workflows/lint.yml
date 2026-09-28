@@ -1,0 +1,49 @@
+name: Lint
+
+# 可复用静态门禁：clang-format / shellcheck / bash -n / node --check + api -Werror 编译。
+# 被 Pre-Release 调用（jobs.lint -> uses: ./.github/workflows/lint.yml）。
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Static checks + api -Werror
+    runs-on: ubuntu-24.04
+    env:
+      CC: gcc
+      CXX: g++
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Pull Git submodules
+        run: git submodule update --init --recursive
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format shellcheck cmake build-essential curl
+      - name: clang-format check
+        run: |
+          mapfile -t files < <(find tools/apex tools/sqlite \( -name '*.hpp' -o -name '*.cpp' \) | sort)
+          clang-format --dry-run --Werror "${files[@]}"
+      - name: shellcheck
+        run: shellcheck -S warning scripts/*.sh
+      - name: bash syntax
+        run: |
+          for f in scripts/*.sh; do bash -n "$f"; done
+      - name: node syntax
+        run: |
+          for f in scripts/*.js; do node --check "$f"; done
+      - name: api -Werror build
+        run: |
+          cmake -B build_lint \
+            -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+            -D USEARCH_BUILD_TEST_CPP=1 \
+            -D USEARCH_BUILD_BENCH_CPP=0 \
+            -D USEARCH_BUILD_API=ON \
+            -D USEARCH_APEX_WERROR=ON \
+            -D USEARCH_USE_NUMKONG=0 \
+            -D USEARCH_SANITIZE_DEBUG=OFF
+          cmake --build build_lint --target api apexhelpers apexdecide apexturn -j"$(nproc)"

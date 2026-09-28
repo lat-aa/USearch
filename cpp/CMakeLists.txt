@@ -22,10 +22,32 @@ if (USEARCH_BUILD_FUZZ)
     target_compile_options(fuzz_format PRIVATE -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
     target_link_options(fuzz_format PRIVATE -fsanitize=fuzzer,address,undefined)
 
+    # apex agent result 解析 harness：helpers.hpp 纯头 + nlohmann::json，不链 llama/sqlite。
+    if (NOT TARGET nlohmann_json::nlohmann_json)
+        include(FetchContent)
+        set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
+        set(JSON_Install OFF CACHE BOOL "" FORCE)
+        FetchContent_Declare(
+            json
+            GIT_REPOSITORY https://github.com/nlohmann/json
+            GIT_TAG v3.11.3
+            GIT_SHALLOW TRUE
+        )
+        FetchContent_MakeAvailable(json)
+    endif ()
+    add_executable(fuzz_agentjson fuzz_agentjson.cpp)
+    setup_target(fuzz_agentjson)
+    target_include_directories(fuzz_agentjson PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../tools/apex)
+    target_link_libraries(fuzz_agentjson PRIVATE nlohmann_json::nlohmann_json)
+    target_compile_options(fuzz_agentjson PRIVATE -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
+    target_link_options(fuzz_agentjson PRIVATE -fsanitize=fuzzer,address,undefined)
+
     if (USEARCH_BUILD_TEST_CPP)
         add_test(NAME fuzz_index_smoke COMMAND fuzz_index -max_total_time=20 -timeout=5)
         set_tests_properties(fuzz_index_smoke PROPERTIES LABELS "fuzz;memory" TIMEOUT 120)
         add_test(NAME fuzz_format_smoke COMMAND fuzz_format -max_total_time=20 -timeout=5)
         set_tests_properties(fuzz_format_smoke PROPERTIES LABELS "fuzz;memory;format" TIMEOUT 120)
+        add_test(NAME fuzz_agentjson_smoke COMMAND fuzz_agentjson -max_total_time=20 -timeout=5)
+        set_tests_properties(fuzz_agentjson_smoke PROPERTIES LABELS "fuzz;memory;apex" TIMEOUT 120)
     endif ()
 endif ()

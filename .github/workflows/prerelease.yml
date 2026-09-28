@@ -17,6 +17,10 @@ jobs:
     name: Quality matrix
     uses: ./.github/workflows/quality.yml
 
+  lint:
+    name: Lint
+    uses: ./.github/workflows/lint.yml
+
   versioning:
     name: Update Version
     runs-on: ubuntu-24.04
@@ -430,6 +434,17 @@ jobs:
       - name: Smoke /v1 LLM gateway L1
         run: |
           API_BIN="$PWD/build_api/api" TOKEN=sk-default PORT=8090 ./scripts/smoke_v1.sh
-      - name: Hook unit (presync + injectmodel)
+      - name: Smoke agent L1b (hash mode, deterministic)
         run: |
-          node scripts/test_hooks.js
+          chmod +x scripts/smoke_agent.sh
+          API_BIN="$PWD/build_api/api" TOKEN=sk-default PORT=8091 ./scripts/smoke_agent.sh
+      - name: Hook unit (presync + postsync + injectmodel)
+        run: |
+          chmod +x scripts/smoke_common.sh
+          source scripts/smoke_common.sh
+          export SMOKE_HASH=1
+          export API_BIN="$PWD/build_api/api"
+          export PORT=8092
+          smoke_boot
+          APEX_BASE="$SMOKE_BASE" APEX_TOKEN="$SMOKE_TOKEN" node scripts/smoke_hooks.js
+          smoke_teardown
