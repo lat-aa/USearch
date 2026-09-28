@@ -13,10 +13,12 @@ core.*
 .config/config.toml
 .config/store.sqlite
 .config/store.sqlite-*
+# 模型/索引二进制一律不入库（含 .broken 等残留）；本目录无 tracked 文件
 .config/models/config.json
 .config/models/meta.jsonl
 .config/models/store.sqlite
 .config/models/store.sqlite-*
+.config/models/
 
 # C++ builds
 /build
