@@ -11,6 +11,29 @@
 namespace api {
 
 std::string delegateToUpstream(Runtime& rt, json const& messages, bool responses, httplib::Response& res) {
+    // 测试 seam：SMOKE_UPSTREAM_FIXTURE 设置时短路网络，返回固定文本（无 key 也可跑）。
+    if (char const* uf = std::getenv("SMOKE_UPSTREAM_FIXTURE"); uf && *uf) {
+        std::string reply = uf;
+        if (responses)
+            setJson(res, {{"id", "upstream"},
+                          {"object", "response"},
+                          {"status", "completed"},
+                          {"model", "deepseek-chat"},
+                          {"output",
+                           json::array({{{"type", "message"},
+                                         {"role", "assistant"},
+                                         {"content", json::array({{{"type", "output_text"}, {"text", reply}}})}}})}});
+        else
+            setJson(res, {{"id", "upstream"},
+                          {"object", "chat.completion"},
+                          {"model", "deepseek-chat"},
+                          {"choices",
+                           json::array({{{"index", 0},
+                                         {"message", {{"role", "assistant"}, {"content", reply}}},
+                                         {"finish_reason", "stop"}}})}});
+        return reply;
+    }
+
     std::string base = rt.config.upstream.base;
     if (base.empty())
         base = "https://api.deepseek.com";

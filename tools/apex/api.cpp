@@ -16,6 +16,7 @@
 #include "slim.hpp"
 
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -25,6 +26,30 @@
 namespace api {
 
 // ---- 本地 agent 纯短路 / 缓存 / 熔断辅助（本 TU 私有） ----
+
+/** 读取环境变量（测试 seam；未设置返回空）。 */
+static std::string envStr(char const* key) {
+    char const* v = std::getenv(key);
+    return v && *v ? std::string(v) : std::string();
+}
+
+/**
+ * SMOKE_AGENT_FIXTURE 的确定性桩输出：仅当设置该环境变量时生效，生产路径为空。
+ * ok / delegate / truncated 覆盖三路径；tools 覆盖有界工具循环（首轮发工具、次轮收敛）。
+ */
+static std::string fixtureChat(std::string const& mode, std::size_t round) {
+    if (mode == "ok")
+        return "<think>fixture</think><agent-result>{\"status\":\"ok\",\"tool_calls\":[],\"payload\":\"fixture-ok\"}</agent-result>";
+    if (mode == "delegate")
+        return "<think>fixture</think><agent-result>{\"status\":\"delegate\",\"tool_calls\":[],\"payload\":\"\"}</agent-result>";
+    if (mode == "truncated")
+        return "<think>reasoning, but the model stopped mid-stream"; // 无结束标签 → 判失效
+    if (mode == "tools")
+        return round == 0
+                   ? "<agent-result>{\"status\":\"ok\",\"tool_calls\":[{\"name\":\"status\",\"args\":{}}],\"payload\":\"\"}</agent-result>"
+                   : "<think>fixture</think><agent-result>{\"status\":\"ok\",\"tool_calls\":[],\"payload\":\"fixture-tools-ok\"}</agent-result>";
+    return "<agent-result>{\"status\":\"delegate\"}</agent-result>";
+}
 
 /** 以标准 /v1 双 wire 返回文本 payload。 */
 static void replyText(httplib::Response& res, std::string const& id, std::string const& model,
@@ -133,7 +158,12 @@ static bool agentRun(Runtime& rt, std::string const& modelName, json const& agen
     std::size_t used = 0;
     std::size_t rounds = 0;
 
+    std::string const fixture = envStr("SMOKE_AGENT_FIXTURE");
     auto infer = [&](std::string& raw) {
+        if (!fixture.empty()) {
+            raw = fixtureChat(fixture, rounds);
+            return;
+        }
         float prevTemp = rt.encoder.temperature;
         std::uint32_t prevMax = rt.encoder.maxTokens;
         rt.encoder.maxTokens = budget;
@@ -506,6 +536,19 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
     svr.Post("/v1/chat/completions", chat);
     svr.Post("/v1/responses", chat);
 
+    // GET：只读目录（全部规则）；POST：按 task/files/manual 解析命中。
+    svr.Get("/v1/rules", [gate, &rt](httplib::Request const& req, httplib::Response& res) {
+        if (!gate(req, res))
+            return;
+        json arr = json::array();
+        for (auto const& r : rt.rules)
+            arr.push_back({{"name", r.name},
+                           {"description", r.description},
+                           {"always", r.always},
+                           {"globs", r.globs},
+                           {"enabled", r.enabled}});
+        setJson(res, {{"rules", arr}});
+    });
     svr.Post("/v1/rules", [gate, &rt](httplib::Request const& req, httplib::Response& res) {
         if (!gate(req, res))
             return;

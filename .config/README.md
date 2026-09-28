@@ -69,6 +69,7 @@ NumKong 单元门禁（与 CI `quality.yml` / Ubuntu GCC 对齐）：见 `CONTRI
 |----|------|------|-----|
 | L0 | `scripts/smoke_mcp.sh` | MCP 握手 / Auth / GET·POST SSE / `tools/list`（含 Codex 别名） | prerelease |
 | L1 | `scripts/smoke_v1.sh` | `/v1` models·embed·memory·route·rules·chat·responses·流式·负向 | prerelease（无 GGUF 时生成类 SKIP） |
+| L1b | `scripts/smoke_agent.sh` | 本地 agent ok/delegate/truncated 三路径 + 工具循环 + L1 缓存 + observe→Worker | prerelease（确定性，无 GGUF/上游 key） |
 | L2 | `scripts/smoke_apex.sh` | rules→decide→cost→observe→aliases→`stats.sh` | nightly |
 | L3 | `scripts/test_hooks.js` | `injectmodel.js`（实际模型上报；`presync.js` gate 已移除） | prerelease |
 | L4 | `scripts/smoke_nightly.sh` | L1 cache / conflict / Worker / 短路与长流式 | nightly |
@@ -81,6 +82,7 @@ cmake -B build -DUSEARCH_BUILD_API=ON -DUSEARCH_BUILD_TEST_CPP=OFF -DUSEARCH_BUI
 cmake --build build --target api -j"$(nproc)"
 API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_mcp.sh
 API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_v1.sh
+API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_agent.sh
 API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_apex.sh
 node scripts/test_hooks.js
 API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_nightly.sh

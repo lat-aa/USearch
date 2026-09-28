@@ -64,6 +64,24 @@ int main() {
     assert(extractAgentResult("<agent-result>{\"a\":1}").empty());
     assert(extractAgentResult("{\"a\":1}</agent-result>").empty());
 
+    // 边界：多标签取首个；大小写不合规判失效；think 内示例不泄漏
+    {
+        auto multi = extractAgentResult(
+            "<agent-result>{\"status\":\"ok\",\"payload\":\"first\"}</agent-result>"
+            "<agent-result>{\"status\":\"ok\",\"payload\":\"second\"}</agent-result>");
+        assert(agentOk(multi));
+        assert(multi.value("payload", "") == "first");
+
+        assert(extractAgentResult("<AGENT-RESULT>{\"status\":\"ok\"}</AGENT-RESULT>").empty());
+        assert(extractAgentResult("<Agent-Result>{\"status\":\"ok\"}</Agent-Result>").empty());
+
+        auto nested = extractAgentResult(
+            "<think>example: <agent-result>{\"status\":\"ok\",\"payload\":\"fake\"}</agent-result></think>"
+            "<agent-result>{\"status\":\"ok\",\"payload\":\"real\"}</agent-result>");
+        assert(agentOk(nested));
+        assert(nested.value("payload", "") == "real");
+    }
+
     // Fuse：触发 / 熔断 / 恢复 / 移动语义
     {
         Fuse f;

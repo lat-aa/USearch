@@ -29,6 +29,10 @@ std::string dryrunChat(json const& messages) {
             text.push_back('\n');
         text += messageText(m.value("content", json()));
     }
+    // 本地 agent 协议请求（system 提示含 <agent-result>）：无模型时也要给出合规 ok，
+    // 否则缺 GGUF 会让 /v1 一律 delegate。蒸馏等其它调用保持旧行为。
+    if (text.find("<agent-result>") != std::string::npos)
+        return R"(<agent-result>{"status":"ok","tool_calls":[],"payload":"dryrun: 未加载 GGUF，本地 agent 返回占位应答"}</agent-result>)";
     std::string low(text);
     for (char& c : low)
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));

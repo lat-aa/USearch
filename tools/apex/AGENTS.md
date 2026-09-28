@@ -19,6 +19,7 @@
 |----|------|
 | L0 MCP 协议 | `API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_mcp.sh` |
 | L1 `/v1` 网关 | `API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_v1.sh` |
+| L1b agent 三路径 | `API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_agent.sh` |
 | L2 Apex 回合 | `API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_apex.sh` |
 | L3 Hooks | `node scripts/test_hooks.js` |
 | L4 nightly | `API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_nightly.sh` |
