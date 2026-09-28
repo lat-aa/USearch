@@ -34,8 +34,8 @@ HTTP/MCP 线协议仍为 JSON；仅进程配置与 decide 词表用 TOML。
 | `rate` / `refill` | 令牌桶；rate=0 关闭 |
 | `chat.temperature` / `chat.max` | 采样 |
 | `decide.*` | 级联路由阈值；`lexicon` → `.config/decide/config.toml`（含 `complex` / `medium`） |
-| `upstream.base_url` / `upstream.key_env` | 上游兜底地址与密钥环境变量（缺省 `https://api.deepseek.com` / `DEEPSEEK_API_KEY`） |
-| `agent.*` | 本地 agent：`max_tool_rounds` / `token_budget_ratio` / `enable_fuse` / `fuse_fail_threshold` / `fuse_recovery_seconds` |
+| `upstream.base_url` / `upstream.key_env` / `upstream.model` | 上游兜底地址 / 密钥环境变量 / 上游 `model` 名（缺省 `https://api.deepseek.com` / `OPENAI_API_KEY` / `deepseek-chat`） |
+| `agent.*` | 本地 agent：`enabled`（false=直连上游）/ `max_tool_rounds` / `token_budget_ratio` / `enable_fuse` / `fuse_fail_threshold` / `fuse_recovery_seconds` |
 | `cache.*` | 短路缓存：`enable_l1` / `l1_ttl_seconds` / `enable_l2` / `l2_similarity_threshold` |
 | `retrieval.*` | 检索重排：`rule_weight_multiplier` / `top_k` |
 

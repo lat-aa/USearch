@@ -51,6 +51,22 @@ static std::string fixtureChat(std::string const& mode, std::size_t round) {
     return "<agent-result>{\"status\":\"delegate\"}</agent-result>";
 }
 
+/**
+ * 本地 agent 的 GBNF 约束：可选 <think>（须闭合），随后必须是一个 <agent-result>…</agent-result>
+ * 包裹的合法 JSON。用它根治"模型只输出 <think> 不收尾"的问题（与具体模型无关）。
+ */
+static char const* const kAgentGrammar = R"GBNF(
+root   ::= think? agent
+think  ::= "<think>" [^<]* "</think>"
+agent  ::= "<agent-result>" ws value "</agent-result>"
+value  ::= object | array | string | number | ("true" | "false" | "null") ws
+object ::= "{" ws ( string ":" ws value ("," ws string ":" ws value)* )? "}" ws
+array  ::= "[" ws ( value ("," ws value)* )? "]" ws
+string ::= "\"" ( [^"\\\x7F\x00-\x1F] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]) )* "\"" ws
+number ::= ("-"? ([0-9] | [1-9] [0-9]*)) ("." [0-9]+)? ([eE] [-+]? [0-9]+)? ws
+ws     ::= [ \t\n]*
+)GBNF";
+
 /** 以标准 /v1 双 wire 返回文本 payload。 */
 static void replyText(httplib::Response& res, std::string const& id, std::string const& model,
                       std::string const& payload, bool responses) {
@@ -159,6 +175,20 @@ static bool agentRun(Runtime& rt, std::string const& modelName, json const& agen
     std::size_t rounds = 0;
 
     std::string const fixture = envStr("SMOKE_AGENT_FIXTURE");
+    // 默认关闭：实测 Nanbeige 的 <think> 是特殊 token（166103），llama.cpp 语法采样器会抛
+    // "empty grammar stack"。仅在模型不含此类特殊 token 时才用 APEX_AGENT_GRAMMAR=1 打开。
+    bool const useGrammar = envStr("APEX_AGENT_GRAMMAR") == "1";
+    // 允许用文件覆盖语法（调参/试验；生产用内置 kAgentGrammar）。
+    std::string grammarText = kAgentGrammar;
+    if (std::string gf = envStr("APEX_AGENT_GRAMMAR_FILE"); !gf.empty()) {
+        std::ifstream in(gf);
+        if (in) {
+            std::stringstream ss;
+            ss << in.rdbuf();
+            if (!ss.str().empty())
+                grammarText = ss.str();
+        }
+    }
     auto infer = [&](std::string& raw) {
         if (!fixture.empty()) {
             raw = fixtureChat(fixture, rounds);
@@ -166,8 +196,12 @@ static bool agentRun(Runtime& rt, std::string const& modelName, json const& agen
         }
         float prevTemp = rt.encoder.temperature;
         std::uint32_t prevMax = rt.encoder.maxTokens;
+        std::string prevGram = rt.encoder.grammar;
         rt.encoder.maxTokens = budget;
+        if (useGrammar)
+            rt.encoder.grammar = grammarText;
         raw = rt.encoder.chat(msgs);
+        rt.encoder.grammar = std::move(prevGram);
         rt.encoder.maxTokens = prevMax;
         rt.encoder.temperature = prevTemp;
     };
@@ -177,10 +211,14 @@ static bool agentRun(Runtime& rt, std::string const& modelName, json const& agen
             rt.fuse.fail(cfg.fuseFail, cfg.fuseRecover);
     };
 
+    std::string const rawDump = envStr("APEX_AGENT_RAW");
     while (true) {
         std::string raw;
         infer(raw);
         used += estimate(raw);
+        if (!rawDump.empty())
+            std::fprintf(stderr, "api: agent raw round=%zu bytes=%zu\n%s\n----\n", rounds, raw.size(),
+                         raw.c_str());
 
         json decision = extractAgentResult(raw);
         if (decision.empty()) {
@@ -428,8 +466,11 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
                 return replyText(res, "cache", modelName, payload, responses);
             }
         }
-        // 熔断：连续解析失败达到阈值后跳过本地 agent，直走上游。
-        if (rt.config.agent.enableFuse && rt.fuse.tripped(rt.config.agent.fuseFail, rt.config.agent.fuseRecover)) {
+        // 本地 agent 关闭 / 熔断：跳过本地，直走上游兜底。
+        bool localOff = !rt.config.agent.enabled ||
+                        (rt.config.agent.enableFuse &&
+                         rt.fuse.tripped(rt.config.agent.fuseFail, rt.config.agent.fuseRecover));
+        if (localOff) {
             rt.agentDelegate.fetch_add(1, std::memory_order_relaxed);
             std::string up = delegateToUpstream(rt, body["messages"], responses, res);
             if (!up.empty())
@@ -508,10 +549,11 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
 
         // 本地 CoT agent：检索上下文注入 → 标签隔离解析 + 有界工具循环 → ok / delegate
         static char const* const kAgentSys =
-            "你是本地执行 agent，可调用 MCP 工具。最终只输出一个 JSON 对象，并用"
-            "<agent-result>…</agent-result> 包裹；标签外不得输出正文（推理可放 <think>，会被忽略）。"
-            "结构：{\"status\":\"ok\"|\"delegate\",\"tool_calls\":[{\"name\":..,\"args\":{}}],\"payload\":\"...\"}"
-            "ok：你已完成（工具/代码/命令/解答），payload 放最终回复文本；delegate：你无法可靠处理，交给远端大模型。";
+            "你是本地执行 agent，可调用 MCP 工具（写在 tool_calls）。"
+            "可先推理，但必须在结束前给出结果：一个用 <agent-result>…</agent-result> 包裹的 JSON。"
+            "JSON：{\"status\":\"ok\",\"tool_calls\":[{\"name\":\"工具名\",\"args\":{}}],\"payload\":\"最终回复\"}。"
+            "status=ok：你已完成（payload 即最终回复，可为空）；status=delegate：你无法可靠处理，交给远端大模型。"
+            "示例：<agent-result>{\"status\":\"ok\",\"tool_calls\":[],\"payload\":\"Hello there!\"}</agent-result>";
 
         json agentMsgs = json::array();
         agentMsgs.push_back(textMessage("system", kAgentSys));
@@ -522,7 +564,17 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
         notePrompt(rt, agentMsgs);
 
         std::string payload;
-        if (agentRun(rt, modelName, agentMsgs, payload)) {
+        bool localOk = false;
+        try {
+            localOk = agentRun(rt, modelName, agentMsgs, payload);
+        } catch (std::exception const& e) {
+            std::fprintf(stderr, "api: local agent failed: %s\n", e.what());
+            localOk = false;
+        } catch (...) {
+            std::fprintf(stderr, "api: local agent failed (unknown)\n");
+            localOk = false;
+        }
+        if (localOk) {
             cachePut(rt, taskQuery, payload, "local");
             return replyText(res, "agent", modelName, payload, responses);
         }
@@ -765,8 +817,12 @@ expected_gt<Config> Config::load(fs::path const& path) {
             c.upstream.base = *v;
         if (auto v = (*up)["key_env"].value<std::string>())
             c.upstream.keyenv = *v;
+        if (auto v = (*up)["model"].value<std::string>())
+            c.upstream.model = *v;
     }
     if (auto* ag = root["agent"].as_table()) {
+        if (auto v = (*ag)["enabled"].value<bool>())
+            c.agent.enabled = *v;
         if (auto v = (*ag)["max_tool_rounds"].value<std::int64_t>() ; v && *v >= 0)
             c.agent.maxRounds = static_cast<std::size_t>(*v);
         if (auto v = (*ag)["token_budget_ratio"].value<double>())

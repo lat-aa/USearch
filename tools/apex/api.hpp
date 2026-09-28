@@ -94,6 +94,7 @@ struct Decideconfig {
 
 /** 本地 agent 参数（替代旧 [gate] 路由）。 */
 struct Agentconfig {
+    bool enabled = true; ///< false = /v1 直接走上游兜底（本地模型不合规/无 GPU 时用）
     std::size_t maxRounds = 3;
     float tokenBudget = 0.7f;
     bool enableFuse = true;
@@ -104,6 +105,7 @@ struct Agentconfig {
 struct Upstreamconfig {
     std::string base;
     std::string keyenv;
+    std::string model = "deepseek-chat"; ///< 上游 /chat/completions 的 model 名
 };
 /** 独立短路缓存（纯命中，不评分）。 */
 struct Cacheconfig {
@@ -216,6 +218,8 @@ struct Encoder {
     std::string modelId = "Nanbeige4.1-3B";
     float temperature = 0.0f;
     std::uint32_t maxTokens = 0;
+    /// GBNF 语法约束（空 = 不约束）；仅本地 agent 用，保证 <agent-result> 必现
+    std::string grammar;
     std::uint32_t ctx = 0;
     int gpu = 0;
     int threads = 0;

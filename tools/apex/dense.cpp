@@ -4,6 +4,9 @@
  */
 
 #include "api.hpp"
+
+#include <cstdio>
+#include <cstdlib>
 #include "helpers.hpp"
 
 #include <llama.h>
@@ -107,7 +110,8 @@ Encoder::~Encoder() { close(); }
 Encoder::Encoder(Encoder&& other) noexcept
     : dimensions(other.dimensions), modelReady(other.modelReady), ggufPath(std::move(other.ggufPath)),
       modelId(std::move(other.modelId)), temperature(other.temperature), maxTokens(other.maxTokens),
-      ctx(other.ctx), gpu(other.gpu), threads(other.threads), model(other.model), context(other.context),
+      grammar(std::move(other.grammar)), ctx(other.ctx), gpu(other.gpu), threads(other.threads),
+      model(other.model), context(other.context),
       chatCtx(other.chatCtx) {
     other.model = nullptr;
     other.context = nullptr;
@@ -125,6 +129,7 @@ Encoder& Encoder::operator=(Encoder&& other) noexcept {
     modelId = std::move(other.modelId);
     temperature = other.temperature;
     maxTokens = other.maxTokens;
+    grammar = std::move(other.grammar);
     ctx = other.ctx;
     gpu = other.gpu;
     threads = other.threads;
@@ -309,6 +314,10 @@ std::string Encoder::chat(json const& messages, std::function<void(std::string_v
         }
     }
 
+    if (char const* pd = std::getenv("APEX_PROMPT_RAW"); pd && *pd)
+        std::fprintf(stderr, "api: formatted prompt fromTmpl=%d bytes=%zu\n%s\n==PROMPT-END==\n",
+                     fromTmpl ? 1 : 0, prompt.size(), prompt.c_str());
+
     bool addSpecial = !fromTmpl;
     llama_vocab const* vocab = llama_model_get_vocab(model);
     std::vector<llama_token> tokens(prompt.size() + 32);
@@ -326,6 +335,18 @@ std::string Encoder::chat(json const& messages, std::function<void(std::string_v
     clearKv(chatCtx);
     llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
     llama_sampler* smpl = llama_sampler_chain_init(sparams);
+    if (!grammar.empty()) {
+        // 语法约束放在最前：temp/dist 只在语法允许的候选里采样。
+        // 语法非法时会抛异常——降到无约束，不能让 /v1 500。
+        try {
+            if (llama_sampler* g = llama_sampler_init_grammar(vocab, grammar.c_str(), "root"))
+                llama_sampler_chain_add(smpl, g);
+        } catch (std::exception const& e) {
+            std::fprintf(stderr, "api: grammar init failed: %s\n", e.what());
+        } catch (...) {
+            std::fprintf(stderr, "api: grammar init failed (unknown)\n");
+        }
+    }
     if (temperature > 0.0f)
         llama_sampler_chain_add(smpl, llama_sampler_init_temp(temperature));
     llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));

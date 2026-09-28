@@ -44,6 +44,8 @@ lexicon = ".config/decide/config.toml"
 
 # 本地 CoT agent（有界工具循环 + 熔断）
 [agent]
+# true=先问本地模型（ok 本地作答，否则兜底上游）；false=直接走上游（本地模型不合规/无 GPU 时更快）
+enabled = true
 max_tool_rounds = 3
 token_budget_ratio = 0.7
 enable_fuse = true
@@ -53,7 +55,8 @@ fuse_recovery_seconds = 300
 # 上游兜底（delegate / 解析失败时转发；key 读环境变量）
 [upstream]
 base_url = "https://api.deepseek.com"
-key_env = "DEEPSEEK_API_KEY"
+key_env = "OPENAI_API_KEY"
+model = "deepseek-chat"
 
 # 独立短路缓存（L1 内存精确 / L2 USearch 语义）
 [cache]
