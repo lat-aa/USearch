@@ -50,18 +50,11 @@ json rulesEnvelope(Runtime& rt, Rulequery const& rq, float compression) {
     }
     // clip / rebuildPrompt.rules 用裁剪后正文（与 inject 一致）
     noteKept(rt, std::move(clipped));
-    return {{"totalRules", total},
-            {"matched", matched.size()},
-            {"naiveTokens", naive},
-            {"selectedTokens", selected},
-            {"optimizedTokens", optimized},
-            {"entries", std::move(entries)}};
+    return {{"totalRules", total},        {"matched", matched.size()},    {"naiveTokens", naive},
+            {"selectedTokens", selected}, {"optimizedTokens", optimized}, {"entries", std::move(entries)}};
 }
 
-double roundMoney(double x) {
-    return std::round(x * 1e6) / 1e6;
-}
-
+double roundMoney(double x) { return std::round(x * 1e6) / 1e6; }
 
 std::string priceModelFrom(Decision const& d, std::string const& want) {
     if (want == "pro" || want == "deepseek-v4-pro")
@@ -139,8 +132,7 @@ json stackOf(Runtime& rt, Decision const& /*d*/) {
         if (rt.encoder.modelReady)
             nanbeige = "语义规则嵌入 dim=" + std::to_string(rt.encoder.dimensions);
         else
-            nanbeige =
-                "hash 回退 dim=" + std::to_string(rt.encoder.dimensions ? rt.encoder.dimensions : 1024);
+            nanbeige = "hash 回退 dim=" + std::to_string(rt.encoder.dimensions ? rt.encoder.dimensions : 1024);
         usearch = "跳过";
         sqlite = "待命";
     } else {
@@ -182,9 +174,8 @@ json toolDefs() {
             {"peak", {{"type", "boolean"}}},
             {"output_tokens", {{"type", "integer"}}},
         };
-        return json {{"name", name},
-                     {"description", description},
-                     {"inputSchema", {{"type", "object"}, {"properties", props}}}};
+        return json{
+            {"name", name}, {"description", description}, {"inputSchema", {{"type", "object"}, {"properties", props}}}};
     };
     return json::array({
         tool("rules", "按 task/files/manual 解析规则；返回 totalRules/matched/token 三档与 entries[].id"),
@@ -196,9 +187,8 @@ json toolDefs() {
         tool("recall", "嵌入后检索（search 的一站式别名）"),
         tool("decide", "路由：模型档/深度/检索/压缩/温度；回答前调用（确定性 Features→Decision）"),
         tool("observe", "沉淀仅入队 queue；Worker 后台蒸馏写 memory"),
-        tool("cost",
-             "按规则 token + decide 档位估算费用（CNY）；返回 stack（实测）与 turn（gate/saved/"
-             "corpus 全文）；actual_model 由 hook 或 X-Apex-Actual-Model 注入"),
+        tool("cost", "按规则 token + decide 档位估算费用（CNY）；返回 stack（实测）与 turn（gate/saved/"
+                     "corpus 全文）；actual_model 由 hook 或 X-Apex-Actual-Model 注入"),
         tool("resolve-rules", "rules 的 Codex 别名"),
         tool("list-rules", "catalog 的 Codex 别名"),
         tool("get-rule", "rule 的 Codex 别名"),
@@ -212,7 +202,7 @@ json toolDefs() {
 
 json callTool(Runtime& rt, std::string const& name, json const& args, Mcpclient const& client) {
     auto textResult = [](std::string const& text, bool error = false) {
-        return json {{"content", json::array({{{"type", "text"}, {"text", text}}})}, {"isError", error}};
+        return json{{"content", json::array({{{"type", "text"}, {"text", text}}})}, {"isError", error}};
     };
     try {
         // Codex 旧配置仍调 resolve-rules / list-rules / get-rule；与 Cursor 共用同一实现。
@@ -253,12 +243,12 @@ json callTool(Runtime& rt, std::string const& name, json const& args, Mcpclient 
             std::string want = args.value("name", "");
             for (auto const& r : rt.rules)
                 if (r.name == want)
-                    return textResult(json {{"name", r.name},
-                                            {"description", r.description},
-                                            {"always", r.always},
-                                            {"globs", r.globs},
-                                            {"body", r.body}}
-                                          .dump(2));
+                    return textResult(json{
+                        {"name", r.name},
+                        {"description", r.description},
+                        {"always", r.always},
+                        {"globs", r.globs},
+                        {"body", r.body}}.dump(2));
             return textResult("rule not found", true);
         }
         if (tool == "search" || tool == "recall") {
@@ -318,7 +308,7 @@ json callTool(Runtime& rt, std::string const& name, json const& args, Mcpclient 
                 return textResult("task required", true);
             Features f = rt.decider.features(in);
             Decision d = rt.decider.decideFrom(f);
-            return textResult(Deciderecord {f, d}.toJson().dump(2));
+            return textResult(Deciderecord{f, d}.toJson().dump(2));
         }
         if (tool == "cost") {
             // 实模解析优先级见 resolveActual；计价 model 与 actual_model 分列。
@@ -338,8 +328,8 @@ json callTool(Runtime& rt, std::string const& name, json const& args, Mcpclient 
             Decideinput in = decideinputFromJson(args);
             if (in.task.empty())
                 in.task = args.value("query", "");
-            Features f {};
-            Decision d {};
+            Features f{};
+            Decision d{};
             if (!in.task.empty()) {
                 f = rt.decider.features(in);
                 d = rt.decider.decideFrom(f);
@@ -420,12 +410,8 @@ json callTool(Runtime& rt, std::string const& name, json const& args, Mcpclient 
         if (tool == "save") {
             // 与 observe 对齐：只入队，重活交 Worker；payload 带经验字段。
             auto exp = experienceFromJson(args);
-            json payload = {{"title", exp.title},
-                            {"summary", exp.summary},
-                            {"outcome", exp.outcome},
-                            {"tags", exp.tags},
-                            {"commands", exp.commands},
-                            {"files", exp.files}};
+            json payload = {{"title", exp.title}, {"summary", exp.summary},   {"outcome", exp.outcome},
+                            {"tags", exp.tags},   {"commands", exp.commands}, {"files", exp.files}};
             json obsArgs = {{"payload", payload}};
             if (args.contains("id"))
                 obsArgs["id"] = args["id"];
@@ -442,11 +428,9 @@ json mcpHandle(Runtime& rt, json const& req, Mcpclient const& client) {
     std::string method = req.value("method", "");
     json params = req.contains("params") ? req["params"] : json::object();
 
-    auto ok = [&](json result) {
-        return json {{"jsonrpc", "2.0"}, {"id", id}, {"result", std::move(result)}};
-    };
+    auto ok = [&](json result) { return json{{"jsonrpc", "2.0"}, {"id", id}, {"result", std::move(result)}}; };
     auto err = [&](int code, std::string const& message) {
-        return json {{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", code}, {"message", message}}}};
+        return json{{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", code}, {"message", message}}}};
     };
 
     if (method == "initialize") {

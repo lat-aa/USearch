@@ -39,15 +39,19 @@ static std::string envStr(char const* key) {
  */
 static std::string fixtureChat(std::string const& mode, std::size_t round) {
     if (mode == "ok")
-        return "<think>fixture</think><agent-result>{\"status\":\"ok\",\"tool_calls\":[],\"payload\":\"fixture-ok\"}</agent-result>";
+        return "<think>fixture</think><agent-result>{\"status\":\"ok\",\"tool_calls\":[],\"payload\":\"fixture-ok\"}</"
+               "agent-result>";
     if (mode == "delegate")
-        return "<think>fixture</think><agent-result>{\"status\":\"delegate\",\"tool_calls\":[],\"payload\":\"\"}</agent-result>";
+        return "<think>fixture</think><agent-result>{\"status\":\"delegate\",\"tool_calls\":[],\"payload\":\"\"}</"
+               "agent-result>";
     if (mode == "truncated")
         return "<think>reasoning, but the model stopped mid-stream"; // 无结束标签 → 判失效
     if (mode == "tools")
-        return round == 0
-                   ? "<agent-result>{\"status\":\"ok\",\"tool_calls\":[{\"name\":\"status\",\"args\":{}}],\"payload\":\"\"}</agent-result>"
-                   : "<think>fixture</think><agent-result>{\"status\":\"ok\",\"tool_calls\":[],\"payload\":\"fixture-tools-ok\"}</agent-result>";
+        return round == 0 ? "<agent-result>{\"status\":\"ok\",\"tool_calls\":[{\"name\":\"status\",\"args\":{}}],"
+                            "\"payload\":\"\"}</agent-result>"
+                          : "<think>fixture</"
+                            "think><agent-result>{\"status\":\"ok\",\"tool_calls\":[],\"payload\":\"fixture-tools-ok\"}"
+                            "</agent-result>";
     return "<agent-result>{\"status\":\"delegate\"}</agent-result>";
 }
 
@@ -83,10 +87,9 @@ static void replyText(httplib::Response& res, std::string const& id, std::string
         setJson(res, {{"id", id},
                       {"object", "chat.completion"},
                       {"model", model},
-                      {"choices",
-                       json::array({{{"index", 0},
-                                     {"message", {{"role", "assistant"}, {"content", payload}}},
-                                     {"finish_reason", "stop"}}})}});
+                      {"choices", json::array({{{"index", 0},
+                                                {"message", {{"role", "assistant"}, {"content", payload}}},
+                                                {"finish_reason", "stop"}}})}});
 }
 
 /** L1 精确缓存键：政策指纹 + 任务哈希。 */
@@ -183,9 +186,8 @@ static bool agentRun(Runtime& rt, std::string const& modelName, json const& agen
     bool const useGrammar = envStr("APEX_AGENT_GRAMMAR") == "1";
     // Nanbeige 4.2：模板默认强制 <think>；等价于 enable_thinking=false 的 prefill。
     // 非 Nanbeige 模型可设 APEX_AGENT_PREFILL= 空串关掉。
-    std::string const prefill = envStr("APEX_AGENT_PREFILL").empty()
-                                    ? std::string("<think>\n\n</think>\n\n")
-                                    : envStr("APEX_AGENT_PREFILL");
+    std::string const prefill =
+        envStr("APEX_AGENT_PREFILL").empty() ? std::string("<think>\n\n</think>\n\n") : envStr("APEX_AGENT_PREFILL");
     // 允许用文件覆盖语法（调参/试验；生产用内置 kAgentGrammar）。
     std::string grammarText = kAgentGrammar;
     if (std::string gf = envStr("APEX_AGENT_GRAMMAR_FILE"); !gf.empty()) {
@@ -228,8 +230,7 @@ static bool agentRun(Runtime& rt, std::string const& modelName, json const& agen
         infer(raw);
         used += estimate(raw);
         if (!rawDump.empty())
-            std::fprintf(stderr, "api: agent raw round=%zu bytes=%zu\n%s\n----\n", rounds, raw.size(),
-                         raw.c_str());
+            std::fprintf(stderr, "api: agent raw round=%zu bytes=%zu\n%s\n----\n", rounds, raw.size(), raw.c_str());
 
         json decision = extractAgentResult(raw);
         if (decision.empty()) {
@@ -314,10 +315,11 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
             json emb = json::array();
             for (float v : vector)
                 emb.push_back(v);
-            setJson(res, {{"object", "list"},
-                          {"data", json::array({{{"object", "embedding"}, {"index", 0}, {"embedding", std::move(emb)}}})},
-                          {"model", body.value("model", rt.encoder.modelId)},
-                          {"dim", rt.encoder.dimensions ? rt.encoder.dimensions : vector.size()}});
+            setJson(res,
+                    {{"object", "list"},
+                     {"data", json::array({{{"object", "embedding"}, {"index", 0}, {"embedding", std::move(emb)}}})},
+                     {"model", body.value("model", rt.encoder.modelId)},
+                     {"dim", rt.encoder.dimensions ? rt.encoder.dimensions : vector.size()}});
         } catch (std::exception const& ex) {
             setJson(res, {{"error", {{"message", ex.what()}}}}, 500);
         } catch (...) {
@@ -391,7 +393,6 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
         setJson(res, {{"deleted", n}});
     });
 
-
     // 路由面：纯决策 + 按 compression 裁剪规则；不加载/不调用 LLM。
     svr.Post("/v1/route", [gate, &rt](httplib::Request const& req, httplib::Response& res) {
         if (!gate(req, res))
@@ -425,9 +426,7 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
             item["body"] = compressSections(r.rule.body, in.task, static_cast<std::size_t>(sections));
             rules.push_back(std::move(item));
         }
-        setJson(res, {{"decision", d.toJson()},
-                      {"features", Deciderecord {f, d}.toJson()},
-                      {"rules", rules}});
+        setJson(res, {{"decision", d.toJson()}, {"features", Deciderecord{f, d}.toJson()}, {"rules", rules}});
     });
 
     auto chat = [gate, &rt](httplib::Request const& req, httplib::Response& res) {
@@ -480,9 +479,9 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
             }
         }
         // 本地 agent 关闭 / 熔断：跳过本地，直走上游兜底。
-        bool localOff = !rt.config.agent.enabled ||
-                        (rt.config.agent.enableFuse &&
-                         rt.fuse.tripped(rt.config.agent.fuseFail, rt.config.agent.fuseRecover));
+        bool localOff =
+            !rt.config.agent.enabled ||
+            (rt.config.agent.enableFuse && rt.fuse.tripped(rt.config.agent.fuseFail, rt.config.agent.fuseRecover));
         if (localOff) {
             rt.agentDelegate.fetch_add(1, std::memory_order_relaxed);
             std::string up = delegateToUpstream(rt, body["messages"], responses, res);
@@ -492,7 +491,7 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
         }
 
         json ctx = {{"messages", body["messages"]}, {"query", ""}};
-        Decision route {};
+        Decision route{};
 
         Pipeline pipe;
         // decide → resolve → recall：档位驱动温度 / 规则段数 / 检索 k（见 decide.cpp）。
@@ -530,17 +529,16 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
                                 semSum += (std::max)(hit.score, 0.0f);
                         for (auto const& hit : matched) {
                             int sections = ruleSections(hit.activation, hit.score, semSum, base);
-                            arr.push_back({{"name", hit.rule.name},
-                                           {"activation", activationName(hit.activation)},
-                                           {"score", hit.score},
-                                           {"body", compressSections(hit.rule.body, q,
-                                                                     static_cast<std::size_t>(sections))}});
+                            arr.push_back(
+                                {{"name", hit.rule.name},
+                                 {"activation", activationName(hit.activation)},
+                                 {"score", hit.score},
+                                 {"body", compressSections(hit.rule.body, q, static_cast<std::size_t>(sections))}});
                         }
                         c["rules"] = arr;
                         return true;
                     }})
-            .stage({"recall",
-                    [&](Runtime& r, json& c) {
+            .stage({"recall", [&](Runtime& r, json& c) {
                         std::size_t k = r.decider.topkFor(route.retrieval);
                         // 多取一截再过滤：只回灌 kind=memory 且未被版本化弃用的记忆。
                         auto hits = r.store.search(r.encoder.embed(c["query"].get<std::string>()), k * 2);
@@ -577,14 +575,16 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
             "payload 必须极简：最多 2 句或 60 字以内（命令 / 结论 / 短答）；"
             "凡是需要长解释、教程、多步分析的问题，一律 status=\"delegate\" 交给远端大模型。"
             "tool_calls 为空数组表示不需要工具。"
-            "示例：<agent-result>{\"status\":\"ok\",\"tool_calls\":[],\"payload\":\"用 git status 查看。\"}</agent-result>";
+            "示例：<agent-result>{\"status\":\"ok\",\"tool_calls\":[],\"payload\":\"用 git status "
+            "查看。\"}</agent-result>";
 
         json agentMsgs = json::array();
         agentMsgs.push_back(textMessage("system", kAgentSys));
         for (auto const& m : body["messages"])
             agentMsgs.push_back(m);
         json knowledge = {{"hits", ctx["hits"]}, {"rules", ctx["rules"]}};
-        agentMsgs.push_back(textMessage("user", "Local context (rules + memory, reference only):\n" + knowledge.dump(2)));
+        agentMsgs.push_back(
+            textMessage("user", "Local context (rules + memory, reference only):\n" + knowledge.dump(2)));
         notePrompt(rt, agentMsgs);
 
         std::string payload;
@@ -692,9 +692,9 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
         char conf[16], retain[16];
         std::snprintf(conf, sizeof(conf), "%d", static_cast<int>(d.confidence * 100.0f + 0.5f));
         std::snprintf(retain, sizeof(retain), "%d", static_cast<int>(d.compression * 100.0f + 0.5f));
-        std::string const depthCn = d.depth == Depth::Deep      ? "深层推理"
-                                    : d.depth == Depth::Medium  ? "中层推理"
-                                                                : "浅层推理";
+        std::string const depthCn = d.depth == Depth::Deep     ? "深层推理"
+                                    : d.depth == Depth::Medium ? "中层推理"
+                                                               : "浅层推理";
         std::string const retCn = d.retrieval == Retrieval::L3   ? "深度语义检索"
                                   : d.retrieval == Retrieval::L2 ? "语义检索"
                                   : d.retrieval == Retrieval::L1 ? "关键词检索"
@@ -748,7 +748,7 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
         if (!gate(req, res))
             return;
         auto body = json::parse(req.body, nullptr, false);
-        Rulequery rq = body.is_discarded() ? Rulequery {} : rulequeryFromJson(body);
+        Rulequery rq = body.is_discarded() ? Rulequery{} : rulequeryFromJson(body);
         auto matched = resolveRules(rt, rq);
         json arr = json::array();
         for (auto const& r : matched)
@@ -822,9 +822,9 @@ expected_gt<Config> Config::load(fs::path const& path) {
         return out.failed("config parse failed");
     }
 
-    char const* required[] = {"gguf",   "ctx",      "gpu",     "threads", "pooling", "listen", "index",
-                              "base",   "knowledge", "rules",   "workspace", "token",  "shadow", "rate",
-                              "refill", "chat",     "decide"};
+    char const* required[] = {"gguf",   "ctx",  "gpu",       "threads", "pooling",   "listen",
+                              "index",  "base", "knowledge", "rules",   "workspace", "token",
+                              "shadow", "rate", "refill",    "chat",    "decide"};
     for (char const* key : required) {
         if (!root.contains(key))
             return out.failed("config missing required key");
@@ -836,9 +836,9 @@ expected_gt<Config> Config::load(fs::path const& path) {
     auto* decideTbl = root["decide"].as_table();
     if (!decideTbl)
         return out.failed("config decide must be table");
-    char const* decideKeys[] = {"speed",    "high",     "low",      "margin",  "templow", "tempmid",
-                                "temphigh", "tempcap",  "wmedium",  "wcomplex", "maxtask", "maxfile",
-                                "keeplow",  "keepmid",  "keephigh", "topk",    "lexicon"};
+    char const* decideKeys[] = {"speed",    "high",    "low",      "margin",   "templow", "tempmid",
+                                "temphigh", "tempcap", "wmedium",  "wcomplex", "maxtask", "maxfile",
+                                "keeplow",  "keepmid", "keephigh", "topk",     "lexicon"};
     for (char const* key : decideKeys) {
         if (!decideTbl->contains(key))
             return out.failed("config decide missing required key");
@@ -968,21 +968,21 @@ expected_gt<Config> Config::load(fs::path const& path) {
             c.agent.enabled = *v;
         if (auto v = (*ag)["skip_complex"].value<bool>())
             c.agent.skipComplex = *v;
-        if (auto v = (*ag)["max_tool_rounds"].value<std::int64_t>() ; v && *v >= 0)
+        if (auto v = (*ag)["max_tool_rounds"].value<std::int64_t>(); v && *v >= 0)
             c.agent.maxRounds = static_cast<std::size_t>(*v);
         if (auto v = (*ag)["token_budget_ratio"].value<double>())
             c.agent.tokenBudget = static_cast<float>(*v);
         if (auto v = (*ag)["enable_fuse"].value<bool>())
             c.agent.enableFuse = *v;
-        if (auto v = (*ag)["fuse_fail_threshold"].value<std::int64_t>() ; v && *v >= 0)
+        if (auto v = (*ag)["fuse_fail_threshold"].value<std::int64_t>(); v && *v >= 0)
             c.agent.fuseFail = static_cast<std::size_t>(*v);
-        if (auto v = (*ag)["fuse_recovery_seconds"].value<std::int64_t>() ; v && *v >= 0)
+        if (auto v = (*ag)["fuse_recovery_seconds"].value<std::int64_t>(); v && *v >= 0)
             c.agent.fuseRecover = static_cast<std::uint32_t>(*v);
     }
     if (auto* ca = root["cache"].as_table()) {
         if (auto v = (*ca)["enable_l1"].value<bool>())
             c.cache.enableL1 = *v;
-        if (auto v = (*ca)["l1_ttl_seconds"].value<std::int64_t>() ; v && *v >= 0)
+        if (auto v = (*ca)["l1_ttl_seconds"].value<std::int64_t>(); v && *v >= 0)
             c.cache.l1Ttl = static_cast<std::uint32_t>(*v);
         if (auto v = (*ca)["enable_l2"].value<bool>())
             c.cache.enableL2 = *v;
@@ -998,7 +998,7 @@ expected_gt<Config> Config::load(fs::path const& path) {
     if (auto* rt = root["retrieval"].as_table()) {
         if (auto v = (*rt)["rule_weight_multiplier"].value<double>())
             c.retrieval.ruleWeight = static_cast<float>(*v);
-        if (auto v = (*rt)["top_k"].value<std::int64_t>() ; v && *v > 0)
+        if (auto v = (*rt)["top_k"].value<std::int64_t>(); v && *v > 0)
             c.retrieval.topK = static_cast<std::size_t>(*v);
     }
 
@@ -1036,8 +1036,8 @@ expected_gt<Runtime> Runtime::open(fs::path const& root) {
     rt.decider = std::move(decider.result);
 
     fs::path gguf = joinRoot(root, rt.config.gguf);
-    if (error_t err = rt.encoder.open(gguf, rt.config.ctx, rt.config.gpu, rt.config.threads,
-                                      rt.config.chat.temperature, rt.config.chat.max);
+    if (error_t err = rt.encoder.open(gguf, rt.config.ctx, rt.config.gpu, rt.config.threads, rt.config.chat.temperature,
+                                      rt.config.chat.max);
         err)
         return out.failed(err.release());
     // 专用嵌入模型（bge-m3 等）必须在建 Store 之前加载：Store 维度取 encoder.dimensions。
@@ -1059,8 +1059,8 @@ expected_gt<Runtime> Runtime::open(fs::path const& root) {
             }
         }
     }
-    auto store = Store::make(rt.encoder.dimensions, joinRoot(root, rt.config.index),
-                             joinRoot(root, rt.config.base), rt.config.shadow);
+    auto store = Store::make(rt.encoder.dimensions, joinRoot(root, rt.config.index), joinRoot(root, rt.config.base),
+                             rt.config.shadow);
     if (!store)
         return out.failed(store.error.release());
     rt.store = std::move(store.result);
@@ -1125,14 +1125,13 @@ expected_gt<json> Runtime::saveExperience(Experience const& exp) {
 int runAgent(Runtime& rt, std::string const& instruction) {
     auto vector = rt.encoder.embed(instruction);
     auto hits = rt.store.search(vector, 8);
-    auto matched = resolveRules(rt, Rulequery {instruction, {}, {}});
+    auto matched = resolveRules(rt, Rulequery{instruction, {}, {}});
     json pack = {{"hits", json::array()}, {"rules", json::array()}};
     for (auto const& [doc, score] : hits)
         pack["hits"].push_back({{"id", doc.id}, {"text", doc.text}, {"score", score}});
     for (auto const& r : matched)
-        pack["rules"].push_back({{"name", r.rule.name},
-                                 {"activation", activationName(r.activation)},
-                                 {"body", r.rule.body}});
+        pack["rules"].push_back(
+            {{"name", r.rule.name}, {"activation", activationName(r.activation)}, {"body", r.rule.body}});
     std::string system = "Local knowledge JSON follows. Decide enough vs generate.\n" + pack.dump();
     json runMessages = json::array({textMessage("system", std::move(system)), textMessage("user", instruction)});
     std::string reply = rt.encoder.chat(runMessages);
@@ -1179,5 +1178,3 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "用法: api serve | api run \"<指令>\"\n");
     return 2;
 }
-
-

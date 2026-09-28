@@ -65,24 +65,12 @@ inline std::optional<std::string> parseString(std::string_view& s) {
             switch (e) {
             case '"':
             case '\\':
-            case '/':
-                out.push_back(e);
-                break;
-            case 'b':
-                out.push_back('\b');
-                break;
-            case 'f':
-                out.push_back('\f');
-                break;
-            case 'n':
-                out.push_back('\n');
-                break;
-            case 'r':
-                out.push_back('\r');
-                break;
-            case 't':
-                out.push_back('\t');
-                break;
+            case '/': out.push_back(e); break;
+            case 'b': out.push_back('\b'); break;
+            case 'f': out.push_back('\f'); break;
+            case 'n': out.push_back('\n'); break;
+            case 'r': out.push_back('\r'); break;
+            case 't': out.push_back('\t'); break;
             case 'u':
                 // 跳过 4 hex；不解码为码点（gate 请求几乎不用），避免半套 UTF-16
                 if (s.size() < 4)
@@ -90,8 +78,7 @@ inline std::optional<std::string> parseString(std::string_view& s) {
                 s.remove_prefix(4);
                 out.push_back('?');
                 break;
-            default:
-                return std::nullopt;
+            default: return std::nullopt;
             }
         } else {
             out.push_back(c);
@@ -142,8 +129,8 @@ inline bool skipValue(std::string_view& s) {
         return false;
     }
     // number / true / false / null
-    while (!s.empty() && !std::isspace(static_cast<unsigned char>(s.front())) && s.front() != ',' &&
-           s.front() != '}' && s.front() != ']')
+    while (!s.empty() && !std::isspace(static_cast<unsigned char>(s.front())) && s.front() != ',' && s.front() != '}' &&
+           s.front() != ']')
         s.remove_prefix(1);
     return true;
 }
@@ -199,31 +186,31 @@ inline Slimargs parseSlim(std::string_view body) {
     for (;;) {
         auto key = parseString(body);
         if (!key || !consume(body, ':'))
-            return Slimargs {};
+            return Slimargs{};
         if (*key == "task" || *key == "query") {
             auto v = parseString(body);
             if (!v)
-                return Slimargs {};
+                return Slimargs{};
             // task 优先；仅当 task 仍空时才用 query
             if (*key == "task" || a.task.empty())
                 a.task = std::move(*v);
         } else if (*key == "files") {
             if (!parseStringArray(body, a.files))
-                return Slimargs {};
+                return Slimargs{};
         } else if (*key == "manual") {
             if (!parseStringArray(body, a.manual))
-                return Slimargs {};
+                return Slimargs{};
         } else if (*key == "latency") {
             auto n = parseUint(body);
             if (!n)
-                return Slimargs {};
+                return Slimargs{};
             a.latency = *n;
         } else if (*key == "hints") {
             if (!parseStringArray(body, a.hints))
-                return Slimargs {};
+                return Slimargs{};
         } else {
             if (!skipValue(body))
-                return Slimargs {};
+                return Slimargs{};
         }
         skipWs(body);
         if (consume(body, '}')) {
@@ -231,7 +218,7 @@ inline Slimargs parseSlim(std::string_view body) {
             return a;
         }
         if (!consume(body, ','))
-            return Slimargs {};
+            return Slimargs{};
     }
 }
 

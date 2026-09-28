@@ -64,30 +64,29 @@ expected_gt<Base> Base::open(fs::path const& path) {
     if (error_t e = execSql(raw, "PRAGMA journal_mode=WAL;"); e)
         return out.failed(e.release());
     // docs/notes=记忆与笔记；queue=observe 入队；audit=政策指纹/冲突旁路（规则正文仍在 .config/rules）
-    char const* ddl =
-        "CREATE TABLE IF NOT EXISTS docs ("
-        "  id TEXT PRIMARY KEY NOT NULL,"
-        "  text TEXT NOT NULL DEFAULT '',"
-        "  meta TEXT NOT NULL DEFAULT '{}',"
-        "  key INTEGER NOT NULL"
-        ");"
-        "CREATE TABLE IF NOT EXISTS notes ("
-        "  id TEXT PRIMARY KEY NOT NULL,"
-        "  path TEXT NOT NULL"
-        ");"
-        "CREATE TABLE IF NOT EXISTS queue ("
-        "  id TEXT PRIMARY KEY NOT NULL,"
-        "  payload TEXT NOT NULL DEFAULT '{}',"
-        "  status TEXT NOT NULL DEFAULT 'pending',"
-        "  created INTEGER NOT NULL,"
-        "  updated INTEGER NOT NULL"
-        ");"
-        "CREATE TABLE IF NOT EXISTS audit ("
-        "  id TEXT PRIMARY KEY NOT NULL,"
-        "  kind TEXT NOT NULL DEFAULT '',"
-        "  detail TEXT NOT NULL DEFAULT '{}',"
-        "  created INTEGER NOT NULL"
-        ");";
+    char const* ddl = "CREATE TABLE IF NOT EXISTS docs ("
+                      "  id TEXT PRIMARY KEY NOT NULL,"
+                      "  text TEXT NOT NULL DEFAULT '',"
+                      "  meta TEXT NOT NULL DEFAULT '{}',"
+                      "  key INTEGER NOT NULL"
+                      ");"
+                      "CREATE TABLE IF NOT EXISTS notes ("
+                      "  id TEXT PRIMARY KEY NOT NULL,"
+                      "  path TEXT NOT NULL"
+                      ");"
+                      "CREATE TABLE IF NOT EXISTS queue ("
+                      "  id TEXT PRIMARY KEY NOT NULL,"
+                      "  payload TEXT NOT NULL DEFAULT '{}',"
+                      "  status TEXT NOT NULL DEFAULT 'pending',"
+                      "  created INTEGER NOT NULL,"
+                      "  updated INTEGER NOT NULL"
+                      ");"
+                      "CREATE TABLE IF NOT EXISTS audit ("
+                      "  id TEXT PRIMARY KEY NOT NULL,"
+                      "  kind TEXT NOT NULL DEFAULT '',"
+                      "  detail TEXT NOT NULL DEFAULT '{}',"
+                      "  created INTEGER NOT NULL"
+                      ");";
     if (error_t e = execSql(raw, ddl); e)
         return out.failed(e.release());
     out.result = std::move(b);
@@ -118,8 +117,7 @@ expected_gt<Doc> Base::get(std::string const& id) {
         return out.failed("sqlite closed");
     sqlite3* raw = static_cast<sqlite3*>(db);
     sqlite3_stmt* stmt = nullptr;
-    if (sqlite3_prepare_v2(raw, "SELECT id, text, meta FROM docs WHERE id=?1;", -1, &stmt, nullptr) !=
-        SQLITE_OK)
+    if (sqlite3_prepare_v2(raw, "SELECT id, text, meta FROM docs WHERE id=?1;", -1, &stmt, nullptr) != SQLITE_OK)
         return out.failed("sqlite prepare failed");
     sqlite3_bind_text(stmt, 1, id.c_str(), -1, SQLITE_TRANSIENT);
     int step = sqlite3_step(stmt);
@@ -146,9 +144,8 @@ error_t Base::put(Doc const& doc, std::uint64_t key) {
         return "sqlite closed";
     sqlite3* raw = static_cast<sqlite3*>(db);
     sqlite3_stmt* stmt = nullptr;
-    char const* sql =
-        "INSERT INTO docs(id, text, meta, key) VALUES(?1,?2,?3,?4) "
-        "ON CONFLICT(id) DO UPDATE SET text=excluded.text, meta=excluded.meta, key=excluded.key;";
+    char const* sql = "INSERT INTO docs(id, text, meta, key) VALUES(?1,?2,?3,?4) "
+                      "ON CONFLICT(id) DO UPDATE SET text=excluded.text, meta=excluded.meta, key=excluded.key;";
     if (sqlite3_prepare_v2(raw, sql, -1, &stmt, nullptr) != SQLITE_OK)
         return "sqlite prepare failed";
     std::string meta = doc.meta.dump();
@@ -206,8 +203,7 @@ expected_gt<std::vector<Doc>> Base::list() {
 
 static std::int64_t nowUnix() {
     return static_cast<std::int64_t>(
-        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
-            .count());
+        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
 }
 
 error_t Base::enqueue(std::string const& id, json const& payload) {
@@ -269,8 +265,8 @@ expected_gt<Queuerow> Base::claim() {
 
     sqlite3_stmt* upd = nullptr;
     std::int64_t t = nowUnix();
-    if (sqlite3_prepare_v2(raw, "UPDATE queue SET status='running', updated=?1 WHERE id=?2 AND status='pending';",
-                           -1, &upd, nullptr) != SQLITE_OK) {
+    if (sqlite3_prepare_v2(raw, "UPDATE queue SET status='running', updated=?1 WHERE id=?2 AND status='pending';", -1,
+                           &upd, nullptr) != SQLITE_OK) {
         (void)rollback();
         return out.failed("sqlite prepare failed");
     }
@@ -295,8 +291,7 @@ error_t Base::finish(std::string const& id, std::string const& status) {
         return "sqlite closed";
     sqlite3* raw = static_cast<sqlite3*>(db);
     sqlite3_stmt* stmt = nullptr;
-    if (sqlite3_prepare_v2(raw, "UPDATE queue SET status=?1, updated=?2 WHERE id=?3;", -1, &stmt, nullptr) !=
-        SQLITE_OK)
+    if (sqlite3_prepare_v2(raw, "UPDATE queue SET status=?1, updated=?2 WHERE id=?3;", -1, &stmt, nullptr) != SQLITE_OK)
         return "sqlite prepare failed";
     std::int64_t t = nowUnix();
     sqlite3_bind_text(stmt, 1, status.c_str(), -1, SQLITE_TRANSIENT);

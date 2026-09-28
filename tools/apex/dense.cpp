@@ -5,9 +5,9 @@
 
 #include "api.hpp"
 
+#include "helpers.hpp"
 #include <cstdio>
 #include <cstdlib>
-#include "helpers.hpp"
 
 #include <llama.h>
 
@@ -110,9 +110,10 @@ Encoder::~Encoder() { close(); }
 Encoder::Encoder(Encoder&& other) noexcept
     : dimensions(other.dimensions), modelReady(other.modelReady), ggufPath(std::move(other.ggufPath)),
       modelId(std::move(other.modelId)), temperature(other.temperature), maxTokens(other.maxTokens),
-      grammar(std::move(other.grammar)), assistantPrefix(std::move(other.assistantPrefix)), ctx(other.ctx), gpu(other.gpu), threads(other.threads),
+      grammar(std::move(other.grammar)), assistantPrefix(std::move(other.assistantPrefix)), ctx(other.ctx),
+      gpu(other.gpu), threads(other.threads), model(other.model), context(other.context), chatCtx(other.chatCtx),
       pool(std::move(other.pool)), embedPath(std::move(other.embedPath)), embedModel(other.embedModel),
-      embedCtx(other.embedCtx), model(other.model), context(other.context), chatCtx(other.chatCtx) {
+      embedCtx(other.embedCtx) {
     other.model = nullptr;
     other.context = nullptr;
     other.chatCtx = nullptr;
@@ -223,7 +224,7 @@ error_t Encoder::openEmbed(fs::path const& gguf, std::uint32_t ctxSize, int gpuL
     cp.n_threads = threads;
     cp.n_threads_batch = threads;
     cp.embeddings = true;
-    cp.pooling_type = pooling == "cls" ? LLAMA_POOLING_TYPE_CLS
+    cp.pooling_type = pooling == "cls"    ? LLAMA_POOLING_TYPE_CLS
                       : pooling == "mean" ? LLAMA_POOLING_TYPE_MEAN
                                           : LLAMA_POOLING_TYPE_LAST;
     embedCtx = llama_init_from_model(embedModel, cp);
@@ -235,8 +236,7 @@ error_t Encoder::openEmbed(fs::path const& gguf, std::uint32_t ctxSize, int gpuL
     embedPath = gguf.string();
     pool = pooling;
     dimensions = static_cast<std::size_t>(llama_model_n_embd(embedModel));
-    std::fprintf(stderr, "api: embed model ready %s dim=%zu pooling=%s\n", embedPath.c_str(), dimensions,
-                 pool.c_str());
+    std::fprintf(stderr, "api: embed model ready %s dim=%zu pooling=%s\n", embedPath.c_str(), dimensions, pool.c_str());
     return {};
 }
 
@@ -254,18 +254,18 @@ std::vector<float> Encoder::tryEmbed(std::string_view text) {
 
 std::vector<float> Encoder::embedImpl(std::string_view text) {
     llama_model* const m = embedModel ? embedModel : model;
-    llama_context* const c = embedCtx ? embedCtx : c;
+    llama_context* const c = embedCtx ? embedCtx : context;
     if (!m || !c)
         return hashEmbed(text, dimensions ? dimensions : 1024);
 
     llama_vocab const* vocab = llama_model_get_vocab(m);
     std::vector<llama_token> tokens(text.size() + 32);
     int n = llama_tokenize(vocab, text.data(), static_cast<int32_t>(text.size()), tokens.data(),
-                          static_cast<int32_t>(tokens.size()), true, true);
+                           static_cast<int32_t>(tokens.size()), true, true);
     if (n < 0) {
         tokens.resize(static_cast<std::size_t>(-n));
         n = llama_tokenize(vocab, text.data(), static_cast<int32_t>(text.size()), tokens.data(),
-                          static_cast<int32_t>(tokens.size()), true, true);
+                           static_cast<int32_t>(tokens.size()), true, true);
     }
     if (n <= 0)
         return hashEmbed(text, dimensions);
@@ -299,9 +299,7 @@ std::vector<float> Encoder::embedImpl(std::string_view text) {
     return out;
 }
 
-std::string Encoder::chat(std::string_view system, std::string_view user) {
-    return chat(system, user, {});
-}
+std::string Encoder::chat(std::string_view system, std::string_view user) { return chat(system, user, {}); }
 
 std::string Encoder::chat(std::string_view system, std::string_view user,
                           std::function<void(std::string_view)> onDelta) {
@@ -312,9 +310,7 @@ std::string Encoder::chat(std::string_view system, std::string_view user,
     return chat(messages, std::move(onDelta));
 }
 
-std::string Encoder::chat(json const& messages) {
-    return chat(messages, {});
-}
+std::string Encoder::chat(json const& messages) { return chat(messages, {}); }
 
 std::string Encoder::chat(json const& messages, std::function<void(std::string_view)> onDelta) {
     std::lock_guard<std::mutex> lock(mutex);
@@ -378,18 +374,18 @@ std::string Encoder::chat(json const& messages, std::function<void(std::string_v
     }
 
     if (char const* pd = std::getenv("APEX_PROMPT_RAW"); pd && *pd)
-        std::fprintf(stderr, "api: formatted prompt fromTmpl=%d bytes=%zu\n%s\n==PROMPT-END==\n",
-                     fromTmpl ? 1 : 0, prompt.size(), prompt.c_str());
+        std::fprintf(stderr, "api: formatted prompt fromTmpl=%d bytes=%zu\n%s\n==PROMPT-END==\n", fromTmpl ? 1 : 0,
+                     prompt.size(), prompt.c_str());
 
     bool addSpecial = !fromTmpl;
     llama_vocab const* vocab = llama_model_get_vocab(model);
     std::vector<llama_token> tokens(prompt.size() + 32);
     int n = llama_tokenize(vocab, prompt.data(), static_cast<int32_t>(prompt.size()), tokens.data(),
-                          static_cast<int32_t>(tokens.size()), addSpecial, true);
+                           static_cast<int32_t>(tokens.size()), addSpecial, true);
     if (n < 0) {
         tokens.resize(static_cast<std::size_t>(-n));
         n = llama_tokenize(vocab, prompt.data(), static_cast<int32_t>(prompt.size()), tokens.data(),
-                          static_cast<int32_t>(tokens.size()), addSpecial, true);
+                           static_cast<int32_t>(tokens.size()), addSpecial, true);
     }
     if (n <= 0)
         return {};
@@ -462,20 +458,17 @@ std::string Encoder::chat(json const& messages, std::function<void(std::string_v
     }
     if (char const* pf = std::getenv("APEX_PERF"); pf && *pf) {
         auto const tGen1 = std::chrono::steady_clock::now();
-        double const preMs =
-            std::chrono::duration<double, std::milli>(tPrefill1 - tPrefill0).count();
+        double const preMs = std::chrono::duration<double, std::milli>(tPrefill1 - tPrefill0).count();
         double const genMs = std::chrono::duration<double, std::milli>(tGen1 - tPrefill1).count();
         std::fprintf(stderr, "api: phase prompt=%d tok %.0fms (%.0f tok/s) | gen=%u tok %.0fms (%.1f tok/s)\n",
-                     static_cast<int>(tokens.size()), preMs,
-                     preMs > 0 ? tokens.size() / (preMs / 1000.0) : 0.0, produced, genMs,
-                     genMs > 0 ? static_cast<double>(produced) / (genMs / 1000.0) : 0.0);
+                     static_cast<int>(tokens.size()), preMs, preMs > 0 ? tokens.size() / (preMs / 1000.0) : 0.0,
+                     produced, genMs, genMs > 0 ? static_cast<double>(produced) / (genMs / 1000.0) : 0.0);
         llama_perf_context_data const pd = llama_perf_context(chatCtx);
         double const peek = pd.t_p_eval_ms > 0 ? pd.n_p_eval / (pd.t_p_eval_ms / 1000.0) : 0.0;
         double const dek = pd.t_eval_ms > 0 ? pd.n_eval / (pd.t_eval_ms / 1000.0) : 0.0;
-        std::fprintf(stderr,
-                     "api: perf prompt=%d tok %.0fms (%.0f tok/s) | gen=%d tok %.0fms (%.1f tok/s) | cost=%.2f s\n",
-                     pd.n_p_eval, pd.t_p_eval_ms, peek, pd.n_eval, pd.t_eval_ms, dek,
-                     (pd.t_p_eval_ms + pd.t_eval_ms) / 1000.0);
+        std::fprintf(
+            stderr, "api: perf prompt=%d tok %.0fms (%.0f tok/s) | gen=%d tok %.0fms (%.1f tok/s) | cost=%.2f s\n",
+            pd.n_p_eval, pd.t_p_eval_ms, peek, pd.n_eval, pd.t_eval_ms, dek, (pd.t_p_eval_ms + pd.t_eval_ms) / 1000.0);
     }
     llama_sampler_free(smpl);
     clearKv(chatCtx);
@@ -506,8 +499,7 @@ Store& Store::operator=(Store&& other) noexcept {
     return *this;
 }
 
-expected_gt<Store> Store::make(std::size_t dimensions, fs::path indexPath, fs::path basePath,
-                               std::size_t shadowGate) {
+expected_gt<Store> Store::make(std::size_t dimensions, fs::path indexPath, fs::path basePath, std::size_t shadowGate) {
     expected_gt<Store> out;
     Store store;
     store.dimensions = dimensions;
@@ -694,10 +686,8 @@ std::vector<std::pair<Doc, float>> Store::search(std::vector<float> const& query
         std::vector<std::size_t> cand;
         bool ok = sq8::selectCandidates(est.data(), order.size(), k, eps, cand);
         auto scored = sq8::selectTopKExact(
-            order.size(), k, -std::numeric_limits<float>::infinity(), ok ? cand.data() : nullptr,
-            ok ? cand.size() : 0, [&](std::size_t i) {
-                return sq8::dot8(floats.data() + i * dimensions, query.data(), dimensions);
-            });
+            order.size(), k, -std::numeric_limits<float>::infinity(), ok ? cand.data() : nullptr, ok ? cand.size() : 0,
+            [&](std::size_t i) { return sq8::dot8(floats.data() + i * dimensions, query.data(), dimensions); });
         for (auto const& [row, score] : scored) {
             if (row >= order.size())
                 continue;

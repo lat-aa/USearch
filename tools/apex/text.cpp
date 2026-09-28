@@ -199,7 +199,7 @@ std::vector<Resolvedrule> resolveCore(std::vector<Rule> const& rules, Rulequery 
         if (!rules[i].enabled)
             continue;
         if (rules[i].always)
-            selected.emplace(i, Sel {i, Activation::Always, 0.0f, {}});
+            selected.emplace(i, Sel{i, Activation::Always, 0.0f, {}});
     }
 
     std::vector<std::string> files = q.files;
@@ -218,7 +218,7 @@ std::vector<Resolvedrule> resolveCore(std::vector<Rule> const& rules, Rulequery 
                     break;
                 }
         if (!hits.empty())
-            selected.emplace(i, Sel {i, Activation::Glob, 0.0f, std::move(hits)});
+            selected.emplace(i, Sel{i, Activation::Glob, 0.0f, std::move(hits)});
     }
 
     struct Cand {
@@ -239,7 +239,7 @@ std::vector<Resolvedrule> resolveCore(std::vector<Rule> const& rules, Rulequery 
     }
     std::sort(sem.begin(), sem.end(), [](Cand const& a, Cand const& b) { return a.score > b.score; });
     for (std::size_t n = 0; n < sem.size() && n < topK; ++n)
-        selected.emplace(sem[n].idx, Sel {sem[n].idx, Activation::Semantic, sem[n].score, {}});
+        selected.emplace(sem[n].idx, Sel{sem[n].idx, Activation::Semantic, sem[n].score, {}});
 
     for (auto const& m : q.manual) {
         std::string want = asciiLower(m);
@@ -248,7 +248,7 @@ std::vector<Resolvedrule> resolveCore(std::vector<Rule> const& rules, Rulequery 
                 continue;
             if (asciiLower(rules[i].name) != want)
                 continue;
-            selected.emplace(i, Sel {i, Activation::Manual, 0.0f, {}});
+            selected.emplace(i, Sel{i, Activation::Manual, 0.0f, {}});
         }
     }
 
@@ -259,14 +259,10 @@ std::vector<Resolvedrule> resolveCore(std::vector<Rule> const& rules, Rulequery 
     std::sort(order.begin(), order.end(), [](Sel const& a, Sel const& b) {
         auto rank = [](Activation act) -> int {
             switch (act) {
-            case Activation::Always:
-                return 0;
-            case Activation::Glob:
-                return 1;
-            case Activation::Semantic:
-                return 2;
-            case Activation::Manual:
-                return 3;
+            case Activation::Always: return 0;
+            case Activation::Glob: return 1;
+            case Activation::Semantic: return 2;
+            case Activation::Manual: return 3;
             }
             return 9;
         };
@@ -295,14 +291,10 @@ std::vector<Resolvedrule> resolveCore(std::vector<Rule> const& rules, Rulequery 
 
 char const* activationName(Activation a) noexcept {
     switch (a) {
-    case Activation::Always:
-        return "always";
-    case Activation::Glob:
-        return "glob";
-    case Activation::Semantic:
-        return "semantic";
-    case Activation::Manual:
-        return "manual";
+    case Activation::Always: return "always";
+    case Activation::Glob: return "glob";
+    case Activation::Semantic: return "semantic";
+    case Activation::Manual: return "manual";
     }
     return "semantic";
 }
@@ -311,14 +303,10 @@ json Resolvedrule::toJson() const {
     json files = json::array();
     for (auto const& f : triggers)
         files.push_back(f);
-    return {{"name", rule.name},
-            {"description", rule.description},
-            {"body", rule.body},
-            {"activation", activationName(activation)},
-            {"score", score},
-            {"always", rule.always},
-            {"globs", rule.globs},
-            {"triggers", files}};
+    return {{"name", rule.name},   {"description", rule.description},
+            {"body", rule.body},   {"activation", activationName(activation)},
+            {"score", score},      {"always", rule.always},
+            {"globs", rule.globs}, {"triggers", files}};
 }
 
 bool globMatch(std::string_view pattern, std::string_view path) {
@@ -457,8 +445,7 @@ Rulequery rulequeryFromJson(json const& body) {
 
 std::vector<Resolvedrule> resolveRules(std::vector<Rule> const& rules, Rulequery const& q) {
     std::string taskLower = asciiLower(q.task);
-    return resolveCore(
-        rules, q, [&](Rule const& r) { return lexicalScore(taskLower, r); }, 3);
+    return resolveCore(rules, q, [&](Rule const& r) { return lexicalScore(taskLower, r); }, 3);
 }
 
 std::vector<Resolvedrule> resolveRules(Runtime& rt, Rulequery const& q, std::vector<float> const& qVec) {
@@ -510,18 +497,16 @@ expected_gt<std::string> saveMark(fs::path const& dir, Experience const& exp) {
     try {
         auto now = std::chrono::system_clock::now();
         std::time_t t = std::chrono::system_clock::to_time_t(now);
-        std::tm tm {};
+        std::tm tm{};
 #if defined(_WIN32)
         localtime_s(&tm, &t);
 #else
         localtime_r(&t, &tm);
 #endif
-        char year[8], month[4], stamp[32];
-        std::snprintf(year, sizeof(year), "%04d", tm.tm_year + 1900);
-        std::snprintf(month, sizeof(month), "%02d", tm.tm_mon + 1);
-        std::snprintf(stamp, sizeof(stamp), "%04d%02d%02d%02d%02d%02d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-                      tm.tm_hour, tm.tm_min, tm.tm_sec);
-        fs::path folder = dir / year / month;
+        char stamp[32];
+        if (std::strftime(stamp, sizeof(stamp), "%Y%m%d%H%M%S", &tm) == 0)
+            return out.failed("time format failed");
+        fs::path folder = dir / std::string(stamp, 4) / std::string(stamp + 4, 2);
         fs::create_directories(folder);
         fs::path path = folder / (std::string(stamp) + ".md");
         std::ostringstream body;
@@ -629,8 +614,8 @@ static bool isHard(std::string_view line) {
     for (auto* n : en)
         if (lower.find(n) != std::string::npos)
             return true;
-    char const* zh[] = {"禁止", "严禁", "不得", "不许", "不要", "切勿", "绝不", "必须",
-                        "务必", "只能", "仅可", "不可", "杜绝", "避免", "一律", "强制", "应当"};
+    char const* zh[] = {"禁止", "严禁", "不得", "不许", "不要", "切勿", "绝不", "必须", "务必",
+                        "只能", "仅可", "不可", "杜绝", "避免", "一律", "强制", "应当"};
     for (auto* n : zh)
         if (std::string(line).find(n) != std::string::npos)
             return true;
@@ -673,8 +658,7 @@ std::string compressBody(std::string_view body, std::string_view task, std::size
         else
             normal.emplace_back(overlap(lines[i], query), i);
     }
-    std::sort(normal.begin(), normal.end(),
-              [](auto const& a, auto const& b) { return a.first > b.first; });
+    std::sort(normal.begin(), normal.end(), [](auto const& a, auto const& b) { return a.first > b.first; });
     std::vector<char> keep(lines.size(), 0);
     std::size_t slots = maxBullets;
     if (!hard.empty()) {

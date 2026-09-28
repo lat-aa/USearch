@@ -18,8 +18,7 @@ struct Encoderguard {
     Encoder& enc;
     float prevTemp;
     std::uint32_t prevMax;
-    Encoderguard(Encoder& e, float temp, std::uint32_t maxTok)
-        : enc(e), prevTemp(e.temperature), prevMax(e.maxTokens) {
+    Encoderguard(Encoder& e, float temp, std::uint32_t maxTok) : enc(e), prevTemp(e.temperature), prevMax(e.maxTokens) {
         enc.temperature = temp;
         enc.maxTokens = (std::min)(prevMax ? prevMax : maxTok, maxTok);
     }
@@ -67,18 +66,10 @@ void Turnstats::rebuildCorpus() {
 }
 
 json Turnstats::toJson() const {
-    json out = {{"gate", gate},
-                {"cache", cache},
-                {"local", local},
-                {"queued", queued},
-                {"distill", distill},
-                {"fingerprint", fingerprint},
-                {"retain", retain},
-                {"naive", naive},
-                {"picked", picked},
-                {"kept", kept},
-                {"packtok", packtok},
-                {"packn", packn}};
+    json out = {{"gate", gate},     {"cache", cache},     {"local", local},
+                {"queued", queued}, {"distill", distill}, {"fingerprint", fingerprint},
+                {"retain", retain}, {"naive", naive},     {"picked", picked},
+                {"kept", kept},     {"packtok", packtok}, {"packn", packn}};
     // 未调 gate 禁止用 0 冒充「已测省 0 次」
     if (hasSaved)
         out["saved"] = saved;
@@ -115,8 +106,7 @@ void noteRules(Runtime& rt, std::vector<Resolvedrule> const& matched) {
             continue;
         texts.emplace_back(r.rule.name, r.rule.body);
     }
-    std::sort(texts.begin(), texts.end(),
-              [](auto const& a, auto const& b) { return a.first < b.first; });
+    std::sort(texts.begin(), texts.end(), [](auto const& a, auto const& b) { return a.first < b.first; });
     std::lock_guard<std::mutex> lock(rt.turn.mutex);
     rt.turn.sawRules = true;
     rt.turn.ruleText = std::move(texts);
@@ -124,8 +114,7 @@ void noteRules(Runtime& rt, std::vector<Resolvedrule> const& matched) {
 }
 
 void noteKept(Runtime& rt, std::vector<std::pair<std::string, std::string>> kept) {
-    std::sort(kept.begin(), kept.end(),
-              [](auto const& a, auto const& b) { return a.first < b.first; });
+    std::sort(kept.begin(), kept.end(), [](auto const& a, auto const& b) { return a.first < b.first; });
     std::lock_guard<std::mutex> lock(rt.turn.mutex);
     rt.turn.sawRules = true;
     rt.turn.ruleKept = std::move(kept);
@@ -209,11 +198,10 @@ json runObserve(Runtime& rt, json const& args) {
  * 真正会「看起来挂住」的是 encoder.chat（同步阻塞），不是循环本身。
  */
 void workerLoop(Runtime& rt) {
-    static char const* const kSys =
-        "Distill the observation into a short durable memory note. "
-        "Output plain text only: first line title, then summary. "
-        "Do not invent policy rules. If content conflicts with coding standards, "
-        "prefix with CONFLICT:";
+    static char const* const kSys = "Distill the observation into a short durable memory note. "
+                                    "Output plain text only: first line title, then summary. "
+                                    "Do not invent policy rules. If content conflicts with coding standards, "
+                                    "prefix with CONFLICT:";
 
     while (!rt.workerStop.load(std::memory_order_acquire)) {
         expected_gt<Queuerow> claimed;
@@ -254,8 +242,7 @@ void workerLoop(Runtime& rt) {
                 if (auto it = p.find("outcome"); it != p.end() && it->is_string())
                     outcome = it->get_ref<std::string const&>();
 
-                std::string user =
-                    json {{"title", title}, {"summary", summary}, {"outcome", outcome}}.dump();
+                std::string user = json{{"title", title}, {"summary", summary}, {"outcome", outcome}}.dump();
                 std::string distilled;
                 bool didChat = false;
                 try {
@@ -299,13 +286,9 @@ void workerLoop(Runtime& rt) {
                 Doc doc;
                 doc.id = memId;
                 doc.text = std::move(distilled);
-                doc.meta = {{"kind", "memory"},
-                            {"title", title},
-                            {"version", version},
-                            {"deprecated", false},
-                            {"conflict", conflict},
-                            {"source", row.id},
-                            {"outcome", std::move(outcome)}};
+                doc.meta = {
+                    {"kind", "memory"},     {"title", title},   {"version", version},           {"deprecated", false},
+                    {"conflict", conflict}, {"source", row.id}, {"outcome", std::move(outcome)}};
                 auto vec = rt.encoder.embed(doc.text);
 
                 // 指数退避重试：USearch 写失败重试 3 次（100/200/400ms），仍失败落 fail 队列。
@@ -351,8 +334,8 @@ void workerLoop(Runtime& rt) {
 Runtime::Runtime(Runtime&& other) noexcept
     : root(std::move(other.root)), config(std::move(other.config)), encoder(std::move(other.encoder)),
       store(std::move(other.store)), rules(std::move(other.rules)), policyFp(std::move(other.policyFp)),
-      decider(std::move(other.decider)), l1(std::move(other.l1)), l1tick(other.l1tick),
-      fuse(std::move(other.fuse)), workerStop(other.workerStop.load()), worker(std::move(other.worker)) {
+      decider(std::move(other.decider)), l1(std::move(other.l1)), l1tick(other.l1tick), fuse(std::move(other.fuse)),
+      workerStop(other.workerStop.load()), worker(std::move(other.worker)) {
     other.l1tick = 0;
     other.workerStop.store(true);
 }

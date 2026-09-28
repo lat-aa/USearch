@@ -7,7 +7,6 @@
  */
 #pragma once
 
-
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -147,12 +146,30 @@ inline std::string lenientTailField(std::string const& s, std::string const& key
     for (std::size_t i = 0; i < rawv.size(); ++i) {
         if (rawv[i] == '\\' && i + 1 < rawv.size()) {
             switch (rawv[i + 1]) {
-            case 'n': out.push_back('\n'); ++i; break;
-            case 't': out.push_back('\t'); ++i; break;
-            case 'r': out.push_back('\r'); ++i; break;
-            case '"': out.push_back('"'); ++i; break;
-            case '\\': out.push_back('\\'); ++i; break;
-            case '/': out.push_back('/'); ++i; break;
+            case 'n':
+                out.push_back('\n');
+                ++i;
+                break;
+            case 't':
+                out.push_back('\t');
+                ++i;
+                break;
+            case 'r':
+                out.push_back('\r');
+                ++i;
+                break;
+            case '"':
+                out.push_back('"');
+                ++i;
+                break;
+            case '\\':
+                out.push_back('\\');
+                ++i;
+                break;
+            case '/':
+                out.push_back('/');
+                ++i;
+                break;
             default: out.push_back(rawv[i]); break;
             }
         } else {
@@ -197,13 +214,9 @@ inline json extractAgentResult(std::string_view raw) {
 }
 
 /** 协议判定：仅 status=="ok" 视为本地完成，其余（delegate/缺失/非法）一律交上游。 */
-inline bool agentOk(json const& j) {
-    return j.is_object() && j.value("status", "") == "ok";
-}
+inline bool agentOk(json const& j) { return j.is_object() && j.value("status", "") == "ok"; }
 /** 粗估 token（与 text.cpp estimate 同量级；测试与打包共用，免链 text）。 */
-inline std::size_t estimateLoose(std::string_view text) noexcept {
-    return (text.size() + 3) / 4;
-}
+inline std::size_t estimateLoose(std::string_view text) noexcept { return (text.size() + 3) / 4; }
 
 /** 截断段：按空行切，保留前 maxSections 段。 */
 inline std::string compressLoose(std::string_view body, std::size_t maxSections) {
@@ -260,8 +273,7 @@ inline std::string formatCorpusBody(json const& knowledge) {
     std::ostringstream oss;
     if (auto it = knowledge.find("decision"); it != knowledge.end() && it->is_object()) {
         auto const& d = *it;
-        oss << "路由 " << d.value("model", "?") << " · " << d.value("depth", "?") << " · "
-            << d.value("retrieval", "?");
+        oss << "路由 " << d.value("model", "?") << " · " << d.value("depth", "?") << " · " << d.value("retrieval", "?");
         int const retainPct = pct01(d, "compression");
         if (retainPct >= 0)
             oss << " · 保留 " << retainPct << "%";
@@ -364,9 +376,8 @@ inline std::string formatCorpusText(std::string const& prompt) {
  */
 inline std::string formatPrompt(json const& rulesArr, json const& decisionJson, json const& hitsArr,
                                 json const* packRawOrNull) {
-    json knowledge = {{"hits", hitsArr.is_null() ? json::array() : hitsArr},
-                      {"rules", rulesArr},
-                      {"decision", decisionJson}};
+    json knowledge = {
+        {"hits", hitsArr.is_null() ? json::array() : hitsArr}, {"rules", rulesArr}, {"decision", decisionJson}};
     if (packRawOrNull && packRawOrNull->is_object()) {
         auto items = packRawOrNull->find("items");
         if (items != packRawOrNull->end() && items->is_array() && !items->empty())
@@ -512,12 +523,11 @@ inline std::string formatCorpus(json const& messages) {
     return {};
 }
 
-
 /** L1 精确缓存条目（进程内；键含政策指纹）。tick 越大越新，超容量按 LRU 驱逐。 */
 struct L1entry {
-    std::string reply;        ///< 最终回复 payload（本地或上游）
-    std::string source;       ///< "local" | "upstream"
-    std::string fingerprint;  ///< 写入时的政策指纹
+    std::string reply;            ///< 最终回复 payload（本地或上游）
+    std::string source;           ///< "local" | "upstream"
+    std::string fingerprint;      ///< 写入时的政策指纹
     std::int64_t expiresAtMs = 0; ///< 0 = 无 TTL（毫秒，单调时钟）
     std::uint64_t tick = 0;
 };
@@ -557,8 +567,8 @@ inline void l1Insert(std::unordered_map<std::string, L1entry>& l1, std::uint64_t
 
 /** 轻量熔断：连续解析失败达到阈值后跳过本地 agent，直走上游兜底；到期自动半开。 */
 struct Fuse {
-    std::atomic<std::size_t> consecutiveFails {0};
-    std::atomic<std::int64_t> openedAtMs {0}; ///< 0 = 关闭
+    std::atomic<std::size_t> consecutiveFails{0};
+    std::atomic<std::int64_t> openedAtMs{0}; ///< 0 = 关闭
 
     Fuse() = default;
     Fuse(Fuse const&) = delete;
@@ -599,7 +609,6 @@ struct Fuse {
         openedAtMs.store(0, std::memory_order_release);
     }
 };
-
 
 /** DeepSeek 档位单价（元/百万 token）；cache_hit 按输入价 ×0.1；peak(高峰) 全价 ×2。
  *  唯一的定价来源：MCP cost 工具与 /v1 网关追加块都调用它，禁止各写一份。 */
@@ -654,16 +663,15 @@ inline std::string renderBlock(json const& in) {
         o << route;
     else
         o << routeNote;
-    o << " · " << str("depthCn", "浅层推理") << " · " << str("retCn", "不做检索") << " · 保留上下文 "
-      << retainPct << "% · 置信 " << confPct << "%  \n";
+    o << " · " << str("depthCn", "浅层推理") << " · " << str("retCn", "不做检索") << " · 保留上下文 " << retainPct
+      << "% · 置信 " << confPct << "%  \n";
     char costBuf[32], outBuf[32];
     std::snprintf(costBuf, sizeof(costBuf), "%.6f", in.value("totalCost", 0.0));
     std::snprintf(outBuf, sizeof(outBuf), "%.6f", in.value("outputCost", 0.0));
-    o << "💰 费用 **¥" << costBuf << "** · " << str("priceNote", "未调/v1") << " · "
-      << str("cacheNote", "未命中缓存") << " · " << str("peakNote", "空闲时段") << " · 输出 ¥" << outBuf
-      << str("costExtra") << "  \n";
-    o << "🏷️ 命中规则 " << str("ids", "无") << " · 省量 筛选 **" << pickSaved << "** ＋ 裁剪 **" << trimSaved
-      << "**" << str("hitExtra") << "  \n";
+    o << "💰 费用 **¥" << costBuf << "** · " << str("priceNote", "未调/v1") << " · " << str("cacheNote", "未命中缓存")
+      << " · " << str("peakNote", "空闲时段") << " · 输出 ¥" << outBuf << str("costExtra") << "  \n";
+    o << "🏷️ 命中规则 " << str("ids", "无") << " · 省量 筛选 **" << pickSaved << "** ＋ 裁剪 **" << trimSaved << "**"
+      << str("hitExtra") << "  \n";
     o << "💡 依据 " << str("reasonCn", "未上报") << " · " << str("biasCn", "token 为估算值") << "  \n";
     o << str("summary", "📦 上下文 未上报") << "\n";
     if (auto c = in.find("corpus"); c != in.end() && c->is_string() && !c->get_ref<std::string const&>().empty())

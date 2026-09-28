@@ -152,8 +152,7 @@ float coarseScore(std::int32_t dot, float scale) {
     return static_cast<float>(dot) * scale * i8i16Inv;
 }
 
-bool selectCandidates(float const* est, std::size_t n, std::size_t k, float eps,
-                      std::vector<std::size_t>& out) {
+bool selectCandidates(float const* est, std::size_t n, std::size_t k, float eps, std::vector<std::size_t>& out) {
     out.clear();
     if (k == 0 || n < k)
         return false;
@@ -205,9 +204,9 @@ float dot8(float const* a, float const* b, std::size_t dim) {
     return s;
 }
 
-std::vector<std::pair<std::size_t, float>> selectTopKExact(
-    std::size_t n, std::size_t k, float threshold, std::size_t const* rows, std::size_t nrows,
-    std::function<float(std::size_t)> scoreAt) {
+std::vector<std::pair<std::size_t, float>> selectTopKExact(std::size_t n, std::size_t k, float threshold,
+                                                           std::size_t const* rows, std::size_t nrows,
+                                                           std::function<float(std::size_t)> scoreAt) {
     std::vector<std::pair<std::size_t, float>> result;
     if (k == 0 || n == 0)
         return result;

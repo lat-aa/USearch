@@ -35,6 +35,9 @@ option(USEARCH_BUILD_API "Compile the C++ HTTP/MCP api binary" OFF)
 # C 绑定（c/usearch.h + c/lib.cpp）；主工程默认开，供 FFI / test_capi
 option(USEARCH_BUILD_C_API "Build C API static library" ${USEARCH_IS_MAIN_PROJECT})
 
+# apex 网关/测试 -Werror：仅覆盖自有源码（api + tests/apex），不覆盖 vendored（llama/httplib/...）。
+option(USEARCH_APEX_WERROR "Treat apex gateway/test warnings as errors (self-owned sources only)" OFF)
+
 # Includes
 set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake ${CMAKE_MODULE_PATH})
 include(ExternalProject)

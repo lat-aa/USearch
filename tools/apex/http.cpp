@@ -31,9 +31,7 @@ void setJson(httplib::Response& res, json const& body, int status) {
     res.set_content(body.dump(), "application/json");
 }
 
-std::string messageText(json const& content) {
-    return textOf(content);
-}
+std::string messageText(json const& content) { return textOf(content); }
 
 Bucket::Bucket(std::uint32_t cap, double refillPerSec)
     : capacity(static_cast<double>(cap)), tokens(static_cast<double>(cap)), refill(refillPerSec),
@@ -83,8 +81,8 @@ int serve(Runtime& rt) {
     Bucket bucket(rt.config.rate, rt.config.refill);
     std::mutex bucketMutex;
 
-    std::function<bool(httplib::Request const&, httplib::Response&)> gate =
-        [&](httplib::Request const& req, httplib::Response& res) {
+    std::function<bool(httplib::Request const&, httplib::Response&)> gate = [&](httplib::Request const& req,
+                                                                                httplib::Response& res) {
         if (req.path == "/alive")
             return true;
         if (!authOk(rt, req)) {
@@ -112,21 +110,25 @@ int serve(Runtime& rt) {
                       {"docs", rt.store.docs.size()},
                       {"rules", rt.rules.size()},
                       {"shadow", rt.store.quant},
-                      {"v1", {{"responses", rt.v1Responses.load(std::memory_order_relaxed)},
-                              {"chat", rt.v1Chat.load(std::memory_order_relaxed)},
-                              {"injected", rt.promptInjected.load(std::memory_order_relaxed)},
-                              {"gate", {{"answered", rt.gateAnswered.load(std::memory_order_relaxed)},
-                                        {"pack", rt.gatePack.load(std::memory_order_relaxed)},
-                                        {"refuse", rt.gateRefuse.load(std::memory_order_relaxed)}}},
-                              {"hooks", {{"presync", rt.presyncCalls.load(std::memory_order_relaxed)},
-                                          {"observe", rt.observeCalls.load(std::memory_order_relaxed)}}},
-                              {"agent", {{"ok", rt.agentOk.load(std::memory_order_relaxed)},
-                                        {"delegate", rt.agentDelegate.load(std::memory_order_relaxed)},
-                                        {"parsefail", rt.agentParsefail.load(std::memory_order_relaxed)},
-                                        {"rounds", rt.agentRounds.load(std::memory_order_relaxed)},
-                                        {"cache_l1", rt.cacheL1.load(std::memory_order_relaxed)},
-                                        {"cache_l2", rt.cacheL2.load(std::memory_order_relaxed)},
-                                        {"fuse", rt.fuse.openedAtMs.load(std::memory_order_relaxed) != 0}}}}}});
+                      {"v1",
+                       {{"responses", rt.v1Responses.load(std::memory_order_relaxed)},
+                        {"chat", rt.v1Chat.load(std::memory_order_relaxed)},
+                        {"injected", rt.promptInjected.load(std::memory_order_relaxed)},
+                        {"gate",
+                         {{"answered", rt.gateAnswered.load(std::memory_order_relaxed)},
+                          {"pack", rt.gatePack.load(std::memory_order_relaxed)},
+                          {"refuse", rt.gateRefuse.load(std::memory_order_relaxed)}}},
+                        {"hooks",
+                         {{"presync", rt.presyncCalls.load(std::memory_order_relaxed)},
+                          {"observe", rt.observeCalls.load(std::memory_order_relaxed)}}},
+                        {"agent",
+                         {{"ok", rt.agentOk.load(std::memory_order_relaxed)},
+                          {"delegate", rt.agentDelegate.load(std::memory_order_relaxed)},
+                          {"parsefail", rt.agentParsefail.load(std::memory_order_relaxed)},
+                          {"rounds", rt.agentRounds.load(std::memory_order_relaxed)},
+                          {"cache_l1", rt.cacheL1.load(std::memory_order_relaxed)},
+                          {"cache_l2", rt.cacheL2.load(std::memory_order_relaxed)},
+                          {"fuse", rt.fuse.openedAtMs.load(std::memory_order_relaxed) != 0}}}}}});
     });
 
     mountOpenai(svr, rt, gate);
@@ -162,9 +164,7 @@ int serve(Runtime& rt) {
         auto body = json::parse(req.body, nullptr, false);
         if (body.is_discarded()) {
             setJson(res,
-                    {{"jsonrpc", "2.0"},
-                     {"id", nullptr},
-                     {"error", {{"code", -32700}, {"message", "parse error"}}}});
+                    {{"jsonrpc", "2.0"}, {"id", nullptr}, {"error", {{"code", -32700}, {"message", "parse error"}}}});
             return;
         }
         // 头里的实模作 hook/显式参数之外的回退；每请求重读，避免进程级缓存旧名。

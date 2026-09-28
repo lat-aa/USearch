@@ -1,4 +1,4 @@
-# apex 纯函数 / gate 桩测：helpers+turn 不依赖 llama；gate 链 stub 替 Encoder/Store。
+# apex 纯函数单测：helpers/turn 不依赖 llama。
 # 文件名遵守 names.md（无 _/-）。
 
 include(FetchContent)
@@ -33,3 +33,13 @@ target_include_directories(apexturn PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../to
 target_link_libraries(apexturn PRIVATE nlohmann_json::nlohmann_json)
 add_test(NAME apexturn COMMAND apexturn)
 set_tests_properties(apexturn PROPERTIES LABELS "apex;unit" TIMEOUT 30)
+
+if (USEARCH_APEX_WERROR)
+    foreach(_apex_tgt apexdecide apexhelpers apexturn)
+        if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+            target_compile_options(${_apex_tgt} PRIVATE -Wall -Wextra -Werror)
+        elseif (CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+            target_compile_options(${_apex_tgt} PRIVATE /WX)
+        endif ()
+    endforeach()
+endif ()

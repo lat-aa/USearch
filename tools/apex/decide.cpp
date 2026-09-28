@@ -63,76 +63,56 @@ bool containsAny(std::string_view hay, std::vector<std::string> const& keys) {
 
 char const* modelName(Model m) noexcept {
     switch (m) {
-    case Model::Weak:
-        return "weak";
-    case Model::Standard:
-        return "standard";
-    case Model::Strong:
-        return "strong";
+    case Model::Weak: return "weak";
+    case Model::Standard: return "standard";
+    case Model::Strong: return "strong";
     }
     return "standard";
 }
 
 char const* depthName(Depth d) noexcept {
     switch (d) {
-    case Depth::Shallow:
-        return "shallow";
-    case Depth::Medium:
-        return "medium";
-    case Depth::Deep:
-        return "deep";
+    case Depth::Shallow: return "shallow";
+    case Depth::Medium: return "medium";
+    case Depth::Deep: return "deep";
     }
     return "medium";
 }
 
 char const* retrievalName(Retrieval r) noexcept {
     switch (r) {
-    case Retrieval::L0:
-        return "L0";
-    case Retrieval::L1:
-        return "L1";
-    case Retrieval::L2:
-        return "L2";
-    case Retrieval::L3:
-        return "L3";
+    case Retrieval::L0: return "L0";
+    case Retrieval::L1: return "L1";
+    case Retrieval::L2: return "L2";
+    case Retrieval::L3: return "L3";
     }
     return "L2";
 }
 
 Model modelDowngrade(Model m) noexcept {
     switch (m) {
-    case Model::Weak:
-        return Model::Weak;
-    case Model::Standard:
-        return Model::Weak;
-    case Model::Strong:
-        return Model::Standard;
+    case Model::Weak: return Model::Weak;
+    case Model::Standard: return Model::Weak;
+    case Model::Strong: return Model::Standard;
     }
     return Model::Weak;
 }
 
 Depth depthDowngrade(Depth d) noexcept {
     switch (d) {
-    case Depth::Shallow:
-        return Depth::Shallow;
-    case Depth::Medium:
-        return Depth::Shallow;
-    case Depth::Deep:
-        return Depth::Medium;
+    case Depth::Shallow: return Depth::Shallow;
+    case Depth::Medium: return Depth::Shallow;
+    case Depth::Deep: return Depth::Medium;
     }
     return Depth::Shallow;
 }
 
 Retrieval retrievalDowngrade(Retrieval r) noexcept {
     switch (r) {
-    case Retrieval::L0:
-        return Retrieval::L0;
-    case Retrieval::L1:
-        return Retrieval::L0;
-    case Retrieval::L2:
-        return Retrieval::L1;
-    case Retrieval::L3:
-        return Retrieval::L2;
+    case Retrieval::L0: return Retrieval::L0;
+    case Retrieval::L1: return Retrieval::L0;
+    case Retrieval::L2: return Retrieval::L1;
+    case Retrieval::L3: return Retrieval::L2;
     }
     return Retrieval::L0;
 }
@@ -152,11 +132,11 @@ Temppolicy Temppolicy::sanitized() const {
         mi = (std::min)(lo, ca);
     if (hi < mi)
         hi = mi;
-    return Temppolicy {lo, mi, hi, ca};
+    return Temppolicy{lo, mi, hi, ca};
 }
 
-float Temppolicy::resolve(std::uint8_t complexity, std::uint8_t lowC, std::uint8_t highC,
-                          bool latencySensitive, bool qualityPreferred) const {
+float Temppolicy::resolve(std::uint8_t complexity, std::uint8_t lowC, std::uint8_t highC, bool latencySensitive,
+                          bool qualityPreferred) const {
     Temppolicy p = sanitized();
     float score = static_cast<float>(complexity);
     float loC = static_cast<float>(lowC);
@@ -215,7 +195,7 @@ expected_gt<Lexicon> loadLexicon(fs::path const& path) {
             auto* s = node.as_string();
             if (!s)
                 return false;
-            std::string w {s->get()};
+            std::string w{s->get()};
             if (!w.empty())
                 dst.push_back(std::move(w));
         }
@@ -241,8 +221,7 @@ expected_gt<Decider> Decider::open(Decideconfig const& cfg, Lexicon lexicon) {
     for (std::size_t k : cfg.topk)
         if (k == 0)
             return out.failed("decide.topk entries must be > 0");
-    if (!(cfg.keeplow > 0.0f && cfg.keeplow <= cfg.keepmid && cfg.keepmid <= cfg.keephigh &&
-          cfg.keephigh <= 1.0f))
+    if (!(cfg.keeplow > 0.0f && cfg.keeplow <= cfg.keepmid && cfg.keepmid <= cfg.keephigh && cfg.keephigh <= 1.0f))
         return out.failed("decide.keep* must satisfy 0 < keeplow <= keepmid <= keephigh <= 1");
 
     Decider d;
@@ -272,14 +251,10 @@ expected_gt<Decider> Decider::open(Decideconfig const& cfg, Lexicon lexicon) {
 
 std::size_t Decider::topkFor(Retrieval r) const noexcept {
     switch (r) {
-    case Retrieval::L0:
-        return topk[0];
-    case Retrieval::L1:
-        return topk[1];
-    case Retrieval::L2:
-        return topk[2];
-    case Retrieval::L3:
-        return topk[3];
+    case Retrieval::L0: return topk[0];
+    case Retrieval::L1: return topk[1];
+    case Retrieval::L2: return topk[2];
+    case Retrieval::L3: return topk[3];
     }
     return topk[2];
 }
@@ -390,45 +365,28 @@ Features Decider::features(Decideinput const& input) const {
     f.fileCount = input.files.size();
     f.complexKeyword = containsAny(lower, complex);
     f.mediumKeyword = containsAny(lower, medium);
-    f.latencySensitive =
-        (input.latency && *input.latency < speedMs) ||
-        std::find(input.hints.begin(), input.hints.end(), Hint::PreferSpeed) != input.hints.end();
-    f.qualityPreferred =
-        std::find(input.hints.begin(), input.hints.end(), Hint::PreferQuality) != input.hints.end();
+    f.latencySensitive = (input.latency && *input.latency < speedMs) ||
+                         std::find(input.hints.begin(), input.hints.end(), Hint::PreferSpeed) != input.hints.end();
+    f.qualityPreferred = std::find(input.hints.begin(), input.hints.end(), Hint::PreferQuality) != input.hints.end();
 
     // 同维多次 Force*：后者覆盖前者（与 hints 数组顺序一致）。
     for (Hint h : input.hints) {
         switch (h) {
-        case Hint::ForceWeak:
-            f.forcedModel = Model::Weak;
-            break;
-        case Hint::ForceStandard:
-            f.forcedModel = Model::Standard;
-            break;
-        case Hint::ForceStrong:
-            f.forcedModel = Model::Strong;
-            break;
-        case Hint::ForceShallow:
-            f.forcedDepth = Depth::Shallow;
-            break;
-        case Hint::ForceMedium:
-            f.forcedDepth = Depth::Medium;
-            break;
-        case Hint::ForceDeep:
-            f.forcedDepth = Depth::Deep;
-            break;
-        default:
-            break;
+        case Hint::ForceWeak: f.forcedModel = Model::Weak; break;
+        case Hint::ForceStandard: f.forcedModel = Model::Standard; break;
+        case Hint::ForceStrong: f.forcedModel = Model::Strong; break;
+        case Hint::ForceShallow: f.forcedDepth = Depth::Shallow; break;
+        case Hint::ForceMedium: f.forcedDepth = Depth::Medium; break;
+        case Hint::ForceDeep: f.forcedDepth = Depth::Deep; break;
+        default: break;
         }
     }
 
-    std::size_t taskCap = (std::max)(maxtask, std::size_t {1});
-    std::size_t fileCap = (std::max)(maxfile, std::size_t {1});
+    std::size_t taskCap = (std::max)(maxtask, std::size_t{1});
+    std::size_t fileCap = (std::max)(maxfile, std::size_t{1});
     // 保持与历史默认（200→/4、5→*6）同比例：满分贡献各为 50 / 30。
-    unsigned taskContrib =
-        static_cast<unsigned>((std::min)(f.taskLen, taskCap) * 50 / taskCap);
-    unsigned fileContrib =
-        static_cast<unsigned>((std::min)(f.fileCount, fileCap) * 30 / fileCap);
+    unsigned taskContrib = static_cast<unsigned>((std::min)(f.taskLen, taskCap) * 50 / taskCap);
+    unsigned fileContrib = static_cast<unsigned>((std::min)(f.fileCount, fileCap) * 30 / fileCap);
     unsigned mediumContrib = f.mediumKeyword ? wmedium : 0u;
     unsigned complexContrib = f.complexKeyword ? wcomplex : 0u;
     unsigned sum = taskContrib + fileContrib + mediumContrib + complexContrib;
@@ -442,23 +400,22 @@ Decision Decider::decideFrom(Features const& f) const {
 
     // —— 1. 复杂度分档定基线 ——
     if (f.complexity >= highComplexity) {
-        d.reasons.push_back("complexity " + std::to_string(f.complexity) + " >= " +
-                            std::to_string(highComplexity) + " (high)");
+        d.reasons.push_back("complexity " + std::to_string(f.complexity) + " >= " + std::to_string(highComplexity) +
+                            " (high)");
         d.model = Model::Strong;
         d.depth = Depth::Deep;
         d.retrieval = Retrieval::L3;
         d.compression = keephigh;
     } else if (f.complexity < lowComplexity) {
-        d.reasons.push_back("complexity " + std::to_string(f.complexity) + " < " +
-                            std::to_string(lowComplexity) + " (low)");
+        d.reasons.push_back("complexity " + std::to_string(f.complexity) + " < " + std::to_string(lowComplexity) +
+                            " (low)");
         d.model = Model::Weak;
         d.depth = Depth::Shallow;
         d.retrieval = Retrieval::L0;
         d.compression = keeplow;
     } else {
-        d.reasons.push_back("complexity " + std::to_string(f.complexity) + " in [" +
-                            std::to_string(lowComplexity) + ", " + std::to_string(highComplexity) +
-                            ") (mid)");
+        d.reasons.push_back("complexity " + std::to_string(f.complexity) + " in [" + std::to_string(lowComplexity) +
+                            ", " + std::to_string(highComplexity) + ") (mid)");
         d.model = Model::Standard;
         d.depth = Depth::Medium;
         d.retrieval = Retrieval::L2;
@@ -498,9 +455,9 @@ Decision Decider::decideFrom(Features const& f) const {
     }
 
     // —— 5. 温度 ——
-    d.temperature = temperature.resolve(f.complexity, lowComplexity, highComplexity,
-                                        f.latencySensitive && !f.qualityPreferred,
-                                        f.qualityPreferred && !f.latencySensitive);
+    d.temperature =
+        temperature.resolve(f.complexity, lowComplexity, highComplexity, f.latencySensitive && !f.qualityPreferred,
+                            f.qualityPreferred && !f.latencySensitive);
     {
         std::ostringstream os;
         os << "temperature=" << d.temperature << " (lerp+guards)";
@@ -509,8 +466,6 @@ Decision Decider::decideFrom(Features const& f) const {
     return d;
 }
 
-Decision Decider::decide(Decideinput const& input) const {
-    return decideFrom(features(input));
-}
+Decision Decider::decide(Decideinput const& input) const { return decideFrom(features(input)); }
 
 } // namespace api

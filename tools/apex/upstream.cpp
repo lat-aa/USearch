@@ -29,10 +29,9 @@ std::string delegateToUpstream(Runtime& rt, json const& messages, bool responses
             setJson(res, {{"id", "upstream"},
                           {"object", "chat.completion"},
                           {"model", model},
-                          {"choices",
-                           json::array({{{"index", 0},
-                                         {"message", {{"role", "assistant"}, {"content", reply}}},
-                                         {"finish_reason", "stop"}}})}});
+                          {"choices", json::array({{{"index", 0},
+                                                    {"message", {{"role", "assistant"}, {"content", reply}}},
+                                                    {"finish_reason", "stop"}}})}});
         return reply;
     }
 
@@ -62,7 +61,8 @@ std::string delegateToUpstream(Runtime& rt, json const& messages, bool responses
     }
 
     if (!key || !*key) {
-        setJson(res, {{"error", {{"message", "local delegate failed; upstream key env '" + keyenv + "' is empty"}}}}, 502);
+        setJson(res, {{"error", {{"message", "local delegate failed; upstream key env '" + keyenv + "' is empty"}}}},
+                502);
         return {};
     }
 
@@ -96,8 +96,7 @@ std::string delegateToUpstream(Runtime& rt, json const& messages, bool responses
     msgs.push_back(textMessage("user", user.empty() ? " " : user));
     json body = {{"model", model}, {"messages", std::move(msgs)}, {"stream", false}};
 
-    auto up = cli.Post(path,
-                       {{"Authorization", std::string("Bearer ") + key}, {"Content-Type", "application/json"}},
+    auto up = cli.Post(path, {{"Authorization", std::string("Bearer ") + key}, {"Content-Type", "application/json"}},
                        body.dump(), "application/json");
     if (!up) {
         setJson(res, {{"error", {{"message", std::string("upstream unreachable: ") + httplib::to_string(up.error())}}}},
@@ -122,22 +121,21 @@ std::string delegateToUpstream(Runtime& rt, json const& messages, bool responses
         reply = up->body;
 
     if (responses)
-        setJson(res, {{"id", "upstream"},
-                      {"object", "response"},
-                      {"status", "completed"},
-                      {"model", model},
-                      {"output",
-                       json::array({{{"type", "message"},
-                                     {"role", "assistant"},
-                                     {"content", json::array({{{"type", "output_text"}, {"text", reply}}})}}})}});
+        setJson(res,
+                {{"id", "upstream"},
+                 {"object", "response"},
+                 {"status", "completed"},
+                 {"model", model},
+                 {"output", json::array({{{"type", "message"},
+                                          {"role", "assistant"},
+                                          {"content", json::array({{{"type", "output_text"}, {"text", reply}}})}}})}});
     else
         setJson(res, {{"id", "upstream"},
                       {"object", "chat.completion"},
                       {"model", model},
-                      {"choices",
-                       json::array({{{"index", 0},
-                                     {"message", {{"role", "assistant"}, {"content", reply}}},
-                                     {"finish_reason", "stop"}}})}});
+                      {"choices", json::array({{{"index", 0},
+                                                {"message", {{"role", "assistant"}, {"content", reply}}},
+                                                {"finish_reason", "stop"}}})}});
     return reply;
 }
 

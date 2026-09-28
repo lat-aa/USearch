@@ -35,10 +35,10 @@
 #endif
 #endif
 
+#include "helpers.hpp"
+#include <dense/dense.hpp>
 #include <httplib.h>
 #include <nlohmann/json.hpp>
-#include <dense/dense.hpp>
-#include "helpers.hpp"
 
 struct llama_model;
 struct llama_context;
@@ -80,7 +80,7 @@ struct Decideconfig {
     std::uint8_t high = 0;
     std::uint8_t low = 0;
     std::uint8_t margin = 0;
-    Temppolicy temperature {};
+    Temppolicy temperature{};
     std::uint8_t wmedium = 0;
     std::uint8_t wcomplex = 0;
     std::size_t maxtask = 0;
@@ -88,13 +88,13 @@ struct Decideconfig {
     float keeplow = 0;
     float keepmid = 0;
     float keephigh = 0;
-    std::array<std::size_t, 4> topk {};
+    std::array<std::size_t, 4> topk{};
     std::string lexicon; ///< 词表路径（默认 `.config/decide/config.toml`，含 complex / medium）
 };
 
 /** 本地 agent 参数（替代旧 [gate] 路由）。 */
 struct Agentconfig {
-    bool enabled = true; ///< false = /v1 直接走上游兜底（本地模型不合规/无 GPU 时用）
+    bool enabled = true;     ///< false = /v1 直接走上游兜底（本地模型不合规/无 GPU 时用）
     bool skipComplex = true; ///< decide 判为 Strong(复杂) 时跳过本地，直接上游（省掉本地白跑 ~5-10s）
     std::size_t maxRounds = 3;
     float tokenBudget = 0.7f;
@@ -150,13 +150,13 @@ struct Config {
     std::string rules;
     std::string workspace;
     std::string token;
-    Chat chat {};
-    Decideconfig decide {};
-    Agentconfig agent {};
-    Embedconfig embed {};
-    Upstreamconfig upstream {};
-    Cacheconfig cache {};
-    Retrievalconfig retrieval {};
+    Chat chat{};
+    Decideconfig decide{};
+    Agentconfig agent{};
+    Embedconfig embed{};
+    Upstreamconfig upstream{};
+    Cacheconfig cache{};
+    Retrievalconfig retrieval{};
     std::size_t shadow = 0;
     std::uint32_t rate = 0;
     double refill = 0.0;
@@ -179,12 +179,11 @@ void buildShadow(float const* data, std::size_t n, std::size_t dim, std::vector<
 std::vector<std::int16_t> quantizeQueryI16(float const* q, std::size_t dim);
 std::int32_t i8Dot(std::int8_t const* doc, std::int16_t const* q, std::size_t dim);
 float coarseScore(std::int32_t dot, float scale);
-bool selectCandidates(float const* est, std::size_t n, std::size_t k, float eps,
-                      std::vector<std::size_t>& out);
+bool selectCandidates(float const* est, std::size_t n, std::size_t k, float eps, std::vector<std::size_t>& out);
 float dot8(float const* a, float const* b, std::size_t dim);
-std::vector<std::pair<std::size_t, float>> selectTopKExact(
-    std::size_t n, std::size_t k, float threshold, std::size_t const* rows, std::size_t nrows,
-    std::function<float(std::size_t)> scoreAt);
+std::vector<std::pair<std::size_t, float>> selectTopKExact(std::size_t n, std::size_t k, float threshold,
+                                                           std::size_t const* rows, std::size_t nrows,
+                                                           std::function<float(std::size_t)> scoreAt);
 } // namespace sq8
 
 struct Doc {
@@ -300,7 +299,7 @@ struct Rule {
     std::string description;
     std::string body;
     std::string path;
-    bool always = false;   ///< 无条件激活
+    bool always = false; ///< 无条件激活
     bool enabled = true;
     std::vector<std::string> globs; ///< 路径 glob；非空则走 Glob，不进 Semantic
 };
@@ -321,7 +320,7 @@ struct Rulequery {
 struct Resolvedrule {
     Rule rule;
     Activation activation = Activation::Semantic;
-    float score = 0.0f; ///< Semantic 相似度；其余为 0
+    float score = 0.0f;                ///< Semantic 相似度；其余为 0
     std::vector<std::string> triggers; ///< Glob 命中的文件
     json toJson() const;
 };
@@ -484,7 +483,7 @@ struct Decider {
     std::uint8_t highComplexity = 0;
     std::uint8_t lowComplexity = 0;
     std::uint8_t margin = 0;
-    Temppolicy temperature {};
+    Temppolicy temperature{};
     std::uint8_t wmedium = 0;
     std::uint8_t wcomplex = 0;
     std::size_t maxtask = 0;
@@ -492,7 +491,7 @@ struct Decider {
     float keeplow = 0;
     float keepmid = 0;
     float keephigh = 0;
-    std::array<std::size_t, 4> topk {};
+    std::array<std::size_t, 4> topk{};
     std::vector<std::string> complex;
     std::vector<std::string> medium;
 
@@ -573,26 +572,26 @@ struct Runtime {
     /** 本轮 gate/rules/observe/worker 实测；cost 读出。 */
     Turnstats turn;
     /** /v1 命中计数（进程级）：确认客户端是否真打到 /v1，以及 gate 结局与注入次数。 */
-    std::atomic<std::uint64_t> v1Responses {0};
-    std::atomic<std::uint64_t> v1Chat {0};
-    std::atomic<std::uint64_t> promptInjected {0};
-    std::atomic<std::uint64_t> gateAnswered {0};
-    std::atomic<std::uint64_t> gatePack {0};
-    std::atomic<std::uint64_t> gateRefuse {0};
-    std::atomic<std::uint64_t> agentOk {0};
-    std::atomic<std::uint64_t> agentDelegate {0};
-    std::atomic<std::uint64_t> agentParsefail {0};
-    std::atomic<std::uint64_t> agentRounds {0}; ///< 本地 agent 实际执行的工具轮次
-    std::atomic<std::int64_t> lastUserMs {0};   ///< 最近一次用户请求时刻（Worker 让路用）
-    std::atomic<std::uint64_t> presyncCalls {0}; ///< /v1/presync 调用（三端前置 hook）
-    std::atomic<std::uint64_t> observeCalls {0}; ///< MCP observe 入队次数（沉淀）
-    std::atomic<std::uint64_t> cacheL1 {0};     ///< L1 精确缓存命中
-    std::atomic<std::uint64_t> cacheL2 {0};     ///< L2 语义缓存命中
+    std::atomic<std::uint64_t> v1Responses{0};
+    std::atomic<std::uint64_t> v1Chat{0};
+    std::atomic<std::uint64_t> promptInjected{0};
+    std::atomic<std::uint64_t> gateAnswered{0};
+    std::atomic<std::uint64_t> gatePack{0};
+    std::atomic<std::uint64_t> gateRefuse{0};
+    std::atomic<std::uint64_t> agentOk{0};
+    std::atomic<std::uint64_t> agentDelegate{0};
+    std::atomic<std::uint64_t> agentParsefail{0};
+    std::atomic<std::uint64_t> agentRounds{0};  ///< 本地 agent 实际执行的工具轮次
+    std::atomic<std::int64_t> lastUserMs{0};    ///< 最近一次用户请求时刻（Worker 让路用）
+    std::atomic<std::uint64_t> presyncCalls{0}; ///< /v1/presync 调用（三端前置 hook）
+    std::atomic<std::uint64_t> observeCalls{0}; ///< MCP observe 入队次数（沉淀）
+    std::atomic<std::uint64_t> cacheL1{0};      ///< L1 精确缓存命中
+    std::atomic<std::uint64_t> cacheL2{0};      ///< L2 语义缓存命中
     Fuse fuse;                                  ///< 本地 agent 解析熔断
     /** Worker 空转等待；observe 入队后 notify，避免固定 400ms 轮询。 */
     std::mutex workerMutex;
     std::condition_variable workerCv;
-    std::atomic<bool> workerStop {false};
+    std::atomic<bool> workerStop{false};
     std::thread worker;
     Runtime() = default;
     Runtime(Runtime const&) = delete;
