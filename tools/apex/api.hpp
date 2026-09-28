@@ -91,19 +91,6 @@ struct Decideconfig {
     std::string lexicon; ///< 词表路径（默认 `.config/decide/config.toml`，含 complex / medium）
 };
 
-/** 前置门控参数（全部来自 `config.gate`；缺键启动失败）。 */
-struct Gateconfig {
-    float threshold = 0;  ///< answerConfidence 直答阈值
-    float l2 = 0;         ///< L2 语义缓存最低相似度
-    std::size_t cachek = 0;
-    int reflect = 0; ///< 0|1|2 额外反思轮
-    float minevid = 0;
-    float wevid = 0;
-    float wself = 0;
-    std::size_t packtok = 0;
-    std::size_t minlen = 0;
-};
-
 /** 本地 agent 参数（替代旧 [gate] 路由）。 */
 struct Agentconfig {
     std::size_t maxRounds = 3;
@@ -116,6 +103,18 @@ struct Agentconfig {
 struct Upstreamconfig {
     std::string base;
     std::string keyenv;
+};
+/** 独立短路缓存（纯命中，不评分）。 */
+struct Cacheconfig {
+    bool enableL1 = true;
+    std::uint32_t l1Ttl = 3600;
+    bool enableL2 = true;
+    float l2Sim = 0.92f;
+};
+/** 检索与重排。 */
+struct Retrievalconfig {
+    float ruleWeight = 2.0f;
+    std::size_t topK = 8;
 };
 
 /** observe 入队行（SQLite queue；不做重活）。 */
@@ -143,9 +142,10 @@ struct Config {
     std::string token;
     Chat chat {};
     Decideconfig decide {};
-    Gateconfig gate {};
     Agentconfig agent {};
     Upstreamconfig upstream {};
+    Cacheconfig cache {};
+    Retrievalconfig retrieval {};
     std::size_t shadow = 0;
     std::uint32_t rate = 0;
     double refill = 0.0;
@@ -604,22 +604,6 @@ struct Runtime {
 /** 政策目录指纹：规则变更使 L1/L2 缓存失效。 */
 std::string policyFingerprint(std::vector<Rule> const& rules);
 
-/**
- * gate 可注入 I/O：单测用桩，生产由 Runtime 的 Encoder/Store 填充。
- * 禁止在桩里再进 llama；embed/chat/search/upsert/audit 均可替换。
- */
-struct Gateports {
-    std::function<std::vector<float>(std::string_view)> embed;
-    std::function<std::string(std::string_view, std::string_view)> chat;
-    std::function<std::vector<std::pair<Doc, float>>(std::vector<float> const&, std::size_t)> search;
-    std::function<error_t(Doc, std::vector<float> const&)> upsert;
-    std::function<void(std::string const&, std::string const&, json const&)> audit;
-};
-
-/** 前置门控核心（可注入 ports）；生产 `runGate` 绑定 Runtime。 */
-json runGateCore(Runtime& rt, json const& args, Gateports& ports);
-/** 前置门控：L1/L2→政策∥记忆→RRF→Nanbeige 混合置信→answered|pack|refuse。 */
-json runGate(Runtime& rt, json const& args);
 /** observe 仅入队；Worker 后台蒸馏写 memory。 */
 json runObserve(Runtime& rt, json const& args);
 void workerLoop(Runtime& rt);
@@ -627,8 +611,6 @@ void workerLoop(Runtime& rt);
 void noteRules(Runtime& rt, std::vector<Resolvedrule> const& matched);
 /** 记入裁剪后正文（turn.clip；与 optimized_tokens 对齐）。 */
 void noteKept(Runtime& rt, std::vector<std::pair<std::string, std::string>> kept);
-/** 把 gate 结局记入 turn；localChats=本路径 Nanbeige chat 次数。 */
-void noteGate(Runtime& rt, json const& result, bool didAnn, std::size_t annK, int localChats);
 /** /v1 主路径写入实测命令包；source=injected，覆盖 rebuild。 */
 void notePrompt(Runtime& rt, json prompt);
 /** observe 入队 id。 */

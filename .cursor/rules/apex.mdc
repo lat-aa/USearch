@@ -18,7 +18,7 @@ alwaysApply: true
 
 <!-- 先工具、后作答：统计块依赖真实返回值，跳过等于伪造。 -->
 
-1. 回复**开始前**固定顺序：若 Hook 未短路则先 `gate`（Cursor 无法靠 Hook 注入 pack）→ `rules` → `decide` → `cost`（**每轮必传** `actual_model`）→ `stats.sh`（可并行发起工具，语义顺序不变）。
+1. 回复**开始前**固定顺序：`rules` → `decide` → `cost`（**每轮必传** `actual_model`）→ `stats.sh`（可并行发起工具，语义顺序不变）。前置门控 `gate` / Hook(presync) 已移除，改由 `/v1` 本地 agent。
 2. 无关联文件时：`files=[]`、`manual=[]`。**禁止**以「太简单 / 只是打招呼」为由省略。任务结束调 `observe`/`save` 仅入队。
 3. 调用失败：整链重试 **一次**；仍失败则写出**工具名 + 错误原文**。**禁止**谎称已调用或「工具返回空」。
 4. 本工作区 apex **默认可用**；不得预设「有时挂了」而不调用。测试代码只能存入tests目录
@@ -28,7 +28,6 @@ alwaysApply: true
 
 <!-- 工具名与 JSON 键保持英文，降低漏调；中文只钉死语义与禁忌。 -->
 
-- **`gate`** `{ task, files? }` → `status`/`answerConfidence`/`reply`/`pack`（≠ `decide.confidence`）
 - **`observe`** / **`save`**：仅入队 `queue`（表名 `queue`，无其它别名）
 - **`rules`** `{ files, task, manual }`
   - 必读：`totalRules`、`matched`、`naiveTokens`、`optimizedTokens`、`selectedTokens`、`entries[].id`
@@ -37,10 +36,10 @@ alwaysApply: true
   - **`compression` = 保留上下文**比例（`1.0` 全保留），**禁止**写成「压缩率」
   - `decide.model` 只是**建议档**，≠ 当前会话真实模型
 - **`cost`**：**每轮必调**；`actual_model` 优先 hook/`cursor-state`，否则头或显式 `reported` + `actual_model_source`
-  - 必读：`*_cost`、`cache_hit`、`peak`、`actual_model`、`actual_model_source`、`model`（计价/上游档）、`stack.{nanbeige,usearch,sqlite}`、`turn`（gate/saved/source/corpus/prompt…）
+  - 必读：`*_cost`、`cache_hit`、`peak`、`actual_model`、`actual_model_source`、`model`（计价/上游档）、`stack.{nanbeige,usearch,sqlite}`、`turn`（saved/source/corpus/prompt…）
   - `decide.model` = 建议档；`cost.model` = 计价或 `/v1` 上游档；`actual_model` = 客户端侧名（可与上游不同）
   - 🔖 行用 `stack`（turn 实测，禁止口编）；💰/🏷️/📦 从 `turn` 抄，缺字段勿冒充 0
-  - 第 7 块：摘要（含 `-PromptSource`=`turn.source`）+ `turn.corpus`（人读 markdown，**仅** `## prompt`）；禁止再贴 rules/kept/pack；禁止把 `turn.prompt` JSON 原样贴进聊天；`prompt` 内禁止 `"body":"..."`
+  - 第 7 块：摘要（含 `-PromptSource`=`turn.source`）+ 消息行（injected 时）+ `turn.corpus`；禁止再贴 rules/kept/pack；`prompt` 内禁止 `"body":"..."`
 - **诚信底线**：统计块每一个数字必须来自工具返回，禁止口算或杜撰
 
 ### 统计块

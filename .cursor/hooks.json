@@ -1,11 +1,6 @@
 {
   "version": 1,
   "hooks": {
-    "beforeSubmitPrompt": [
-      {
-        "command": "node scripts/presync.js"
-      }
-    ],
     "preToolUse": [
       {
         "command": "node scripts/injectmodel.js"

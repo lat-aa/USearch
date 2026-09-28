@@ -14,10 +14,6 @@ if (NOT TARGET nlohmann_json::nlohmann_json)
     FetchContent_MakeAvailable(json)
 endif ()
 
-add_executable(apexverdict verdict.cpp)
-target_compile_features(apexverdict PRIVATE cxx_std_17)
-add_test(NAME apexverdict COMMAND apexverdict)
-set_tests_properties(apexverdict PROPERTIES LABELS "apex;unit" TIMEOUT 30)
 
 add_executable(apexdecide decide.cpp)
 target_compile_features(apexdecide PRIVATE cxx_std_17)
@@ -37,35 +33,3 @@ target_include_directories(apexturn PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../to
 target_link_libraries(apexturn PRIVATE nlohmann_json::nlohmann_json)
 add_test(NAME apexturn COMMAND apexturn)
 set_tests_properties(apexturn PROPERTIES LABELS "apex;unit" TIMEOUT 30)
-
-# gate 集成：gate.cpp+decide+text+stub；api.hpp 需 httplib 头，但不链 llama
-if (NOT TARGET tomlplusplus::tomlplusplus)
-    include(${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/toml.cmake)
-endif ()
-if (NOT TARGET httplib::httplib)
-    include(${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/httplib.cmake)
-endif ()
-
-set(APEX_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/apex)
-add_executable(apexgate
-    gate.cpp
-    stub.cpp
-    ${APEX_SRC}/gate.cpp
-    ${APEX_SRC}/decide.cpp
-    ${APEX_SRC}/text.cpp
-)
-target_compile_features(apexgate PRIVATE cxx_std_17)
-target_include_directories(apexgate PRIVATE
-    ${APEX_SRC}
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
-)
-target_link_libraries(apexgate PRIVATE
-    nlohmann_json::nlohmann_json
-    tomlplusplus::tomlplusplus
-    httplib::httplib
-)
-if (WIN32)
-    target_compile_definitions(apexgate PRIVATE _WIN32_WINNT=0x0A00 NOMINMAX WIN32_LEAN_AND_MEAN)
-endif ()
-add_test(NAME apexgate COMMAND apexgate)
-set_tests_properties(apexgate PROPERTIES LABELS "apex;unit" TIMEOUT 60)

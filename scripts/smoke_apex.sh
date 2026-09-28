@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# L2：Apex MCP 回合矩阵（rules/decide/cost/gate/observe/aliases/stats）。
+# L2：Apex MCP 回合矩阵（rules/decide/cost/observe/aliases/stats）。
 # 从 deploy/k3s/depth.sh 抽出可本地化断言；部署探测仍由 depth.sh 负责。
 # Usage: API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_apex.sh
 set -euo pipefail
@@ -120,22 +120,15 @@ t=json.loads(json.load(sys.stdin)['result']['content'][0]['text'])
 assert t.get('name') and 'body' in t
 " && smoke_pass "A3 alias get-rule" || smoke_bad "A3 get-rule" "fail"
 
-# A4 gate → cost
-gturn=$(curl -fsS --max-time 120 "${MCP[@]}" \
-  -d '{"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"name":"gate","arguments":{"task":"how to name a C++ flag without underscore","files":[]}}}' \
-  "$SMOKE_BASE/mcp")
-gstatus=$(echo "$gturn" | python3 -c "import sys,json;t=json.loads(json.load(sys.stdin)['result']['content'][0]['text']);print(t.get('status',''))")
+# A4 cost（gate 已移除；仅校验 turn corpus/prompt 契约）
 costg=$(curl -fsS --max-time 60 "${MCP[@]}" \
-  -H "X-Apex-Actual-Model: apex-gate" -H "X-Apex-Actual-Model-Source: reported" \
+  -H "X-Apex-Actual-Model: apex-cost" -H "X-Apex-Actual-Model-Source: reported" \
   -d '{"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"cost","arguments":{"task":"how to name a C++ flag without underscore","files":[],"manual":[]}}}' \
   "$SMOKE_BASE/mcp")
 echo "$costg" | python3 -c "
 import sys,json
 t=json.loads(json.load(sys.stdin)['result']['content'][0]['text'])
 tr=t.get('turn') or {}
-assert tr.get('gate') in ('answered','pack','refuse','none'), tr
-if tr.get('gate')=='answered':
-  assert tr.get('saved')==1, tr
 c=tr.get('corpus') or ''
 msgs=tr.get('prompt') or []
 assert isinstance(msgs,list) and msgs
@@ -146,7 +139,7 @@ assert 'Local knowledge JSON follows.' in p
 assert '\"body\": \"...\"' not in p and '\"body\":\"...\"' not in p
 assert tr.get('source') in ('injected', 'rebuild')
 assert '(none)' not in c
-" && smoke_pass "A4 cost.turn after gate (status=$gstatus)" || smoke_bad "A4 cost.turn gate" "status=$gstatus"
+" && smoke_pass "A4 cost.turn corpus/prompt" || smoke_bad "A4 cost.turn" "fail"
 
 # A5 observe/save
 obs=$(curl -fsS --max-time 30 "${MCP[@]}" \

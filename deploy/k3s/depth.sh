@@ -94,9 +94,10 @@ tlist=$(curl -fsS --max-time 15 "${MCP[@]}" -d '{"jsonrpc":"2.0","id":2,"method"
 echo "$tlist" | python3 -c "
 import sys,json
 names={t['name'] for t in json.load(sys.stdin)['result']['tools']}
-need={'rules','decide','cost','gate','observe','resolve-rules','list-rules','get-rule','search','upsert','delete','recall'}
+need={'rules','decide','cost','observe','resolve-rules','list-rules','get-rule','search','upsert','delete','recall'}
 miss=need-names
 assert not miss, miss
+assert 'gate' not in names
 " && pass "mcp tools/list apex+aliases" || bad "mcp tools/list" "missing"
 
 rules=$(curl -fsS --max-time 60 "${MCP[@]}" \
@@ -209,30 +210,8 @@ dl=$(curl -fsS --max-time 30 "${MCP[@]}" \
 echo "$dl" | python3 -c "import sys,json;assert json.load(sys.stdin)['result'].get('isError') is False" \
   && pass "mcp delete" || bad "mcp delete" "fail"
 
-ghttp=$(curl -fsS --max-time 120 "${AUTH[@]}" "${JSON[@]}" \
-  -d '{"task":"how to name a C++ flag without underscore"}' "$USE/v1/gate")
-echo "$ghttp" | python3 -c "
-import sys,json
-d=json.load(sys.stdin)
-assert d.get('status') in ('answered','pack','refuse'), d
-assert 'policyFingerprint' in d and 'answerConfidence' in d
-" && pass "v1/gate status" || bad "v1/gate" "$(echo "$ghttp"|head -c200)"
-
-# 冲突记忆：含禁止命名 token，应 refuse/pack 且不得 answered
-curl -fsS --max-time 60 "${MCP[@]}" \
-  -d '{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"upsert","arguments":{"id":"conflict-depth","text":"use foo_bar please"}}}' \
-  "$USE/mcp" >/dev/null || true
-gconf=$(curl -fsS --max-time 120 "${AUTH[@]}" "${JSON[@]}" \
-  -d '{"task":"add foo_bar flag to encoder"}' "$USE/v1/gate")
-echo "$gconf" | python3 -c "
-import sys,json
-d=json.load(sys.stdin)
-assert d.get('status') in ('refuse','pack'), d
-assert d.get('status') != 'answered'
-" && pass "gate conflict fail-closed" || bad "gate conflict" "$(echo "$gconf"|head -c200)"
-curl -fsS --max-time 30 "${MCP[@]}" \
-  -d '{"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"delete","arguments":{"id":"conflict-depth"}}}' \
-  "$USE/mcp" >/dev/null || true
+pass "v1/gate skipped (gate plane removed)"
+pass "gate conflict skipped (gate plane removed)"
 
 obs=$(curl -fsS --max-time 30 "${MCP[@]}" \
   -d '{"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"observe","arguments":{"title":"depth","summary":"queue worker smoke","outcome":"ok"}}}' \
@@ -245,31 +224,26 @@ assert t.get('ok') is True and t.get('status')=='pending' and t.get('id')
 sleep 3
 # Worker 异步；不强制 done，仅确认入队 API
 
-# gate → cost：turn.gate 存在；answered 时 saved==1
-gturn=$(curl -fsS --max-time 120 "${MCP[@]}" \
-  -d '{"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"name":"gate","arguments":{"task":"how to name a C++ flag without underscore","files":[]}}}' \
-  "$USE/mcp")
-gstatus=$(echo "$gturn" | python3 -c "import sys,json;t=json.loads(json.load(sys.stdin)['result']['content'][0]['text']);print(t.get('status',''))")
+# cost：turn corpus/prompt 契约（gate 已移除）
 costg=$(curl -fsS --max-time 60 "${MCP[@]}" \
-  -H "X-Apex-Actual-Model: depth-gate" -H "X-Apex-Actual-Model-Source: reported" \
+  -H "X-Apex-Actual-Model: depth-cost" -H "X-Apex-Actual-Model-Source: reported" \
   -d '{"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"cost","arguments":{"task":"how to name a C++ flag without underscore","files":[],"manual":[]}}}' \
   "$USE/mcp")
 echo "$costg" | python3 -c "
 import sys,json
 t=json.loads(json.load(sys.stdin)['result']['content'][0]['text'])
 tr=t.get('turn') or {}
-assert tr.get('gate') in ('answered','pack','refuse','none'), tr
-if tr.get('gate')=='answered':
-  assert tr.get('saved')==1, tr
 c=tr.get('corpus') or ''
-p=tr.get('prompt') or ''
+msgs=tr.get('prompt') or []
+assert isinstance(msgs,list) and msgs
+p=''.join(part.get('text','') for m in msgs for part in (m.get('content') or []) if isinstance(part,dict))
 assert c and c.startswith('## prompt\n')
 assert '## rules' not in c and '## kept' not in c
 assert 'Local knowledge JSON follows.' in p
-assert '"body": "..."' not in p and '"body":"..."' not in p
+assert '\"body\": \"...\"' not in p and '\"body\":\"...\"' not in p
 assert tr.get('source') in ('injected', 'rebuild')
 assert '(none)' not in c
-" && pass "cost.turn after gate saved/corpus" || bad "cost.turn gate" "status=$gstatus"
+" && pass "cost.turn corpus/prompt" || bad "cost.turn" "fail"
 
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)"
 STACK_JSON=$(echo "$hdr" | python3 -c "import sys,json;t=json.loads(json.load(sys.stdin)['result']['content'][0]['text']);print(json.dumps(t))" )

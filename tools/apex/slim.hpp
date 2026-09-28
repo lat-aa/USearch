@@ -235,7 +235,7 @@ inline Slimargs parseSlim(std::string_view body) {
     }
 }
 
-/** 转成 runGate / decideinputFromJson 仍能吃的最小 DOM（仅必要键）。 */
+/** 转成 decideinputFromJson /route 仍能吃的最小 DOM（仅必要键）。 */
 inline json slimToJson(Slimargs const& a) {
     json j = json::object();
     j["task"] = a.task;

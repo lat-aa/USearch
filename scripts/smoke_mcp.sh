@@ -62,11 +62,12 @@ tlist=$(curl -fsS --max-time 15 "${MCP[@]}" \
 echo "$tlist" | python3 -c "
 import sys,json
 names={t['name'] for t in json.load(sys.stdin)['result']['tools']}
-need={'rules','catalog','rule','search','upsert','delete','recall','decide','gate','observe','cost',
+need={'rules','catalog','rule','search','upsert','delete','recall','decide','observe','cost',
       'resolve-rules','list-rules','get-rule','shell','test','status','commit','save'}
 miss=need-names
 assert not miss, miss
-assert len(names)>=19
+assert 'gate' not in names
+assert len(names)>=18
 " && smoke_pass "mcp tools/list full+aliases" || smoke_bad "mcp tools/list" "missing"
 
 # --- GET SSE：仅 comment，禁止 data: { ---

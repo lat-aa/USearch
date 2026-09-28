@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# L1：OpenAI 兼容 /v1 网关全量（models/embed/chat/responses/stream/gate/route/rules/memory）。
+# L1：OpenAI 兼容 /v1 网关全量（models/embed/chat/responses/stream/route/rules/memory；gate 已移除）。
 # Usage: API_BIN=./build/api TOKEN=sk-default ./scripts/smoke_v1.sh
 # 无 GGUF：V9–V14/V17/V19–V20 标记 SKIP_NO_GGUF（退出码仍 0）；短路径始终跑。
 set -euo pipefail
@@ -70,7 +70,7 @@ hits=json.load(sys.stdin).get('hits') or []
 assert not any(h.get('id')=='''$DOC_ID''' for h in hits), hits
 " && smoke_pass "V4 search after delete" || smoke_bad "V4 search gone" "still present"
 
-# ========== L1-C route / rules / gate ==========
+# ========== L1-C route / rules ==========
 route=$(curl -fsS --max-time 30 "${AUTH[@]}" "${JSON[@]}" \
   -d '{"task":"refactor auth concurrency","files":["a.cpp"],"hints":["quality"]}' \
   "$SMOKE_BASE/v1/route")
@@ -99,14 +99,7 @@ d=json.load(sys.stdin)
 assert 'rules' in d and isinstance(d['rules'], list)
 " && smoke_pass "V7 POST v1/rules" || smoke_bad "V7 POST rules" "$(echo "$prules"|head -c200)"
 
-ghttp=$(curl -fsS --max-time 120 "${AUTH[@]}" "${JSON[@]}" \
-  -d '{"task":"how to name a C++ flag without underscore"}' "$SMOKE_BASE/v1/gate")
-echo "$ghttp" | python3 -c "
-import sys,json
-d=json.load(sys.stdin)
-assert d.get('status') in ('answered','pack','refuse'), d
-assert 'answerConfidence' in d or 'policyFingerprint' in d or 'fingerprint' in d
-" && smoke_pass "V8 v1/gate" || smoke_bad "V8 gate" "$(echo "$ghttp"|head -c200)"
+smoke_skip "V8 v1/gate" "gate 已移除，改本地 agent"
 
 # ========== L1-E/G 短路径（无 GGUF 也可）==========
 code=$(curl -sS -o "$TMP/noin.txt" -w '%{http_code}' --max-time 15 "${AUTH[@]}" "${JSON[@]}" \
@@ -164,69 +157,11 @@ assert d.get('model')
   echo "$chat2" | python3 -c "import sys,json;assert json.load(sys.stdin)['choices'][0]['message']['content']" \
     && smoke_pass "V10 v1/chat" || smoke_bad "V10 chat" "fail"
 
-  chat3=$(curl -fsS --max-time 90 "${AUTH[@]}" "${JSON[@]}" \
-    -d '{"model":"deepseek-flash","gate":false,"messages":[{"role":"user","content":"hi"}],"max_tokens":16}' \
-    "$SMOKE_BASE/v1/chat/completions")
-  echo "$chat3" | python3 -c "
-import sys,json
-d=json.load(sys.stdin)
-assert d.get('id')!='gate'
-assert d['choices'][0]['message']['content']
-" && smoke_pass "V11 gate:false" || smoke_bad "V11 gate false" "$(echo "$chat3"|head -c200)"
-
-  # V12：先尝试 answered；若未能 answered 则 skip（不红）
-  gans=$(curl -fsS --max-time 120 "${AUTH[@]}" "${JSON[@]}" \
-    -d '{"task":"how to name a C++ flag without underscore"}' "$SMOKE_BASE/v1/gate")
-  gst=$(echo "$gans" | python3 -c "import sys,json;print(json.load(sys.stdin).get('status',''))")
-  if [[ "$gst" = "answered" ]]; then
-    cgate=$(curl -fsS --max-time 60 "${AUTH[@]}" "${JSON[@]}" \
-      -d '{"messages":[{"role":"user","content":"how to name a C++ flag without underscore"}],"max_tokens":16}' \
-      "$SMOKE_BASE/v1/chat/completions")
-    echo "$cgate" | python3 -c "
-import sys,json
-d=json.load(sys.stdin)
-assert d.get('id')=='gate' and d.get('object')=='chat.completion'
-assert d.get('gate',{}).get('status')=='answered'
-assert d['choices'][0]['message']['content']
-" && smoke_pass "V12 chat gate short-circuit" || smoke_bad "V12 short-circuit" "fail"
-
-    rgate=$(curl -fsS --max-time 60 "${AUTH[@]}" "${JSON[@]}" \
-      -d '{"input":"how to name a C++ flag without underscore","max_output_tokens":16}' \
-      "$SMOKE_BASE/v1/responses")
-    echo "$rgate" | python3 -c "
-import sys,json
-d=json.load(sys.stdin)
-assert d.get('id')=='gate' and d.get('object')=='response'
-assert d['output'][0]['content'][0]['type']=='output_text'
-" && smoke_pass "V17 responses gate short-circuit" || smoke_bad "V17 short-circuit" "fail"
-  else
-    smoke_skip "V12 chat gate short-circuit" "gate status=$gst (need answered)"
-    smoke_skip "V17 responses gate short-circuit" "gate status=$gst"
-  fi
-
-  # V13：conflict → refuse/pack 后 chat 不应 id=gate answered
-  curl -fsS --max-time 60 "${AUTH[@]}" "${JSON[@]}" \
-    -d '{"docs":[{"id":"conflict-v1","text":"use foo_bar please"}]}' \
-    "$SMOKE_BASE/v1/upsert" >/dev/null || true
-  gconf=$(curl -fsS --max-time 120 "${AUTH[@]}" "${JSON[@]}" \
-    -d '{"task":"add foo_bar flag to encoder"}' "$SMOKE_BASE/v1/gate")
-  echo "$gconf" | python3 -c "
-import sys,json
-d=json.load(sys.stdin)
-assert d.get('status') in ('refuse','pack'), d
-assert d.get('status')!='answered'
-" && smoke_pass "V13 gate conflict" || smoke_bad "V13 conflict" "$(echo "$gconf"|head -c200)"
-  cpack=$(curl -fsS --max-time 90 "${AUTH[@]}" "${JSON[@]}" \
-    -d '{"messages":[{"role":"user","content":"add foo_bar flag to encoder"}],"max_tokens":16}' \
-    "$SMOKE_BASE/v1/chat/completions")
-  echo "$cpack" | python3 -c "
-import sys,json
-d=json.load(sys.stdin)
-assert d.get('id')!='gate' or d.get('gate',{}).get('status')!='answered'
-assert d['choices'][0]['message']['content']
-" && smoke_pass "V13 chat after pack/refuse" || smoke_bad "V13 chat pack" "fail"
-  curl -fsS --max-time 30 "${AUTH[@]}" "${JSON[@]}" \
-    -d '{"ids":["conflict-v1"]}' "$SMOKE_BASE/v1/delete" >/dev/null || true
+  smoke_skip "V11 gate:false" "gate 已移除"
+  smoke_skip "V12 chat gate short-circuit" "gate 已移除"
+  smoke_skip "V17 responses gate short-circuit" "gate 已移除"
+  smoke_skip "V13 gate conflict" "gate 已移除"
+  smoke_skip "V13 chat after pack/refuse" "gate 已移除"
 
   chat4=$(curl -fsS --max-time 90 "${AUTH[@]}" "${JSON[@]}" \
     -d '{"model":"deepseek-flash","temperature":0.1,"messages":[{"role":"user","content":"hi"}],"max_tokens":8}' \

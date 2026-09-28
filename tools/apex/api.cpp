@@ -526,43 +526,41 @@ expected_gt<Config> Config::load(fs::path const& path) {
     if (!asString(d["lexicon"], c.decide.lexicon))
         return failType("decide.lexicon must be string");
 
-    auto* gateTbl = root["gate"].as_table();
-    if (!gateTbl)
-        return out.failed("config gate must be table");
-    char const* gateKeys[] = {"threshold", "l2", "cachek", "reflect", "minevid",
-                              "wevid", "wself", "packtok", "minlen"};
-    for (char const* key : gateKeys) {
-        if (!gateTbl->contains(key))
-            return out.failed("config gate missing required key");
+    // [upstream] / [agent] / [cache] / [retrieval]：可选段，缺省用结构体默认值
+    if (auto* up = root["upstream"].as_table()) {
+        if (auto v = (*up)["base_url"].value<std::string>())
+            c.upstream.base = *v;
+        if (auto v = (*up)["key_env"].value<std::string>())
+            c.upstream.keyenv = *v;
     }
-    toml::table& g = *gateTbl;
-    if (!asF64(g["threshold"], f64))
-        return failType("gate.threshold must be number");
-    c.gate.threshold = static_cast<float>(f64);
-    if (!asF64(g["l2"], f64))
-        return failType("gate.l2 must be number");
-    c.gate.l2 = static_cast<float>(f64);
-    if (!asI64(g["cachek"], i64) || i64 <= 0)
-        return failType("gate.cachek must be > 0");
-    c.gate.cachek = static_cast<std::size_t>(i64);
-    if (!asI64(g["reflect"], i64) || i64 < 0 || i64 > 2)
-        return failType("gate.reflect must be 0..2");
-    c.gate.reflect = static_cast<int>(i64);
-    if (!asF64(g["minevid"], f64))
-        return failType("gate.minevid must be number");
-    c.gate.minevid = static_cast<float>(f64);
-    if (!asF64(g["wevid"], f64))
-        return failType("gate.wevid must be number");
-    c.gate.wevid = static_cast<float>(f64);
-    if (!asF64(g["wself"], f64))
-        return failType("gate.wself must be number");
-    c.gate.wself = static_cast<float>(f64);
-    if (!asI64(g["packtok"], i64) || i64 <= 0)
-        return failType("gate.packtok must be > 0");
-    c.gate.packtok = static_cast<std::size_t>(i64);
-    if (!asI64(g["minlen"], i64) || i64 <= 0)
-        return failType("gate.minlen must be > 0");
-    c.gate.minlen = static_cast<std::size_t>(i64);
+    if (auto* ag = root["agent"].as_table()) {
+        if (auto v = (*ag)["max_tool_rounds"].value<std::int64_t>() ; v && *v >= 0)
+            c.agent.maxRounds = static_cast<std::size_t>(*v);
+        if (auto v = (*ag)["token_budget_ratio"].value<double>())
+            c.agent.tokenBudget = static_cast<float>(*v);
+        if (auto v = (*ag)["enable_fuse"].value<bool>())
+            c.agent.enableFuse = *v;
+        if (auto v = (*ag)["fuse_fail_threshold"].value<std::int64_t>() ; v && *v >= 0)
+            c.agent.fuseFail = static_cast<std::size_t>(*v);
+        if (auto v = (*ag)["fuse_recovery_seconds"].value<std::int64_t>() ; v && *v >= 0)
+            c.agent.fuseRecover = static_cast<std::uint32_t>(*v);
+    }
+    if (auto* ca = root["cache"].as_table()) {
+        if (auto v = (*ca)["enable_l1"].value<bool>())
+            c.cache.enableL1 = *v;
+        if (auto v = (*ca)["l1_ttl_seconds"].value<std::int64_t>() ; v && *v >= 0)
+            c.cache.l1Ttl = static_cast<std::uint32_t>(*v);
+        if (auto v = (*ca)["enable_l2"].value<bool>())
+            c.cache.enableL2 = *v;
+        if (auto v = (*ca)["l2_similarity_threshold"].value<double>())
+            c.cache.l2Sim = static_cast<float>(*v);
+    }
+    if (auto* rt = root["retrieval"].as_table()) {
+        if (auto v = (*rt)["rule_weight_multiplier"].value<double>())
+            c.retrieval.ruleWeight = static_cast<float>(*v);
+        if (auto v = (*rt)["top_k"].value<std::int64_t>() ; v && *v > 0)
+            c.retrieval.topK = static_cast<std::size_t>(*v);
+    }
 
     if (c.gguf.empty() || c.listen.empty() || c.index.empty() || c.base.empty() || c.knowledge.empty() ||
         c.rules.empty() || c.workspace.empty() || c.pooling.empty())
