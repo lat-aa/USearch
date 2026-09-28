@@ -154,8 +154,9 @@ jobs:
             -D USEARCH_BUILD_TEST_CPP=1 \
             -D USEARCH_BUILD_FUZZ=ON \
             -D USEARCH_SANITIZE_DEBUG=OFF
-          cmake --build build --target fuzz_index -j"$(nproc)"
+          cmake --build build --target fuzz_index fuzz_format -j"$(nproc)"
           build/fuzz_index fuzz/corpus -max_total_time=60 -timeout=10
+          build/fuzz_format -max_total_time=60 -timeout=10
 
   # PR 吞吐门禁：与 performance.yml 同地板；相对 cpp/perfhist.jsonl 末行防漂移
   perf_gate:

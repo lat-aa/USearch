@@ -393,6 +393,22 @@ USEARCH_EXPORT size_t usearch_search(                                         //
     usearch_key_t* keys, usearch_distance_t* distances, usearch_error_t* error);
 
 /**
+ *  @brief  多查询并行 kANN：布局与 C++ `search_batch` 一致。
+ *  @param[in] queries 连续查询向量，行主序 `[q0..., q1..., ...]`，每行 dimensions 个标量。
+ *  @param[in] queries_count 查询条数。
+ *  @param[in] query_kind 查询向量标量类型。
+ *  @param[in] count 每查询 top-k。
+ *  @param[out] keys 长度至少 `queries_count * count`；行 `i` 从 `i * count` 起。
+ *  @param[out] distances 同上布局。
+ *  @param[out] counts 每查询实际命中数，长度 `queries_count`；可为 NULL（忽略）。
+ *  @return 全部查询的命中总数（各行 counts 之和）；出错时为 0 且 `*error` 非空。
+ */
+USEARCH_EXPORT size_t usearch_search_batch(                                   //
+    usearch_index_t index,                                                    //
+    void const* queries, size_t queries_count, usearch_scalar_kind_t query_kind, size_t count, //
+    usearch_key_t* keys, usearch_distance_t* distances, size_t* counts, usearch_error_t* error);
+
+/**
  *  @brief  Performs k-Approximate Nearest Neighbors (kANN) Search for closest vectors to query,
  *          predicated on a custom function that returns `true` for vectors to be included.
  *

@@ -15,9 +15,17 @@ if (USEARCH_BUILD_FUZZ)
     setup_target(fuzz_index)
     target_compile_options(fuzz_index PRIVATE -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
     target_link_options(fuzz_index PRIVATE -fsanitize=fuzzer,address,undefined)
-    # 覆盖 setup_target 里可能叠上的 TSan/独占 ASAN，保证 fuzzer 链接集完整。
+
+    # 文件头/metadata 解析专用 harness（不 load 整图）
+    add_executable(fuzz_format fuzz_format.cpp)
+    setup_target(fuzz_format)
+    target_compile_options(fuzz_format PRIVATE -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
+    target_link_options(fuzz_format PRIVATE -fsanitize=fuzzer,address,undefined)
+
     if (USEARCH_BUILD_TEST_CPP)
         add_test(NAME fuzz_index_smoke COMMAND fuzz_index -max_total_time=20 -timeout=5)
         set_tests_properties(fuzz_index_smoke PROPERTIES LABELS "fuzz;memory" TIMEOUT 120)
+        add_test(NAME fuzz_format_smoke COMMAND fuzz_format -max_total_time=20 -timeout=5)
+        set_tests_properties(fuzz_format_smoke PROPERTIES LABELS "fuzz;memory;format" TIMEOUT 120)
     endif ()
 endif ()

@@ -136,6 +136,30 @@ search_result_t search_(index_dense_t* index, void const* vector, scalar_kind_t 
     }
 }
 
+using search_batch_result_t = typename index_dense_t::search_batch_result_t;
+
+search_batch_result_t search_batch_(index_dense_t* index, void const* queries, size_t queries_count, scalar_kind_t kind,
+                                    size_t wanted) {
+    switch (kind) {
+    case scalar_kind_t::f64_k:
+        return index->search_batch((f64_t const*)queries, queries_count, wanted);
+    case scalar_kind_t::f32_k:
+        return index->search_batch((f32_t const*)queries, queries_count, wanted);
+    case scalar_kind_t::bf16_k:
+        return index->search_batch((bf16_t const*)queries, queries_count, wanted);
+    case scalar_kind_t::f16_k:
+        return index->search_batch((f16_t const*)queries, queries_count, wanted);
+    case scalar_kind_t::i8_k:
+        return index->search_batch((i8_t const*)queries, queries_count, wanted);
+    case scalar_kind_t::u8_k:
+        return index->search_batch((u8_t const*)queries, queries_count, wanted);
+    case scalar_kind_t::b1x8_k:
+        return index->search_batch((b1x8_t const*)queries, queries_count, wanted);
+    default:
+        return search_batch_result_t{}.failed("Unknown scalar kind!");
+    }
+}
+
 extern "C" {
 
 USEARCH_EXPORT char const* usearch_version(void) {
@@ -441,6 +465,39 @@ USEARCH_EXPORT size_t usearch_search(                                           
     }
 
     return result.dump_to(found_keys, found_distances, results_limit);
+}
+
+USEARCH_EXPORT size_t usearch_search_batch(                                   //
+    usearch_index_t index,                                                    //
+    void const* queries, size_t queries_count, usearch_scalar_kind_t query_kind, size_t count, //
+    usearch_key_t* keys, usearch_distance_t* distances, size_t* counts, usearch_error_t* error) {
+
+    USEARCH_ASSERT(index && queries && keys && distances && error && "Missing arguments");
+    if (!queries_count || !count)
+        return 0;
+
+    search_batch_result_t batch =
+        search_batch_(reinterpret_cast<index_dense_t*>(index), queries, queries_count, scalar_kind_to_cpp(query_kind),
+                      count);
+    if (!batch) {
+        *error = batch.error.release();
+        return 0;
+    }
+
+    size_t total = 0;
+    for (size_t q = 0; q != queries_count; ++q) {
+        size_t n = (q < batch.counts.size()) ? batch.counts[q] : 0;
+        if (counts)
+            counts[q] = n;
+        total += n;
+        size_t base = q * count;
+        for (size_t j = 0; j != count; ++j) {
+            size_t src = base + j;
+            keys[src] = (src < batch.keys.size()) ? batch.keys[src] : 0;
+            distances[src] = (src < batch.distances.size()) ? batch.distances[src] : 0;
+        }
+    }
+    return total;
 }
 
 USEARCH_EXPORT size_t usearch_filtered_search(                                 //

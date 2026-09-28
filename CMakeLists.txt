@@ -32,6 +32,8 @@ option(USEARCH_USE_JEMALLOC "Use JeMalloc for faster memory allocations" OFF)
 option(USEARCH_BUILD_TEST_CPP "Compile a native unit test in C++" ${USEARCH_IS_MAIN_PROJECT})
 option(USEARCH_BUILD_BENCH_CPP "Compile a native benchmark in C++" ${USEARCH_IS_MAIN_PROJECT})
 option(USEARCH_BUILD_API "Compile the C++ HTTP/MCP api binary" OFF)
+# C 绑定（c/usearch.h + c/lib.cpp）；主工程默认开，供 FFI / test_capi
+option(USEARCH_BUILD_C_API "Build C API static library" ${USEARCH_IS_MAIN_PROJECT})
 
 # Includes
 set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake ${CMAKE_MODULE_PATH})
@@ -398,6 +400,19 @@ endif ()
 # Must be called before "add_subdirectory()". See
 # https://stackoverflow.com/questions/30250494/ctest-not-detecting-tests.
 enable_testing()
+
+# C API：静态库，头文件在 c/；与 header-only 核心并列。
+if (USEARCH_BUILD_C_API)
+    add_library(usearch_c STATIC c/lib.cpp)
+    setup_core_target(usearch_c)
+    target_include_directories(
+        usearch_c
+        PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/c>
+               $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+               $<INSTALL_INTERFACE:${USEARCH_INCLUDE_INSTALL_DIR}>
+    )
+    target_link_libraries(usearch_c PUBLIC ${USEARCH_TARGET_NAME})
+endif ()
 
 # cpp/：bench + fuzz；tools/apex/：HTTP/MCP 网关（与核心解耦）。
 if (${USEARCH_BUILD_TEST_CPP} OR ${USEARCH_BUILD_BENCH_CPP} OR ${USEARCH_BUILD_FUZZ})

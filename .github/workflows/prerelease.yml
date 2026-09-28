@@ -165,7 +165,7 @@ jobs:
         uses: actions/checkout@v6
       - name: Pull Git submodules
         run: git submodule update --init --recursive
-      - name: Build fuzz_index
+      - name: Build fuzz harnesses
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake clang
@@ -178,9 +178,11 @@ jobs:
             -D USEARCH_SANITIZE_DEBUG=OFF \
             -D USEARCH_ENABLE_ASAN=OFF \
             -D USEARCH_ENABLE_UBSAN=OFF
-          cmake --build build_fuzz --target fuzz_index -j$(nproc)
+          cmake --build build_fuzz --target fuzz_index fuzz_format -j$(nproc)
       - name: Fuzz smoke (60s)
-        run: build_fuzz/fuzz_index -max_total_time=60 -timeout=10 -rss_limit_mb=2048
+        run: |
+          build_fuzz/fuzz_index -max_total_time=60 -timeout=10 -rss_limit_mb=2048
+          build_fuzz/fuzz_format -max_total_time=60 -timeout=10 -rss_limit_mb=2048
 
   test_static:
     name: Static analysis

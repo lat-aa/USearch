@@ -99,11 +99,32 @@ int main() {
         Runtime rt = makeRt();
         std::string task = "hello cache";
         std::string key = std::to_string(api::fnv1a64(task)) + ":" + rt.policyFp;
-        rt.l1[key] = api::L1entry {"cached reply text!!", rt.policyFp};
+        rt.l1[key] = api::L1entry {"cached reply text!!", rt.policyFp, 1};
+        rt.l1tick = 1;
         Gateports ports = makePorts(rt);
         auto out = runGateCore(rt, json {{"task", task}}, ports);
         assert(out["status"] == "answered");
         assert(out["cache"] == "L1");
+        assert(rt.l1[key].tick > 1); // 命中刷新 LRU tick
+    }
+
+    // L1 LRU：超容量驱逐最旧，不整表清空
+    {
+        stubReset();
+        Runtime rt = makeRt();
+        std::string oldest = "key-oldest";
+        rt.l1[oldest] = api::L1entry {"old", "fp", 1};
+        rt.l1tick = 1;
+        for (std::size_t i = 0; i < api::l1cap; ++i) {
+            std::string k = "k" + std::to_string(i);
+            rt.l1[k] = api::L1entry {"r", "fp", static_cast<std::uint64_t>(i + 2)};
+            rt.l1tick = i + 2;
+        }
+        assert(rt.l1.size() == api::l1cap + 1);
+        api::l1Insert(rt.l1, rt.l1tick, "fresh-key", "n", "fp");
+        assert(rt.l1.size() == api::l1cap);
+        assert(rt.l1.count(oldest) == 0);
+        assert(rt.l1.count("fresh-key") == 1);
     }
 
     // L2 hit
@@ -149,20 +170,23 @@ int main() {
     }
 
     // mock chat answered + reflect skip
+    // 单条记忆 + Always 政策时 evidence≈0.6；threshold 须 ≤ mixConfidence 才进 answered
     {
         stubReset();
         Runtime rt = makeRt();
+        rt.config.gate.threshold = 0.70f;
         Doc mem;
         mem.id = "m2";
         mem.text = "relevant memory about naming";
         mem.meta = {{"kind", "memory"}};
-        stubSetHits({{mem, 0.1f}});
+        stubSetHits({{mem, 0.05f}});
         stubSetChat(
             R"({"status":"answered","self":0.95,"reply":"full answer about names here","conflicts":[],"missing":[],"pack":[]})");
         Gateports ports = makePorts(rt);
         auto out = runGateCore(rt, json {{"task", "how should I name flags"}}, ports);
         assert(out["status"] == "answered");
         assert(out["reply"].get<std::string>().size() >= 8);
+        assert(rt.l1.size() == 1); // answered 写入 L1
     }
 
     // Turnstats rebuild via noteGate path already covered; exercise rebuildPrompt

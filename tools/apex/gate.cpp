@@ -331,6 +331,8 @@ json runGateCore(Runtime& rt, json const& args, Gateports& ports) {
         std::lock_guard<std::mutex> lock(rt.l1Mutex);
         auto it = rt.l1.find(l1key);
         if (it != rt.l1.end() && it->second.fingerprint == fp) {
+            // 命中刷新 tick，避免热点条目被 LRU 误杀
+            it->second.tick = ++rt.l1tick;
             json out = {{"status", "answered"},
                         {"answerConfidence", 1.0},
                         {"reply", it->second.reply},
@@ -540,9 +542,7 @@ json runGateCore(Runtime& rt, json const& args, Gateports& ports) {
     if (status == "answered" && reply.size() >= g.minlen) {
         {
             std::lock_guard<std::mutex> lock(rt.l1Mutex);
-            if (rt.l1.size() > 256)
-                rt.l1.clear();
-            rt.l1[l1key] = L1entry {reply, fp};
+            l1Insert(rt.l1, rt.l1tick, l1key, reply, fp);
         }
         Doc cacheDoc;
         cacheDoc.id = "cache-" + l1key;
@@ -712,8 +712,9 @@ void workerLoop(Runtime& rt) {
 Runtime::Runtime(Runtime&& other) noexcept
     : root(std::move(other.root)), config(std::move(other.config)), encoder(std::move(other.encoder)),
       store(std::move(other.store)), rules(std::move(other.rules)), policyFp(std::move(other.policyFp)),
-      decider(std::move(other.decider)), l1(std::move(other.l1)),
+      decider(std::move(other.decider)), l1(std::move(other.l1)), l1tick(other.l1tick),
       workerStop(other.workerStop.load()), worker(std::move(other.worker)) {
+    other.l1tick = 0;
     other.workerStop.store(true);
 }
 
@@ -731,6 +732,8 @@ Runtime& Runtime::operator=(Runtime&& other) noexcept {
     {
         std::lock_guard<std::mutex> lock(l1Mutex);
         l1 = std::move(other.l1);
+        l1tick = other.l1tick;
+        other.l1tick = 0;
     }
     workerStop.store(other.workerStop.load());
     worker = std::move(other.worker);

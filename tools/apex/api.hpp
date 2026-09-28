@@ -465,11 +465,31 @@ struct Decider {
 
 expected_gt<Lexicon> loadLexicon(fs::path const& path);
 
-/** L1 精确缓存条目（进程内；键含政策指纹）。 */
+/** L1 精确缓存条目（进程内；键含政策指纹）。tick 越大越新，超容量按 LRU 驱逐。 */
 struct L1entry {
     std::string reply;
     std::string fingerprint;
+    std::uint64_t tick = 0;
 };
+
+/** L1 槽位上限；满则驱逐 tick 最小者，禁止整表 clear。 */
+inline constexpr std::size_t l1cap = 256;
+
+/**
+ * 写入 L1：更新已有键或插入新键；满容且键不存在时踢掉 tick 最小条目。
+ * 调用方须已持有 l1Mutex（或单线程测试）。
+ */
+inline void l1Insert(std::unordered_map<std::string, L1entry>& l1, std::uint64_t& tick, std::string const& key,
+                     std::string reply, std::string const& fp) {
+    while (l1.size() >= l1cap && l1.find(key) == l1.end()) {
+        auto victim = l1.begin();
+        for (auto it = l1.begin(); it != l1.end(); ++it)
+            if (it->second.tick < victim->second.tick)
+                victim = it;
+        l1.erase(victim);
+    }
+    l1[key] = L1entry {std::move(reply), fp, ++tick};
+}
 
 /**
  * 本轮实测计数（进程内）。
@@ -530,6 +550,8 @@ struct Runtime {
     Decider decider;
     std::mutex l1Mutex;
     std::unordered_map<std::string, L1entry> l1;
+    /** 单调时钟；命中/写入时 ++，供 LRU 比较（持 l1Mutex）。 */
+    std::uint64_t l1tick = 0;
     /** 本轮 gate/rules/observe/worker 实测；cost 读出。 */
     Turnstats turn;
     /** Worker 空转等待；observe 入队后 notify，避免固定 400ms 轮询。 */

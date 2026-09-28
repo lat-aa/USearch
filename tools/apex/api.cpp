@@ -12,6 +12,7 @@
  */
 
 #include "api.hpp"
+#include "slim.hpp"
 
 #include <cstdio>
 #include <fstream>
@@ -181,11 +182,12 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
     svr.Post("/v1/gate", [gate, &rt](httplib::Request const& req, httplib::Response& res) {
         if (!gate(req, res))
             return;
-        auto body = json::parse(req.body, nullptr, false);
-        if (body.is_discarded())
+        // 固定 schema：轻量抽取，避免 nlohmann 整树 DOM
+        Slimargs slim = parseSlim(req.body);
+        if (!slim.ok)
             return setJson(res, {{"error", {{"message", "bad json"}}}}, 400);
         try {
-            setJson(res, runGate(rt, body));
+            setJson(res, runGate(rt, slimToJson(slim)));
         } catch (std::exception const& ex) {
             setJson(res, {{"error", {{"message", ex.what()}}}}, 500);
         } catch (...) {
@@ -197,9 +199,10 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
     svr.Post("/v1/route", [gate, &rt](httplib::Request const& req, httplib::Response& res) {
         if (!gate(req, res))
             return;
-        auto body = json::parse(req.body, nullptr, false);
-        if (body.is_discarded())
+        Slimargs slim = parseSlim(req.body);
+        if (!slim.ok)
             return setJson(res, {{"error", {{"message", "bad json"}}}}, 400);
+        json body = slimToJson(slim);
         Decideinput in = decideinputFromJson(body);
         if (in.task.empty())
             return setJson(res, {{"error", {{"message", "task required"}}}}, 400);

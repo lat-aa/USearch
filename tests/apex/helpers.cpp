@@ -3,6 +3,7 @@
  * @brief gate helpers 纯函数单测（无 Runtime / 无 LLM）。
  */
 #include "../../tools/apex/helpers.hpp"
+#include "../../tools/apex/slim.hpp"
 
 #include <cassert>
 #include <cstdio>
@@ -21,6 +22,8 @@ using api::kindIs;
 using api::metaConflicted;
 using api::metaStr;
 using api::parseGateModel;
+using api::parseSlim;
+using api::slimToJson;
 using api::json;
 
 int main() {
@@ -36,6 +39,19 @@ int main() {
 
     assert(parseGateModel("noise {\"status\":\"answered\",\"self\":0.9} tail")["status"] == "answered");
     assert(parseGateModel("not json").empty());
+
+    // parseSlim：固定 schema，未知键跳过，坏 JSON 失败
+    {
+        auto ok = parseSlim(R"({"task":"hello","files":["a.cpp"],"latency":12,"extra":{"x":1}})");
+        assert(ok.ok);
+        assert(ok.task == "hello");
+        assert(ok.files.size() == 1 && ok.files[0] == "a.cpp");
+        assert(ok.latency && *ok.latency == 12);
+        auto j = slimToJson(ok);
+        assert(j["task"] == "hello");
+        assert(!parseSlim("not-json").ok);
+        assert(!parseSlim(R"({"task":)").ok);
+    }
 
     std::string hardName = "names";
     std::vector<std::string const*> hard {&hardName};
