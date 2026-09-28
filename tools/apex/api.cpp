@@ -120,7 +120,10 @@ static bool l1Hit(Runtime& rt, std::string const& key, std::string& payload, std
 static bool l2Hit(Runtime& rt, std::string const& task, std::string& payload, std::string& source) {
     if (task.empty())
         return false;
-    auto q = rt.encoder.embed(task);
+    // 非阻塞：Worker 蒸馏会长期持 encoder 锁；此处忙则跳过 L2，保证 presync 永不被拖慢。
+    auto q = rt.encoder.tryEmbed(task);
+    if (q.empty())
+        return false;
     auto hits = rt.store.search(q, 8);
     float minSim = rt.config.cache.l2Sim;
     for (auto const& [doc, score] : hits) {
@@ -430,6 +433,8 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
     auto chat = [gate, &rt](httplib::Request const& req, httplib::Response& res) {
         if (!gate(req, res))
             return;
+        rt.lastUserMs.store(steadyNowMs(), std::memory_order_relaxed);
+        rt.presyncCalls.fetch_add(1, std::memory_order_relaxed);
         auto body = json::parse(req.body, nullptr, false);
         bool responses = req.path.find("/responses") != std::string::npos;
         if (responses)
@@ -611,6 +616,8 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
     svr.Post("/v1/presync", [gate, &rt](httplib::Request const& req, httplib::Response& res) {
         if (!gate(req, res))
             return;
+        rt.lastUserMs.store(steadyNowMs(), std::memory_order_relaxed);
+        rt.presyncCalls.fetch_add(1, std::memory_order_relaxed);
         auto body = json::parse(req.body, nullptr, false);
         if (body.is_discarded())
             return setJson(res, {{"error", {{"message", "bad json"}}}}, 400);

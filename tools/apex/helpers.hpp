@@ -601,6 +601,24 @@ struct Fuse {
 };
 
 
+/** DeepSeek 档位单价（元/百万 token）；cache_hit 按输入价 ×0.1；peak(高峰) 全价 ×2。
+ *  唯一的定价来源：MCP cost 工具与 /v1 网关追加块都调用它，禁止各写一份。 */
+inline void priceRates(std::string const& model, bool cacheHit, bool peak, double& inPerM, double& outPerM) {
+    if (model.find("pro") != std::string::npos) {
+        inPerM = 2.0;
+        outPerM = 8.0;
+    } else {
+        inPerM = 0.14;
+        outPerM = 0.28;
+    }
+    if (cacheHit)
+        inPerM *= 0.1;
+    if (peak) {
+        inPerM *= 2.0;
+        outPerM *= 2.0;
+    }
+}
+
 // ---- 七块统计渲染（服务端权威；与 scripts/stats.sh 同格式，供三端 hook 注入）----
 
 /** 用 /v1/presync 的字段渲染七块 markdown。缺失字段写「未上报」，禁止用 0 冒充。 */

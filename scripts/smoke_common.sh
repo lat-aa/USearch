@@ -104,13 +104,23 @@ smoke_boot() {
   if [[ "${SMOKE_HASH:-0}" == "1" ]]; then
     sed -i.bak -E "s|^gguf = .*|gguf = \".config/models/MISSING-smoke.gguf\"|" "$SMOKE_ROOT/.config/config.toml"
   fi
-  # SMOKE_BASE_DB：隔离 memory 用例的 sqlite（默认复用仓库库）。须在 copy 之后、boot 之前生效。
-  if [[ -n "${SMOKE_BASE_DB:-}" ]]; then
-    sed -i.bak -E "s|^base = .*|base = \"${SMOKE_BASE_DB}\"|" "$SMOKE_ROOT/.config/config.toml"
+  # 安全隔离：smoke 默认**不碰生产库/索引**（rm index.usearch 会毁掉生产向量！）。
+  # 需要真实库的用例显式 SMOKE_SHARE_STORE=1（此时才允许清仓库索引）。
+  if [[ "${SMOKE_SHARE_STORE:-0}" = "1" ]]; then
+    if [[ -n "${SMOKE_BASE_DB:-}" ]]; then
+      sed -i.bak -E "s|^base = .*|base = \"${SMOKE_BASE_DB}\"|" "$SMOKE_ROOT/.config/config.toml"
+    fi
+    rm -f "$SMOKE_ROOT/.config/index.usearch"
+  else
+    SMOKE_TMP="${TMPDIR:-/tmp}/usearch_smoke_store_${SMOKE_PORT}"
+    mkdir -p "$SMOKE_TMP"
+    [[ -n "${SMOKE_BASE_DB:-}" ]] || SMOKE_BASE_DB="$SMOKE_TMP/store.sqlite"
+    SMOKE_INDEX="$SMOKE_TMP/index.usearch"
+    rm -f "$SMOKE_TMP"/store.sqlite* "$SMOKE_INDEX"
+    sed -i.bak -E "s|^base = .*|base = \"$SMOKE_BASE_DB\"|" "$SMOKE_ROOT/.config/config.toml"
+    sed -i.bak -E "s|^index = .*|index = \"$SMOKE_INDEX\"|" "$SMOKE_ROOT/.config/config.toml"
   fi
   rm -f "$SMOKE_ROOT/.config/config.toml.bak"
-  # 维度变化时旧图会导致 hydrate 卡住/告警；smoke 用干净索引。
-  rm -f "$SMOKE_ROOT/.config/index.usearch"
 
   if [[ -f "$SMOKE_PID_FILE" ]]; then
     smoke_kill_pid "$(cat "$SMOKE_PID_FILE")"

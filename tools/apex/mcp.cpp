@@ -62,22 +62,6 @@ double roundMoney(double x) {
     return std::round(x * 1e6) / 1e6;
 }
 
-/** DeepSeek 档位单价（元 / 百万 token）；cache_hit 按输入价 ×0.1；peak 全价 ×2。 */
-void priceRates(std::string const& model, bool cacheHit, bool peak, double& inPerM, double& outPerM) {
-    if (model.find("pro") != std::string::npos) {
-        inPerM = 2.0;
-        outPerM = 8.0;
-    } else {
-        inPerM = 0.14;
-        outPerM = 0.28;
-    }
-    if (cacheHit)
-        inPerM *= 0.1;
-    if (peak) {
-        inPerM *= 2.0;
-        outPerM *= 2.0;
-    }
-}
 
 std::string priceModelFrom(Decision const& d, std::string const& want) {
     if (want == "pro" || want == "deepseek-v4-pro")
@@ -304,6 +288,11 @@ json callTool(Runtime& rt, std::string const& name, json const& args, Mcpclient 
             doc.text = args.value("text", "");
             if (doc.id.empty())
                 return textResult("id required", true);
+            // 真 bug 修复：默认 kind=memory —— 否则 recall/presync 的 kind=="memory" 过滤会把它当空气。
+            doc.meta = {{"kind", args.value("kind", "memory")}};
+            if (args.contains("meta") && args["meta"].is_object())
+                for (auto const& [k, v] : args["meta"].items())
+                    doc.meta[k] = v;
             auto vector = rt.encoder.embed(doc.text);
             if (error_t err = rt.store.upsert(std::move(doc), vector); err) {
                 char const* msg = err.release();

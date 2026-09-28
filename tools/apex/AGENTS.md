@@ -39,6 +39,19 @@
 | Cursor | `postToolUse` | `{additional_context}`（`scripts/posttool.js` 一次性消费） | ✅ |
 
 红线：**fail-open**（服务端不可达/超时 → 直接放行，绝不阻塞输入）。
+
+## 回合后 Hook（postsync）— 沉淀入队
+
+`scripts/postsync.js`：**只入队**（MCP `observe`，毫秒级）→ 服务端 Worker 异步蒸馏 → SQLite + USearch 双写。
+
+| 客户端 | 事件 | 输入 |
+|--------|------|------|
+| Codex | `Stop` | `transcript_path`（脚本取尾部最后一条 assistant 文本） |
+| Claude | `Stop` | 同上 |
+| Cursor | `afterAgentResponse` | `{text}`（assistant 最终文本，最省） |
+
+红线：① **只入队**，蒸馏永远在 Worker；② **绝不输出** `followup_message`/`decision:block`（防自循环）；③ 幂等（同内容 90s 内只入队一次）；④ fail-open。
+> 注意：Worker 蒸馏走本地模型（T600 ~5-15 tok/s），单条约 20-40s，但**异步**，不影响用户回合。'
 注意：改 `hooks.json` / `.claude/settings.json` 后**需重启客户端**才生效。
 
 ## 三平面（冻结）

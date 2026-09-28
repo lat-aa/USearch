@@ -118,6 +118,8 @@ int serve(Runtime& rt) {
                               {"gate", {{"answered", rt.gateAnswered.load(std::memory_order_relaxed)},
                                         {"pack", rt.gatePack.load(std::memory_order_relaxed)},
                                         {"refuse", rt.gateRefuse.load(std::memory_order_relaxed)}}},
+                              {"hooks", {{"presync", rt.presyncCalls.load(std::memory_order_relaxed)},
+                                          {"observe", rt.observeCalls.load(std::memory_order_relaxed)}}},
                               {"agent", {{"ok", rt.agentOk.load(std::memory_order_relaxed)},
                                         {"delegate", rt.agentDelegate.load(std::memory_order_relaxed)},
                                         {"parsefail", rt.agentParsefail.load(std::memory_order_relaxed)},

@@ -18,7 +18,7 @@ const os = require('os');
 const path = require('path');
 const { URL } = require('url');
 
-const TIMEOUT_MS = Number(process.env.APEX_PRESYNC_TIMEOUT_MS || 800);
+const TIMEOUT_MS = Number(process.env.APEX_PRESYNC_TIMEOUT_MS || 1500);
 const STASH_TTL_MS = 120000;
 
 function readStdin() {
@@ -165,11 +165,13 @@ async function main() {
 
   const ctx = buildInjection(r);
 
+  // 三端都暂存：Cursor 用它做 postToolUse 注入；所有端都用它给 postsync 提供 block（回合后补块）
+  try {
+    fs.writeFileSync(stashPath(raw), JSON.stringify({ ts: Date.now(), ctx, task, block: r.block || '' }), 'utf8');
+  } catch (_) {}
+
   if (client === 'cursor') {
-    // Cursor 此处不能注入：把上下文暂存，交给 postToolUse 注入
-    try {
-      fs.writeFileSync(stashPath(raw), JSON.stringify({ ts: Date.now(), ctx }), 'utf8');
-    } catch (_) {}
+    // Cursor 此处不能注入：上下文交给 postToolUse
     process.stdout.write(JSON.stringify({ continue: true }));
     return;
   }

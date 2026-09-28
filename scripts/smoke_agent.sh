@@ -82,7 +82,7 @@ p=$(agent_field parsefail)
 
 # ---------- A9/A10：observe → 队列 → Worker → memory 双写 ----------
 # 独立 sqlite：docs 从 0 起，Worker 写入可确定观测（不受历史库影响）。
-export SMOKE_BASE_DB="${TMPDIR:-/tmp}/smoke_agent_$.sqlite"
+export SMOKE_BASE_DB="${TMPDIR:-/tmp}/smoke_agent_$$.sqlite"
 rm -f "$SMOKE_BASE_DB"
 boot_mode "" ""
 unset SMOKE_BASE_DB

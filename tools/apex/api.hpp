@@ -254,6 +254,10 @@ struct Encoder {
     /** 加载专用嵌入模型（bge-m3 等）；pooling ∈ cls|mean|lasttoken。失败即回退复用 chat 模型。 */
     error_t openEmbed(fs::path const& gguf, std::uint32_t ctxSize, int gpuLayers, std::string const& pooling);
     std::vector<float> embed(std::string_view text);
+    /** 非阻塞嵌入：锁被占（如 Worker 蒸馏中）时立即返回空，调用方降级。 */
+    std::vector<float> tryEmbed(std::string_view text);
+    /** 实际嵌入实现（调用方须已持锁）。 */
+    std::vector<float> embedImpl(std::string_view text);
     std::string chat(std::string_view system, std::string_view user);
     std::string chat(std::string_view system, std::string_view user, std::function<void(std::string_view)> onDelta);
     std::string chat(json const& messages);
@@ -579,6 +583,9 @@ struct Runtime {
     std::atomic<std::uint64_t> agentDelegate {0};
     std::atomic<std::uint64_t> agentParsefail {0};
     std::atomic<std::uint64_t> agentRounds {0}; ///< 本地 agent 实际执行的工具轮次
+    std::atomic<std::int64_t> lastUserMs {0};   ///< 最近一次用户请求时刻（Worker 让路用）
+    std::atomic<std::uint64_t> presyncCalls {0}; ///< /v1/presync 调用（三端前置 hook）
+    std::atomic<std::uint64_t> observeCalls {0}; ///< MCP observe 入队次数（沉淀）
     std::atomic<std::uint64_t> cacheL1 {0};     ///< L1 精确缓存命中
     std::atomic<std::uint64_t> cacheL2 {0};     ///< L2 语义缓存命中
     Fuse fuse;                                  ///< 本地 agent 解析熔断

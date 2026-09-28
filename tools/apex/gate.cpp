@@ -192,6 +192,7 @@ json runObserve(Runtime& rt, json const& args) {
         return {{"ok", false}, {"error", msg ? msg : "enqueue failed"}};
     }
     // 入队即唤醒，避免 Worker 空转到满 400ms
+    rt.observeCalls.fetch_add(1, std::memory_order_relaxed);
     noteQueued(rt, id);
     rt.workerCv.notify_one();
     return {{"ok", true}, {"id", id}, {"status", "pending"}};
@@ -232,6 +233,13 @@ void workerLoop(Runtime& rt) {
         // 有任务：处理 → 再 claim；empty 或 stop 时条件为假，结构上不可能空转
         do {
             Queuerow row = std::move(claimed.result);
+            // 让路：最近 2s 内有用户请求时先等（蒸馏与 /v1 共用 encoder 锁，避免阻塞用户）
+            for (int w = 0; w < 20; ++w) {
+                std::int64_t const last = rt.lastUserMs.load(std::memory_order_relaxed);
+                if (last == 0 || steadyNowMs() - last >= 2000)
+                    break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            }
             try {
                 json const& p = row.payload;
                 std::string title = "observation";
@@ -251,7 +259,7 @@ void workerLoop(Runtime& rt) {
                 std::string distilled;
                 bool didChat = false;
                 try {
-                    Encoderguard guard(rt.encoder, 0.0f, 512);
+                    Encoderguard guard(rt.encoder, 0.0f, 160); // 记忆摘要不需要 512 token（省 GPU 时间）
                     distilled = rt.encoder.chat(kSys, user);
                     distilled = stripThink(std::move(distilled));
                     didChat = !distilled.empty();

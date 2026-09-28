@@ -72,7 +72,7 @@ NumKong 单元门禁（与 CI `quality.yml` / Ubuntu GCC 对齐）：见 `CONTRI
 |----|------|------|-----|
 | L0 | `scripts/smoke_mcp.sh` | MCP 握手 / Auth / GET·POST SSE / `tools/list`（含 Codex 别名） | prerelease |
 | L1 | `scripts/smoke_v1.sh` | `/v1` models·embed·memory·route·rules·chat·responses·流式·负向 | prerelease（无 GGUF 时生成类 SKIP） |
-| Hooks | `scripts/smoke_hooks.js` | 三端 presync/posttool 契约 + fail-open（7 例） | prerelease |
+| Hooks | `scripts/smoke_hooks.js` | 三端 presync/posttool/postsync 契约 + 幂等 + 防自循环 + fail-open（12 例） | prerelease |
 | L1b | `scripts/smoke_agent.sh` | 本地 agent ok/delegate/truncated 三路径 + 工具循环 + L1 缓存 + observe→Worker | prerelease（确定性，无 GGUF/上游 key） |
 | L2 | `scripts/smoke_apex.sh` | rules→decide→cost→observe→aliases→`stats.sh` | nightly |
 | L3 | `scripts/test_hooks.js` | `injectmodel.js`（实际模型上报；`presync.js` gate 已移除） | prerelease |

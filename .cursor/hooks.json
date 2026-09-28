@@ -15,6 +15,11 @@
       {
         "command": "node scripts/injectmodel.js"
       }
+    ],
+    "afterAgentResponse": [
+      {
+        "command": "node scripts/postsync.js"
+      }
     ]
   }
 }

@@ -242,6 +242,17 @@ error_t Encoder::openEmbed(fs::path const& gguf, std::uint32_t ctxSize, int gpuL
 
 std::vector<float> Encoder::embed(std::string_view text) {
     std::lock_guard<std::mutex> lock(mutex);
+    return embedImpl(text);
+}
+
+std::vector<float> Encoder::tryEmbed(std::string_view text) {
+    std::unique_lock<std::mutex> lock(mutex, std::try_to_lock);
+    if (!lock.owns_lock())
+        return {}; // 忙：不阻塞，交给调用方降级
+    return embedImpl(text);
+}
+
+std::vector<float> Encoder::embedImpl(std::string_view text) {
     llama_model* const m = embedModel ? embedModel : model;
     llama_context* const c = embedCtx ? embedCtx : c;
     if (!m || !c)
