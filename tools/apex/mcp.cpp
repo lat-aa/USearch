@@ -194,6 +194,7 @@ json toolDefs() {
 
 json callTool(Runtime& rt, std::string const& name, json const& args, Mcpclient const& client) {
     Turnscope scope;
+    turnSnap(rt);
     auto textResult = [](std::string const& text, bool error = false) {
         return json{{"content", json::array({{{"type", "text"}, {"text", text}}})}, {"isError", error}};
     };

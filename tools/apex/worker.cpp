@@ -24,22 +24,54 @@ bool userHot(Runtime const& rt) {
 }
 } // namespace
 
-void Lastcall::put(std::uint64_t in, std::uint64_t out, std::string rep, std::string mdl, std::string src, bool isReal,
-                   std::int64_t stamp) {
+void Lastcall::put(Turncall const& tc) {
     std::lock_guard<std::mutex> lock(mutex);
-    inTok = in;
-    outTok = out;
-    reply = std::move(rep);
-    model = std::move(mdl);
-    source = std::move(src);
-    real = isReal;
-    ts = stamp;
+    c = tc;
 }
 
 json Lastcall::toJson() {
     std::lock_guard<std::mutex> lock(mutex);
-    return {{"inTok", inTok}, {"outTok", outTok}, {"reply", reply}, {"replyTrunc", truncChars(reply, 200)},
-            {"model", model}, {"source", source}, {"ts", ts},       {"real", real}};
+    return {
+        {"inTok", c.inTok},   {"outTok", c.outTok},     {"reply", c.reply}, {"replyTrunc", truncChars(c.reply, 200)},
+        {"model", c.model},   {"source", c.source},     {"real", c.real},   {"wallMs", c.wallMs},
+        {"saved", c.saved},   {"upstream", c.upstream}, {"chats", c.chats}, {"distills", c.distills},
+        {"embeds", c.embeds}, {"searches", c.searches}, {"hits", c.hits},   {"tools", c.tools}};
+}
+
+void turnSnap(Runtime& rt) {
+    Turnstats& t = activeTurn(rt);
+    std::lock_guard<std::mutex> lock(t.mutex);
+    t.hasSnap = true;
+    t.snapL1 = rt.cacheL1.load(std::memory_order_relaxed);
+    t.snapL2 = rt.cacheL2.load(std::memory_order_relaxed);
+    t.snapOk = rt.agentOk.load(std::memory_order_relaxed);
+    t.snapUp = rt.upstreamCalls.load(std::memory_order_relaxed);
+    t.snapChats = rt.encoder.chatCalls.load(std::memory_order_relaxed);
+    t.snapDistills = rt.encoder.distillCalls.load(std::memory_order_relaxed);
+    t.snapEmbeds = rt.encoder.embedCalls.load(std::memory_order_relaxed);
+    t.snapSearches = rt.store.searches.load(std::memory_order_relaxed);
+    t.snapHits = rt.store.hits.load(std::memory_order_relaxed);
+    t.snapTools = rt.agentRounds.load(std::memory_order_relaxed);
+}
+
+Turncall turnDelta(Runtime& rt) {
+    Turnstats& t = activeTurn(rt);
+    std::lock_guard<std::mutex> lock(t.mutex);
+    Turncall d;
+    if (!t.hasSnap)
+        return d;
+    auto const sub = [](std::uint64_t now, std::uint64_t base) { return now > base ? now - base : 0; };
+    d.saved = sub(rt.cacheL1.load(std::memory_order_relaxed) + rt.cacheL2.load(std::memory_order_relaxed) +
+                      rt.agentOk.load(std::memory_order_relaxed),
+                  t.snapL1 + t.snapL2 + t.snapOk);
+    d.upstream = sub(rt.upstreamCalls.load(std::memory_order_relaxed), t.snapUp);
+    d.chats = sub(rt.encoder.chatCalls.load(std::memory_order_relaxed), t.snapChats);
+    d.distills = sub(rt.encoder.distillCalls.load(std::memory_order_relaxed), t.snapDistills);
+    d.embeds = sub(rt.encoder.embedCalls.load(std::memory_order_relaxed), t.snapEmbeds);
+    d.searches = sub(rt.store.searches.load(std::memory_order_relaxed), t.snapSearches);
+    d.hits = sub(rt.store.hits.load(std::memory_order_relaxed), t.snapHits);
+    d.tools = sub(rt.agentRounds.load(std::memory_order_relaxed), t.snapTools);
+    return d;
 }
 
 Turnscope::Turnscope() : prev(tlsTurn) { tlsTurn = &local; }

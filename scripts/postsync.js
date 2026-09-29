@@ -149,11 +149,13 @@ function postMcp(base, token, name, args) {
   });
 }
 
-function getLastcall(base, token) {
+/** 取回合账本三行：since=本轮起点（epoch ms）由服务端做归因，避免贴到别的请求。 */
+function getTail(base, token, since) {
   return new Promise((resolve) => {
     let url;
     try {
-      url = new URL('/v1/lastcall', base.endsWith('/') ? base : base + '/');
+      url = new URL('/v1/tail', base.endsWith('/') ? base : base + '/');
+      if (since) url.searchParams.set('since', String(since));
     } catch (_) {
       return resolve(null);
     }
@@ -241,26 +243,28 @@ function getLastcall(base, token) {
     } catch (_) {}
   }
   // 回合后当轮补块：presync 已注入输入侧块（模型照抄），这里补上"只有回合结束才知道"的
-  // 真值：实际输入 token / 输出 token / 主 LLM api 调用账本（省下 vs 实调）。默认开（APEX_POSTSYNC_BLOCK=0 关）。
+  // 真值：/v1/tail 的账本三行（本次 prompt/输出 token + 本轮/累计省与实调 + 两模型用量）。默认开（APEX_POSTSYNC_BLOCK=0 关）。
   try {
     const wantBlock = process.env.APEX_POSTSYNC_BLOCK !== '0';
     const block = typeof stash.block === 'string' ? stash.block : '';
     if (wantBlock) {
-      // ① 输出侧：只有回合结束才知道的真值（输入/输出 token + 输出内容）
-      const lc = await getLastcall(base, token);
-      const hasCall = !!(lc && (lc.inTok || lc.outTok || lc.reply));
+      // ① 输出侧：只有当轮账本（服务端渲染的三行）。attributed=false（账本不属于本轮）时不贴数，
+      //    只说明「未上报」——宁缺勿错，避免把别的线程/后台请求的 token 贴成本轮。
+      const lc = client === 'cursor' ? null : await getTail(base, token, stash.ts);
       const outLines = [];
-      if (hasCall) {
-        outLines.push(
-          '📝 输入 ' + (lc.inTok || 0) + ' tok · 输出 ' + (lc.outTok || 0) + ' tok' + (lc.real === true ? '' : '(est)')
-        );
-        outLines.push(
-          '♻️ 省主 LLM api **' + (lc.saved || 0) + '** 次，主 LLM api 实际调用 **' + (lc.upstream || 0) + '** 次'
-        );
+      if (client === 'cursor') {
+        // Cursor 走纯 MCP（不经 /v1），token/调用账本无从得知；只在真的补块时说明「未上报」。
+        // 服务端不可达（block 为空）时不发任何东西，保持 fail-open 静默。
+        if (block) outLines.push('📝 本回合为 Cursor 纯 MCP（未经 /v1）——未上报；累计见 /ready.v1.local');
+      }
+      if (lc && lc.attributed === true && typeof lc.lines === 'string' && lc.lines.trim()) {
+        outLines.push(lc.lines.trim());
+      } else if (lc) {
+        outLines.push('📝 本轮账本未归因（未经 /v1 或已被别的请求覆盖）——未上报；累计见 /ready.v1.local');
       }
       // ② 输入侧：hook 注入的整块（模型漏抄时才补）
       const hasBlock = answer.includes('⚡ 规则');
-      const hasOut = answer.includes('♻️ 省主 LLM');
+      const hasOut = answer.includes('♻️ 本轮');
       const addBlock = !hasBlock && !!block;
       const addOut = !hasOut && outLines.length > 0;
       if (addBlock || addOut) {

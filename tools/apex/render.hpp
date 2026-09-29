@@ -767,7 +767,7 @@ inline std::string renderBlock(json const& in) {
 
     std::ostringstream o;
     o << "⚡ 规则 **" << matched << "**/**" << total << "** 命中 · token **" << naive << estSuffix << " → " << optimized
-      << estSuffix << "** · **省 " << pctBuf << "%**  \n";
+      << estSuffix << "** · **省 " << pctBuf << "%**（仅规则/知识注入）  \n";
     o << "🔖 决策 " << str("nanbeige", "未上报") << " · USearch " << str("usearch", "未上报") << " · SQLite "
       << str("sqlite", "未上报") << str("stackExtra") << "  \n";
     std::string const route = str("route"), routeNote = str("routeNote");

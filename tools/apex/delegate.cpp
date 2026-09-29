@@ -19,7 +19,12 @@ std::string delegateToUpstream(Runtime& rt, json const& messages, bool responses
     // 测试 seam：SMOKE_UPSTREAM_FIXTURE 设置时短路网络，返回固定文本（无 key 也可跑）。
     if (char const* uf = std::getenv("SMOKE_UPSTREAM_FIXTURE"); uf && *uf) {
         std::string reply = uf;
-        rt.lastCall.put(0, 0, reply, model, "upstream", false, steadyNowMs());
+        Turncall ftc = turnDelta(rt);
+        ftc.reply = reply;
+        ftc.model = model;
+        ftc.source = "upstream";
+        ftc.wallMs = epochMs();
+        rt.lastCall.put(ftc);
         writeReply(res, "upstream", model, reply, responses, stream, json::object());
         return reply;
     }
@@ -129,8 +134,15 @@ std::string delegateToUpstream(Runtime& rt, json const& messages, bool responses
         if (!tail.empty())
             reply += tail;
     }
-    rt.lastCall.put(usage.value("prompt_tokens", std::uint64_t{0}), usage.value("completion_tokens", std::uint64_t{0}),
-                    reply, model, "upstream", !usage.empty(), steadyNowMs());
+    Turncall tc = turnDelta(rt);
+    tc.inTok = usage.value("prompt_tokens", std::uint64_t{0});
+    tc.outTok = usage.value("completion_tokens", std::uint64_t{0});
+    tc.reply = reply;
+    tc.model = model;
+    tc.source = "upstream";
+    tc.real = !usage.empty();
+    tc.wallMs = epochMs();
+    rt.lastCall.put(tc);
     writeReply(res, "upstream", model, reply, responses, stream, usage);
     return reply;
 }

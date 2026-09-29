@@ -228,7 +228,7 @@ if [ -n "$Cache" ]; then
 fi
 
 # Markdown 聊天会吞单换行：行尾两空格强制硬换行
-printf '%s 规则 **%s**/**%s** 命中 · token **%s → %s** · **省 %s%%**  \n' \
+printf '%s 规则 **%s**/**%s** 命中 · token **%s → %s** · **省 %s%%**（仅规则/知识注入）  \n' \
   "$ic_stat" "$Matched" "$Total" "$Naive" "$Optimized" "$savedPct"
 printf '%s 决策 %s · USearch %s · SQLite %s%s  \n' \
   "$ic_stack" "$Nanbeige" "$USearch" "$Sqlite" "$stackExtra"

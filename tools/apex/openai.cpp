@@ -44,14 +44,41 @@ void writeReply(httplib::Response& res, std::string const& id, std::string const
     replyText(res, id, model, payload, responses, usage);
 }
 
-/** 主 LLM api 调用账本（累计真值）：省下的 L1 缓存 + L2 缓存 + 本地直答，以及真正打到上游的次数。
- *  前三个计数即 /ready 的 v1.agent.{cache_l1,cache_l2,ok}，末一个即 v1.agent.upstream，不另立口径。 */
-static std::string savedCallsLine(Runtime& rt) {
+/** 缓存回放：剔掉缓存里那三行旧账本（它属于写入那一轮，不是本轮），空出位置给本轮真值。 */
+static void refreshTail(Runtime& rt, std::string& payload) {
+    (void)rt;
+    std::size_t const i = payload.find("\n📝 本次 prompt");
+    if (i != std::string::npos)
+        payload.erase(i);
+}
+
+/** 回合调用账本三行（全真值，回复与 hook 共用同一份渲染）：
+ *  📝 本次 prompt/输出 token（llama usage，含历史会话——与上面「规则 token」口径不同）；
+ *  ♻️ 省/实调主 LLM：本轮 = 本请求快照差值，累计 = 进程累计；
+ *  🧠 本地两模型实际用量：Nanbeige（直答/工具轮/蒸馏）与 bge-m3（嵌入/检索/命中）。
+ *  所有计数都取自 /ready 同源原子量，禁止另立口径。 */
+static std::string callTailLines(Runtime& rt, std::uint64_t inTok, std::uint64_t outTok, bool real, Turncall const& d) {
     std::uint64_t const l1 = rt.cacheL1.load(std::memory_order_relaxed);
     std::uint64_t const l2 = rt.cacheL2.load(std::memory_order_relaxed);
     std::uint64_t const ok = rt.agentOk.load(std::memory_order_relaxed);
-    return "\n♻️ 省主 LLM api **" + std::to_string(l1 + l2 + ok) + "** 次，主 LLM api 实际调用 **" +
-           std::to_string(rt.upstreamCalls.load(std::memory_order_relaxed)) + "** 次";
+    std::uint64_t const up = rt.upstreamCalls.load(std::memory_order_relaxed);
+    std::uint64_t const chats = rt.encoder.chatCalls.load(std::memory_order_relaxed);
+    std::uint64_t const distills = rt.encoder.distillCalls.load(std::memory_order_relaxed);
+    std::uint64_t const embeds = rt.encoder.embedCalls.load(std::memory_order_relaxed);
+    std::uint64_t const searches = rt.store.searches.load(std::memory_order_relaxed);
+    std::uint64_t const hits = rt.store.hits.load(std::memory_order_relaxed);
+    auto const direct = [](std::uint64_t c, std::uint64_t dd) { return c > dd ? c - dd : 0; };
+    std::string s = "\n📝 本次 prompt **" + std::to_string(inTok) + "** tok · 输出 **" + std::to_string(outTok) +
+                    "** tok" + (real ? "" : "(est)") + "（llama usage，含历史会话；与上面规则 token 不同口径）";
+    s += "\n♻️ 本轮 省主 LLM **" + std::to_string(d.saved) + "** 次，实调 **" + std::to_string(d.upstream) +
+         "** 次 ｜ 累计 省 **" + std::to_string(l1 + l2 + ok) + "** 次，实调 **" + std::to_string(up) + "** 次";
+    s += "\n🧠 本轮 Nanbeige 直答 **" + std::to_string(direct(d.chats, d.distills)) + "** · 工具 **" +
+         std::to_string(d.tools) + "** 轮 · 蒸馏 **" + std::to_string(d.distills) + "** ｜ bge-m3 嵌入 **" +
+         std::to_string(d.embeds) + "** 次 · 检索 **" + std::to_string(d.searches) + "** 次（命中 **" +
+         std::to_string(d.hits) + "**）｜ 累计 直答 **" + std::to_string(direct(chats, distills)) + "** · 蒸馏 **" +
+         std::to_string(distills) + "** · 嵌入 **" + std::to_string(embeds) + "** · 检索 **" +
+         std::to_string(searches) + "** 次（命中 **" + std::to_string(hits) + "**）";
+    return s;
 }
 
 /** 统一统计块渲染（presync 与 /v1 回包共用）：真 token / 实时栈 / 人读 corpus / 实际注入。
@@ -123,9 +150,7 @@ static std::string renderTurnBlock(Runtime& rt, Decision const& d, json const& r
     if (!usage.empty()) {
         std::uint64_t const i = usage.value("prompt_tokens", usage.value("input_tokens", std::uint64_t{0}));
         std::uint64_t const o = usage.value("completion_tokens", usage.value("output_tokens", std::uint64_t{0}));
-        out += "\n📝 输入 " + std::to_string(i) + " tok · 输出 " + std::to_string(o) + " tok" +
-               (tokReal ? "" : "(est)") + "  ";
-        out += savedCallsLine(rt);
+        out += callTailLines(rt, i, o, tokReal, turnDelta(rt));
     }
     return out;
 }
@@ -134,12 +159,11 @@ static std::string renderTurnBlock(Runtime& rt, Decision const& d, json const& r
 static std::string wrapBlock(Runtime& rt, Decision const& d, json const& rulesJson, json const& hitsJson,
                              std::string const& inject, json const& usage, std::string const& shown, char const* source,
                              std::string const& routeLabel) {
-    if (shown.find("♻️ 省主 LLM") != std::string::npos)
+    if (shown.find("♻️ 本轮") != std::string::npos)
         return {};
     std::uint64_t const i = usage.value("prompt_tokens", usage.value("input_tokens", std::uint64_t{0}));
     std::uint64_t const o = usage.value("completion_tokens", usage.value("output_tokens", std::uint64_t{0}));
-    std::string const lines = "📝 输入 " + std::to_string(i) + " tok · 输出 " + std::to_string(o) + " tok" +
-                              (rt.tokensReal() ? "" : "(est)") + "  " + savedCallsLine(rt);
+    std::string const lines = callTailLines(rt, i, o, rt.tokensReal(), turnDelta(rt));
     if (shown.find("⚡ 规则") != std::string::npos)
         return "\n" + lines;
     return "\n\n" + renderTurnBlock(rt, d, rulesJson, hitsJson, inject, usage, source, routeLabel);
@@ -299,6 +323,7 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
             return;
         rt.lastUserMs.store(steadyNowMs(), std::memory_order_relaxed);
         Turnscope scope;
+        turnSnap(rt);
         auto body = json::parse(req.body, nullptr, false);
         bool responses = req.path.find("/responses") != std::string::npos;
         if (responses)
@@ -347,10 +372,17 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
                 return usageFor(out);
             return json{{"prompt_tokens", i}, {"completion_tokens", o}, {"total_tokens", i + o}};
         };
+        // 回合账本：真 token（本次调用）+ 本轮计数器增量 + 墙钟（供 hook 归因）。
         auto record = [&](char const* src, json const& usage, std::string const& reply, bool real) {
-            rt.lastCall.put(usage.value("prompt_tokens", std::uint64_t{0}),
-                            usage.value("completion_tokens", std::uint64_t{0}), reply, modelName, src, real,
-                            steadyNowMs());
+            Turncall tc = turnDelta(rt);
+            tc.inTok = usage.value("prompt_tokens", std::uint64_t{0});
+            tc.outTok = usage.value("completion_tokens", std::uint64_t{0});
+            tc.reply = reply;
+            tc.model = modelName;
+            tc.source = src;
+            tc.real = real;
+            tc.wallMs = epochMs();
+            rt.lastCall.put(tc);
         };
 
         // L1 精确缓存：纯短路，命中即返回（不评分、不建上下文）。
@@ -358,7 +390,11 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
             std::string payload, source;
             if (l1Hit(rt, l1Key(rt.policyFp, taskQuery), payload, source)) {
                 rt.cacheL1.fetch_add(1, std::memory_order_relaxed);
+                refreshTail(rt, payload);
                 json const usage = usageFor(payload);
+                payload +=
+                    callTailLines(rt, usage.value("prompt_tokens", std::uint64_t{0}),
+                                  usage.value("completion_tokens", std::uint64_t{0}), rt.tokensReal(), turnDelta(rt));
                 record("cache", usage, payload, rt.tokensReal());
                 return writeReply(res, "cache", modelName, payload, responses, streamReq, usage);
             }
@@ -368,7 +404,11 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
             std::string payload, source;
             if (l2Hit(rt, taskQuery, payload, source)) {
                 rt.cacheL2.fetch_add(1, std::memory_order_relaxed);
+                refreshTail(rt, payload);
                 json const usage = usageFor(payload);
+                payload +=
+                    callTailLines(rt, usage.value("prompt_tokens", std::uint64_t{0}),
+                                  usage.value("completion_tokens", std::uint64_t{0}), rt.tokensReal(), turnDelta(rt));
                 record("cache", usage, payload, rt.tokensReal());
                 return writeReply(res, "cache", modelName, payload, responses, streamReq, usage);
             }
@@ -661,19 +701,55 @@ void mountOpenai(httplib::Server& svr, Runtime& rt,
     });
 
     // 最近一次 /v1 模型调用的真值（in/out token + 输出文本）：供 Stop hook 当轮补块。
-    svr.Get("/v1/lastcall", [gate, &rt](httplib::Request const& req, httplib::Response& res) {
-        if (!gate(req, res))
-            return;
+    // 回合账本：?since=<epochMs> 时做归因——账本墙钟早于 since 说明它不是本轮的（别的线程/后台），
+    // attributed=false 且 lines 为空，hook 宁可不贴也不贴错。
+    auto serveTail = [&rt](httplib::Request const& req, httplib::Response& res) {
         json lc = rt.lastCall.toJson();
         std::uint64_t const l1 = rt.cacheL1.load(std::memory_order_relaxed);
         std::uint64_t const l2 = rt.cacheL2.load(std::memory_order_relaxed);
         std::uint64_t const ok = rt.agentOk.load(std::memory_order_relaxed);
-        lc["saved"] = l1 + l2 + ok;
+        lc["savedCum"] = l1 + l2 + ok;
         lc["savedL1"] = l1;
         lc["savedL2"] = l2;
         lc["savedLocal"] = ok;
-        lc["upstream"] = rt.upstreamCalls.load(std::memory_order_relaxed);
+        lc["upstreamCum"] = rt.upstreamCalls.load(std::memory_order_relaxed);
+        std::int64_t since = 0;
+        if (req.has_param("since")) {
+            try {
+                since = std::stoll(req.get_param_value("since"));
+            } catch (...) {
+                since = 0;
+            }
+        }
+        std::int64_t const wall = lc.value("wallMs", std::int64_t{0});
+        bool const attributed = since <= 0 || wall >= since;
+        lc["attributed"] = attributed;
+        lc["lines"] = "";
+        if (attributed) {
+            Turncall d;
+            d.saved = lc.value("saved", std::uint64_t{0});
+            d.upstream = lc.value("upstream", std::uint64_t{0});
+            d.chats = lc.value("chats", std::uint64_t{0});
+            d.distills = lc.value("distills", std::uint64_t{0});
+            d.embeds = lc.value("embeds", std::uint64_t{0});
+            d.searches = lc.value("searches", std::uint64_t{0});
+            d.hits = lc.value("hits", std::uint64_t{0});
+            d.tools = lc.value("tools", std::uint64_t{0});
+            lc["lines"] = callTailLines(rt, lc.value("inTok", std::uint64_t{0}), lc.value("outTok", std::uint64_t{0}),
+                                        lc.value("real", false), d);
+        }
         setJson(res, lc);
+    };
+    svr.Get("/v1/lastcall", [gate, serveTail](httplib::Request const& req, httplib::Response& res) {
+        if (!gate(req, res))
+            return;
+        serveTail(req, res);
+    });
+    // 同一份账本三行（hook 直接用，避免 JS 侧再拼一遍格式）。
+    svr.Get("/v1/tail", [gate, serveTail](httplib::Request const& req, httplib::Response& res) {
+        if (!gate(req, res))
+            return;
+        serveTail(req, res);
     });
 
     // GET：只读目录（全部规则）；POST：按 task/files/manual 解析命中。

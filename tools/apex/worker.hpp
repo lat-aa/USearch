@@ -7,9 +7,18 @@
 #include "render.hpp"
 #include "types.hpp"
 
+#include <chrono>
+
 namespace api {
 
 struct Runtime;
+struct Turncall;
+
+/** epoch 毫秒（墙钟）：hook 用它判定「这份账本是不是本轮的」（归因），避免贴到别的请求。 */
+inline std::int64_t epochMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
 
 /** Worker 硬让路判据（纯函数，供 apexworker 直测）：busy 或窗口内视为用户热路径。 */
 inline bool workerHot(bool chatBusy, std::int64_t lastUserMs, std::int64_t nowMs,
@@ -57,6 +66,10 @@ struct Turnstats {
     std::string source;
     /** 统计块正文：人读 markdown（路由一行 + 规则 ###）；禁止再贴 rules/kept/pack 段。 */
     std::string corpus;
+    /** 请求开始时的计数器快照：本轮增量 = 当前值 - 快照（0 计数的口径与 /ready 同源）。 */
+    bool hasSnap = false;
+    std::uint64_t snapL1 = 0, snapL2 = 0, snapOk = 0, snapUp = 0;
+    std::uint64_t snapChats = 0, snapDistills = 0, snapEmbeds = 0, snapSearches = 0, snapHits = 0, snapTools = 0;
 
     /** 调用方须已持有 mutex。从 prompt JSON 生成人读 corpus；勿把 JSON 原样贴进聊天。 */
     void rebuildCorpus();
@@ -78,6 +91,11 @@ struct Turnscope {
 
 /** 政策目录指纹：规则变更使 L1/L2 缓存失效。 */
 std::string policyFingerprint(std::vector<Rule> const& rules);
+
+/** 请求开始快照（/v1 处理器 Turnscope 之后调用一次）：本轮增量 = 当前 - 快照。 */
+void turnSnap(Runtime& rt);
+/** 从快照算出本轮增量账本（未 snap 时全 0）。 */
+Turncall turnDelta(Runtime& rt);
 
 /** observe 仅入队；Worker 后台蒸馏写 memory。 */
 json runObserve(Runtime& rt, json const& args);

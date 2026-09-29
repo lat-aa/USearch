@@ -24,19 +24,30 @@
 
 namespace api {
 
-/** 最近一次 /v1 模型调用的真值快照（供 /v1/lastcall 与统计块）。 */
+/** 一次客户端回合的调用账本：真 token + 本轮各计数器增量（供 /v1/tail 与 hook 出同一份账）。 */
+struct Turncall {
+    std::uint64_t inTok = 0;    ///< 真实输入 token（本地=prompt eval；上游=usage.prompt_tokens）
+    std::uint64_t outTok = 0;   ///< 真实输出 token
+    std::string reply;          ///< 完整输出文本
+    std::string model;          ///< 上游/本地 model 名
+    std::string source;         ///< local|upstream|cache
+    bool real = false;          ///< 计数是否来自真分词器 / 上游 usage
+    std::int64_t wallMs = 0;    ///< epoch ms：hook 用它判定"这个账本是不是本轮的"（归因）
+    std::uint64_t saved = 0;    ///< 本轮省下的主 LLM 调用（缓存 L1/L2 + 本地直答）
+    std::uint64_t upstream = 0; ///< 本轮真实上游调用
+    std::uint64_t chats = 0;    ///< 本轮本地 chat 次数（含工具轮）
+    std::uint64_t distills = 0; ///< 本轮蒸馏次数
+    std::uint64_t embeds = 0;   ///< 本轮嵌入次数（bge-m3）
+    std::uint64_t searches = 0; ///< 本轮向量检索次数
+    std::uint64_t hits = 0;     ///< 本轮检索命中条数
+    std::uint64_t tools = 0;    ///< 本轮本地工具轮次
+};
+
+/** 最近一次客户端回合的账本（后台/其他请求不写：只由 /v1 处理器写）。 */
 struct Lastcall {
     std::mutex mutex;
-    std::uint64_t inTok = 0;  ///< 真实输入 token（本地=prompt eval；上游=usage.prompt_tokens）
-    std::uint64_t outTok = 0; ///< 真实输出 token
-    std::string reply;        ///< 完整输出文本
-    std::string model;        ///< 上游/本地 model 名
-    std::string source;       ///< local|upstream|cache
-    std::int64_t ts = 0;      ///< steadyNowMs
-    bool real = false;        ///< 计数是否来自真分词器 / 上游 usage
-    /** 写入一次调用快照（替换旧值）。 */
-    void put(std::uint64_t in, std::uint64_t out, std::string rep, std::string mdl, std::string src, bool isReal,
-             std::int64_t stamp);
+    Turncall c;
+    void put(Turncall const& tc);
     json toJson();
 };
 

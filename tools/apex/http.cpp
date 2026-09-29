@@ -156,7 +156,13 @@ int serve(Runtime& rt) {
                           {"cache_l2", rt.cacheL2.load(std::memory_order_relaxed)},
                           {"upstream", rt.upstreamCalls.load(std::memory_order_relaxed)},
                           {"fuse", rt.fuse.openedAtMs.load(std::memory_order_relaxed) != 0},
-                          {"chatBusy", rt.encoder.chatBusy.load(std::memory_order_relaxed)}}}}}});
+                          {"chatBusy", rt.encoder.chatBusy.load(std::memory_order_relaxed)}}},
+                        {"local",
+                         {{"chats", rt.encoder.chatCalls.load(std::memory_order_relaxed)},
+                          {"distills", rt.encoder.distillCalls.load(std::memory_order_relaxed)},
+                          {"embeds", rt.encoder.embedCalls.load(std::memory_order_relaxed)},
+                          {"searches", rt.store.searches.load(std::memory_order_relaxed)},
+                          {"hits", rt.store.hits.load(std::memory_order_relaxed)}}}}}});
     });
 
     svr.Get("/v1/metrics", [&](httplib::Request const& req, httplib::Response& res) {

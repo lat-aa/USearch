@@ -40,6 +40,10 @@ struct Encoder {
     std::atomic<std::uint64_t> lockWaitSumMs{0};
     std::atomic<std::int64_t> lockWaitMaxMs{0};
     std::atomic<std::uint64_t> stealChat{0}; ///< Worker try_lock chat 失败次数（活跃期应为 0）
+    /// 模型实际用量（问题「Nanbeige/bge-m3 用到了什么」的答案）：chat/蒸馏/嵌入次数。
+    std::atomic<std::uint64_t> chatCalls{0};
+    std::atomic<std::uint64_t> distillCalls{0};
+    std::atomic<std::uint64_t> embedCalls{0};
     /// 最近一次 chat 的真实 token（输入=prompt eval 词数，输出=生成词数）；供 /v1 usage 与统计块。
     std::atomic<std::uint64_t> lastPromptTok{0};
     std::atomic<std::uint64_t> lastGenTok{0};

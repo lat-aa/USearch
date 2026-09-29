@@ -70,6 +70,10 @@ struct Store {
     error_t upsert(Doc doc, std::vector<float> const& vector);
     error_t remove(std::string const& id);
     std::vector<std::pair<Doc, float>> search(std::vector<float> const& query, std::size_t k);
+    /// 检索用量（bge-m3 侧）：调用次数与命中条数，全部经 Store::search 单一入口累计。
+    std::atomic<std::uint64_t> searches{0};
+    std::atomic<std::uint64_t> hits{0};
+
     /** 观测快照：行数 / 文档数 / 是否 SQ8 影子（持 mutex）。 */
     Storestats stats();
 };

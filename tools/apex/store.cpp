@@ -216,6 +216,9 @@ error_t Store::remove(std::string const& id) {
 }
 
 std::vector<std::pair<Doc, float>> Store::search(std::vector<float> const& query, std::size_t k) {
+    // 用量单一入口：每次检索 +1，返回条数累加（bge-m3 侧「检索 M 次/命中 H 条」）。
+    searches.fetch_add(1, std::memory_order_relaxed);
+    auto const countHits = [this](std::size_t n) { this->hits.fetch_add(n, std::memory_order_relaxed); };
     std::lock_guard<std::mutex> lock(mutex);
     std::vector<std::pair<Doc, float>> hits;
     if (query.size() != dimensions || k == 0)
@@ -242,8 +245,10 @@ std::vector<std::pair<Doc, float>> Store::search(std::vector<float> const& query
                 hits.emplace_back(it->second, 1.0f - score); // 对外仍报「距离」风格时：cosine 距离≈1-sim
         }
         // 上式把相似度转成距离以贴近 USearch cos 距离；若 hits 非空则返回。
-        if (!hits.empty())
+        if (!hits.empty()) {
+            countHits(hits.size());
             return hits;
+        }
     }
 
     auto results = index.search(query.data(), k);
@@ -260,6 +265,7 @@ std::vector<std::pair<Doc, float>> Store::search(std::vector<float> const& query
             }
         }
     }
+    countHits(hits.size());
     return hits;
 }
 

@@ -277,6 +277,7 @@ std::vector<float> Encoder::embedImpl(std::string_view text) {
     llama_context* const c = embedCtx ? embedCtx : context;
     if (!m || !c)
         return hashEmbed(text, dimensions ? dimensions : 1024);
+    embedCalls.fetch_add(1, std::memory_order_relaxed);
 
     llama_vocab const* vocab = llama_model_get_vocab(m);
     std::vector<llama_token> tokens(text.size() + 32);
@@ -347,6 +348,7 @@ std::string Encoder::chat(json const& messages, std::function<void(std::string_v
         stealChat.fetch_add(1, std::memory_order_relaxed);
         return {};
     }
+    chatCalls.fetch_add(1, std::memory_order_relaxed);
     chatBusy.fetch_add(1, std::memory_order_release);
     struct Busy {
         Encoder* e;
@@ -556,6 +558,7 @@ std::size_t Encoder::countTokens(std::string_view text) const {
 bool Encoder::tokensReal() const noexcept { return model != nullptr && modelReady; }
 
 std::string Encoder::distillChat(std::string_view system, std::string_view user, float temp, std::uint32_t maxTok) {
+    distillCalls.fetch_add(1, std::memory_order_relaxed);
     json messages = json::array();
     if (!system.empty())
         messages.push_back(textMessage("system", std::string(system)));
