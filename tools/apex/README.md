@@ -49,6 +49,57 @@ cmake --build build --target api
   → 本地 agent（持 chatMutex）或 delegate
 任务结束 → observe 仅入队
   → Worker 在 chatBusy=0 且让路窗外 distill
+
+
+---- 原本早期流程禁止删除
+  用户输入
+  ↓
+【客户端】Codex / Claude / Cursor
+  ↓
+Hook
+  ↓
+ MCP（前置同步）
+  ├─ L1 内存缓存 → 命中直接返回 短路出口
+  ├─ L2 语义缓存（USearch）→ 命中直接返回 短路出口
+  └─ 未命中 → 并行执行：
+      ├─ USearch 向量检索历史经验
+      └─ SQLite 规则校验
+          ↓ 混合重排（RRF）
+          ↓
+      Nanbeige4.2 本地推理（核心决策节点）
+          ├─ 【能够处理】置信度 >= 阈值 (如 0.85) 且无规则冲突
+          │   └─→ 直接生成完整回复 → 返回给用户（链路结束，节省主 LLM API 成本） 短路出口
+          │
+          └─ 【不能处理】置信度 < 阈值 / 信息不足 / 存在冲突
+              └─→ 执行“上下文压缩” → 返回压缩后的经验片段
+                  ↓
+              客户端把经验片段合并进 messages 上下文
+                  ↓
+                  ↓
+                LLM 调用（可走 api 网关，也可直连）
+                  ↓
+                LLM 返回 → 客户端本地工具调用循环
+                  ↓
+                任务结束，触发沉淀（全部只做“入队”，不做重活）
+                  ↓
+                Hook
+                  ├─ Codex ：模型调用 MCP 工具 save（仅入队）
+                  ├─ Claude：模型调用 MCP 工具 save（仅入队）
+                  └─ Cursor：模型调用 MCP 工具 save（仅入队）
+                  ↓
+                MCP 写入 SQLite observation_queue（status=pending）
+                  ↓ 立即返回  / 成功
+                  ↓
+                MCP 后台 Worker（常驻协程 / 线程 / 系统计划任务）
+                  ├─ 原子领取任务
+                  ├─ Nanbeige4.1 强蒸馏
+                  ├─ 冲突检测 + 置信度合并
+                  ├─ 写 SQLite 记忆表（Source of Truth）
+                  └─ 写 USearch 向量索引（失败可重试 / 重建）
+                  ↓
+                  用户早已看到结果，沉淀在后台完成
+
+短路出口（省主 LLM,提升质量、准确度、性能、减少 token）
 ```
 
 ## 观测
@@ -68,3 +119,6 @@ API_BIN=./build/api TOKEN=sk-default ./scripts/regapex.sh
 ```
 
 纯逻辑单测：`ctest -L apex`（见 `tests/apex/`）。
+
+
+

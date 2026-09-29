@@ -95,9 +95,12 @@ class index_dense_gt {
             std::size_t n = 0;
             for (; begin != end && n < kMax; ++begin, ++n) {
                 compressed_slot_t slot = static_cast<compressed_slot_t>(get_slot(begin));
-                if (slot >= index_->vectors_lookup_.size())
+                // slot 可能是 uint40_t / scoped enum：先显式转成 size_t 再比/索引，
+                // 否则 `slot >= size()` 两侧都有隐式转换 → operator>= 二义（CI GCC 报错）。
+                std::size_t const slot_index = static_cast<std::size_t>(slot);
+                if (slot_index >= index_->vectors_lookup_.size())
                     continue;
-                byte_t const* vec = index_->vectors_lookup_[slot];
+                byte_t const* vec = index_->vectors_lookup_[slot_index];
                 if (!vec)
                     continue;
                 usearch_prefetch_m(vec);
@@ -1699,8 +1702,10 @@ class index_dense_gt {
         // 先收集 live 槽，再并行重插（向量已是度量存储格式，免二次量化）。
         std::vector<std::size_t> live_slots;
         live_slots.reserve(live);
+        // at() 形参类型是 compressed_slot_t（可能是 enum，见 tests/unit.cpp 的 slot32_t）：
+        // 用 size_t 迭代、显式转换调用，避免窄化/枚举隐式转换（CI 的 GCC 直接报错）。
         for (std::size_t slot = 0; slot != slots; ++slot) {
-            if (typed_->at(slot).key != free_key_)
+            if (typed_->at(static_cast<compressed_slot_t>(slot)).key != free_key_)
                 live_slots.push_back(slot);
         }
 
@@ -1711,7 +1716,7 @@ class index_dense_gt {
             if (atomic_error.load(std::memory_order_relaxed))
                 return;
             std::size_t slot = live_slots[task_idx];
-            member_cref_t member = typed_->at(slot);
+            member_cref_t member = typed_->at(static_cast<compressed_slot_t>(slot));
             byte_t const* vec = vectors_lookup_[slot];
             add_result_t added;
             // 与 add() 公开标量入口对齐；缺省 kinds 才 fail，避免 SQ8/fp8 只能离线重建
